@@ -1,0 +1,9 @@
+.git
+.jj
+target
+tmp
+*.db
+*.db-wal
+*.db-shm
+**/.DS_Store
+

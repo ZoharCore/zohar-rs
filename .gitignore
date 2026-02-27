@@ -1,0 +1,10 @@
+/target
+.DS_Store
+**/.DS_Store
+.idea
+*.db
+*.db-wal
+*.db-shm
+/data
+/.local/
+
