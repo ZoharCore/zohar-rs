@@ -1,0 +1,25 @@
+[package]
+name = "zohar-db"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+db-auth = []
+db-game = ["dep:zohar-domain", "dep:strum", "dep:strum_macros"]
+
+# Database backend features (enable at least one; multiple can be combined)
+postgres-backend = ["dep:sqlx"]
+
+[dependencies]
+zohar-domain = { path = "../zohar-domain", optional = true }
+
+tracing.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+strum = { version = "0.28", optional = true }
+strum_macros = { version = "0.28", optional = true }
+
+# Database backend specific dependencies
+sqlx = { workspace = true, optional = true }

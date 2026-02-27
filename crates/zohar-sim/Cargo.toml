@@ -1,0 +1,16 @@
+[package]
+name = "zohar-sim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zohar-domain = { path = "../zohar-domain" }
+
+anyhow.workspace = true
+bevy.workspace = true
+crossbeam-channel.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rand.workspace = true
+
+flat_spatial = { version = "0.6", features = ["euclid"] }

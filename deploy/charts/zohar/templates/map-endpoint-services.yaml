@@ -1,0 +1,35 @@
+{{- if eq (.Values.network.mapEndpointMode | default "agones" | lower) "service-nodeport" }}
+{{- $ns := include "zohar.namespace" . -}}
+{{- range $channel := .Values.topology.channels }}
+{{- range $map := $.Values.topology.maps }}
+{{- $channelId := int $channel.id -}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zohar.mapEndpointServiceName" (dict "root" $ "channelId" $channelId "map" $map) }}
+  namespace: {{ $ns }}
+  {{- with $.Values.network.mapEndpointService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  labels:
+    {{- include "zohar.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: map-endpoint
+    channel: "{{ $channelId }}"
+    map: "{{ $map }}"
+spec:
+  type: {{ $.Values.network.mapEndpointService.type | default "NodePort" }}
+  {{- if $.Values.network.mapEndpointService.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ $.Values.network.mapEndpointService.externalTrafficPolicy }}
+  {{- end }}
+  ports:
+    - name: game
+      protocol: TCP
+      port: {{ $.Values.core.containerPort }}
+      targetPort: {{ $.Values.core.containerPort }}
+  selector:
+    agones.dev/gameserver: {{ include "zohar.coreGameServerName" (dict "root" $ "channelId" $channelId "map" $map) }}
+{{ end }}
+{{ end }}
+{{- end }}

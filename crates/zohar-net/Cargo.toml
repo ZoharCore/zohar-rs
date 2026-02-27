@@ -1,0 +1,20 @@
+[package]
+name = "zohar-net"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+net-auth = ["zohar-protocol/auth"]
+net-game = ["zohar-protocol/game", "zohar-domain"]
+
+[dependencies]
+zohar-domain = { path = "../zohar-domain", optional = true }
+zohar-protocol = { path = "../zohar-protocol", default-features = false }
+
+binrw.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true

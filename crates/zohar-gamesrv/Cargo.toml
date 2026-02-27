@@ -1,0 +1,42 @@
+[package]
+name = "zohar-gamesrv"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+kube-resolver = ["dep:kube", "dep:k8s-openapi"]
+
+[dependencies]
+zohar-content = { path = "../zohar-content" }
+zohar-db = { path = "../zohar-db", default-features = false, features = ["db-game", "postgres-backend"] }
+zohar-domain = { path = "../zohar-domain" }
+zohar-sim = { path = "../zohar-sim" }
+zohar-net = { path = "../zohar-net", default-features = false, features = ["net-game"] }
+zohar-protocol = { path = "../zohar-protocol", default-features = false, features = ["game", "token"] }
+
+anyhow.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+rustls.workspace = true
+sqlx.workspace = true
+kube = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+anyhow.workspace = true
+binrw.workspace = true
+zohar-gamesrv = { path = "." }
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[[bin]]
+name = "zohar-chgw"
+path = "src/bin/chgw.rs"

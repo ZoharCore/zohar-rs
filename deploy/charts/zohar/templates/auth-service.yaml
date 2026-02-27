@@ -1,0 +1,33 @@
+{{- if .Values.auth.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zohar.fullname" . }}-auth
+  namespace: {{ include "zohar.namespace" . }}
+  {{- with .Values.auth.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  labels:
+    {{- include "zohar.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+spec:
+  type: {{ .Values.auth.service.type }}
+  {{- if and (eq .Values.auth.service.type "LoadBalancer") .Values.auth.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.auth.service.loadBalancerIP | quote }}
+  {{- end }}
+  {{- if .Values.auth.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.auth.service.externalTrafficPolicy }}
+  {{- end }}
+  ports:
+    - name: auth
+      port: {{ .Values.auth.service.port }}
+      targetPort: auth
+      protocol: TCP
+      {{- if and (eq .Values.auth.service.type "NodePort") .Values.auth.service.nodePort }}
+      nodePort: {{ .Values.auth.service.nodePort }}
+      {{- end }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: auth
+{{- end }}

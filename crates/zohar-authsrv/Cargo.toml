@@ -1,0 +1,22 @@
+[package]
+name = "zohar-authsrv"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zohar-db = { path = "../zohar-db", default-features = false, features = ["db-auth", "postgres-backend"] }
+zohar-net = { path = "../zohar-net", default-features = false, features = ["net-auth"] }
+zohar-protocol = { path = "../zohar-protocol", default-features = false, features = ["auth", "token"] }
+
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+argon2 = "0.5"
+
+[[bin]]
+name = "zohar-auth"
+path = "src/bin/auth.rs"

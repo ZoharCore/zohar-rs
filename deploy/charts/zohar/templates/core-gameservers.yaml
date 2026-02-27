@@ -1,0 +1,84 @@
+{{- $ns := include "zohar.namespace" . -}}
+{{- range $channel := .Values.topology.channels }}
+{{- range $map := $.Values.topology.maps }}
+{{- $channelId := int $channel.id -}}
+---
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: {{ include "zohar.coreGameServerName" (dict "root" $ "channelId" $channelId "map" $map) }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "zohar.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: core
+    channel: "{{ $channelId }}"
+    map: "{{ $map }}"
+spec:
+  ports:
+    - name: game
+      protocol: TCP
+      containerPort: {{ $.Values.core.containerPort }}
+      portPolicy: Dynamic
+  health:
+    initialDelaySeconds: {{ $.Values.core.health.initialDelaySeconds }}
+    periodSeconds: {{ $.Values.core.health.periodSeconds }}
+    failureThreshold: {{ $.Values.core.health.failureThreshold }}
+  template:
+    metadata:
+      labels:
+        {{- include "zohar.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: core
+        channel: "{{ $channelId }}"
+        map: "{{ $map }}"
+    spec:
+      serviceAccountName: {{ include "zohar.coreServiceAccountName" $ }}
+      containers:
+        - name: zohar-core
+          image: "{{ $.Values.core.image.repository }}:{{ $.Values.core.image.tag }}"
+          imagePullPolicy: {{ $.Values.core.image.pullPolicy }}
+          command: ["/usr/local/bin/zohar-core"]
+          args:
+            - --map={{ $map }}
+            - --channel={{ $channelId }}
+            - --listen=0.0.0.0:{{ $.Values.core.containerPort }}
+            - --namespace={{ $ns }}
+            - --content-db={{ $.Values.core.contentDbPath }}
+            - --heartbeat-interval-secs={{ $.Values.core.heartbeatIntervalSecs }}
+            - --session-stale-secs={{ $.Values.core.sessionStaleSecs }}
+            - --token-window-secs={{ $.Values.core.tokenWindowSecs }}
+            - --login-token-idle-ttl-secs={{ $.Values.core.loginTokenIdleTtlSecs }}
+            - {{ printf "--log-filter=%s" $.Values.core.logFilter | quote }}
+            - {{ printf "--map-endpoint-mode=%s" ($.Values.network.mapEndpointMode | default "agones") | quote }}
+            {{- if $.Values.core.serverId }}
+            - {{ printf "--server-id=%s" $.Values.core.serverId | quote }}
+            {{- end }}
+            {{- with $.Values.core.extraArgs }}
+            {{- range . }}
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - containerPort: {{ $.Values.core.containerPort }}
+              protocol: TCP
+          env:
+            - name: ZOHAR_GAME_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zohar.gameDbSecretName" $ }}
+                  key: {{ include "zohar.gameDbSecretKey" $ }}
+            - name: ZOHAR_AUTH_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zohar.authTokenSecretName" $ }}
+                  key: {{ include "zohar.authTokenSecretKey" $ }}
+            {{- if $.Values.network.mapAdvertiseIp }}
+            - name: ZOHAR_MAP_ADVERTISE_IP
+              value: {{ $.Values.network.mapAdvertiseIp | quote }}
+            {{- end }}
+            {{- with $.Values.core.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml $.Values.core.resources | nindent 12 }}
+{{ end }}
+{{ end }}

@@ -1,0 +1,12 @@
+{{- $appNs := include "zohar.namespace" . -}}
+{{- if and $appNs (ne $appNs .Release.Namespace) (not (lookup "v1" "Namespace" "" $appNs)) }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $appNs }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    zohar.io/component: tenant
+    zohar.io/profile: {{ include "zohar.profile" . | quote }}
+    zohar.io/tenant: {{ default "unspecified" (include "zohar.tenant" .) | quote }}
+{{- end }}

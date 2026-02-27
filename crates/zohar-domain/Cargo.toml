@@ -1,0 +1,9 @@
+[package]
+name = "zohar-domain"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rand.workspace = true
+
+euclid = "0.22"

@@ -1,0 +1,56 @@
+pub mod skill;
+
+use crate::DbId;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerBaseAppearance {
+    VariantA,
+    VariantB,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerClass {
+    Warrior,
+    Ninja,
+    Sura,
+    Shaman,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerGender {
+    Male,
+    Female,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerSlot {
+    First,
+    Second,
+    Third,
+    Fourth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PlayerTag {}
+
+pub type PlayerId = DbId<PlayerTag>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerStats {
+    pub stat_str: i32,
+    pub stat_vit: i32,
+    pub stat_dex: i32,
+    pub stat_int: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSummary {
+    pub id: PlayerId,
+    pub slot: PlayerSlot,
+    pub name: String,
+    pub class: PlayerClass,
+    pub gender: PlayerGender,
+    pub appearance: PlayerBaseAppearance,
+    pub level: i32,
+    pub stats: PlayerStats,
+}

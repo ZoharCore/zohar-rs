@@ -1,0 +1,24 @@
+# Production profile
+# Usage: helm ... -f values.yaml -f values-prod.yaml
+
+namespaceOverride: ""
+profile: prod
+
+postgres:
+  persistence:
+    enabled: true
+
+network:
+  mapEndpointMode: agones
+  mapAdvertiseIp: ""
+
+topology:
+  channels:
+    - id: 1
+      entrypointPort: 13000
+    - id: 2
+      entrypointPort: 13010
+    - id: 3
+      entrypointPort: 13020
+    - id: 4
+      entrypointPort: 13030

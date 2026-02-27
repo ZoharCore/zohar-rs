@@ -1,0 +1,50 @@
+{{- if .Values.auth.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zohar.fullname" . }}-auth
+  namespace: {{ include "zohar.namespace" . }}
+  labels:
+    {{- include "zohar.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+spec:
+  replicas: {{ .Values.auth.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: auth
+  template:
+    metadata:
+      labels:
+        {{- include "zohar.labels" . | nindent 8 }}
+        app.kubernetes.io/component: auth
+    spec:
+      containers:
+        - name: zohar-auth
+          image: "{{ .Values.auth.image.repository }}:{{ .Values.auth.image.tag }}"
+          imagePullPolicy: {{ .Values.auth.image.pullPolicy }}
+          command: ["/usr/local/bin/zohar-auth"]
+          args:
+            - --listen=0.0.0.0:{{ .Values.auth.service.port }}
+            - --token-window-secs={{ .Values.auth.tokenWindowSecs }}
+          ports:
+            - name: auth
+              containerPort: {{ .Values.auth.service.port }}
+              protocol: TCP
+          env:
+            - name: ZOHAR_AUTH_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zohar.authDbSecretName" . }}
+                  key: {{ include "zohar.authDbSecretKey" . }}
+            - name: ZOHAR_AUTH_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zohar.authTokenSecretName" . }}
+                  key: {{ include "zohar.authTokenSecretKey" . }}
+            {{- with .Values.auth.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.auth.resources | nindent 12 }}
+{{- end }}

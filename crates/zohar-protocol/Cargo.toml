@@ -1,0 +1,17 @@
+[package]
+name = "zohar-protocol"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+auth = ["dep:binrw", "dep:num_enum"]
+game = ["dep:binrw", "dep:num_enum"]
+token = ["dep:hmac", "dep:sha2"]
+
+[dependencies]
+binrw = { workspace = true, optional = true }
+
+num_enum = { version = "0.7", optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }

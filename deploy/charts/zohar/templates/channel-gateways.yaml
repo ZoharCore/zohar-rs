@@ -1,0 +1,113 @@
+{{- if .Values.channelGateway.enabled }}
+{{- $ns := include "zohar.namespace" . -}}
+{{- $selector := printf "app.kubernetes.io/instance=%s,app.kubernetes.io/component=channel-entry" .Release.Name -}}
+{{- range $channel := .Values.topology.channels }}
+{{- $channelId := int $channel.id -}}
+{{- $svcName := include "zohar.channelEntryServiceName" (dict "root" $ "channelId" $channelId) -}}
+{{- $deployName := include "zohar.channelGatewayDeploymentName" (dict "root" $ "channelId" $channelId) -}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $deployName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "zohar.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: channel-entry
+    channel: "{{ $channelId }}"
+spec:
+  replicas: {{ $.Values.channelGateway.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: channel-entry
+      channel: "{{ $channelId }}"
+  template:
+    metadata:
+      labels:
+        {{- include "zohar.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: channel-entry
+        channel: "{{ $channelId }}"
+    spec:
+      serviceAccountName: {{ include "zohar.channelServiceAccountName" $ }}
+      containers:
+        - name: zohar-chgw
+          image: "{{ $.Values.channelGateway.image.repository }}:{{ $.Values.channelGateway.image.tag }}"
+          imagePullPolicy: {{ $.Values.channelGateway.image.pullPolicy }}
+          command: ["/usr/local/bin/zohar-chgw"]
+          args:
+            - --channel={{ $channelId }}
+            - --listen=0.0.0.0:{{ $.Values.channelGateway.containerPort }}
+            - --namespace={{ $ns }}
+            - --heartbeat-interval-secs={{ $.Values.channelGateway.heartbeatIntervalSecs }}
+            - --token-window-secs={{ $.Values.channelGateway.tokenWindowSecs }}
+            - --login-token-idle-ttl-secs={{ $.Values.channelGateway.loginTokenIdleTtlSecs }}
+            - {{ printf "--log-filter=%s" $.Values.channelGateway.logFilter | quote }}
+            - {{ printf "--map-endpoint-mode=%s" ($.Values.network.mapEndpointMode | default "agones") | quote }}
+            {{- with $.Values.channelGateway.extraArgs }}
+            {{- range . }}
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - name: gateway
+              containerPort: {{ $.Values.channelGateway.containerPort }}
+              protocol: TCP
+          env:
+            - name: ZOHAR_GAME_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zohar.gameDbSecretName" $ }}
+                  key: {{ include "zohar.gameDbSecretKey" $ }}
+            - name: ZOHAR_AUTH_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zohar.authTokenSecretName" $ }}
+                  key: {{ include "zohar.authTokenSecretKey" $ }}
+            - name: ZOHAR_CHANNEL_SERVICE_SELECTOR
+              value: {{ $selector | quote }}
+            {{- if $.Values.network.mapAdvertiseIp }}
+            - name: ZOHAR_MAP_ADVERTISE_IP
+              value: {{ $.Values.network.mapAdvertiseIp | quote }}
+            {{- end }}
+            {{- with $.Values.channelGateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml $.Values.channelGateway.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svcName }}
+  namespace: {{ $ns }}
+  {{- with $.Values.channelGateway.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  labels:
+    {{- include "zohar.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: channel-entry
+    channel: "{{ $channelId }}"
+spec:
+  type: {{ $.Values.channelGateway.service.type }}
+  {{- if and (eq $.Values.channelGateway.service.type "LoadBalancer") $.Values.channelGateway.service.loadBalancerIP }}
+  loadBalancerIP: {{ $.Values.channelGateway.service.loadBalancerIP | quote }}
+  {{- end }}
+  {{- if $.Values.channelGateway.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ $.Values.channelGateway.service.externalTrafficPolicy }}
+  {{- end }}
+  ports:
+    - name: gateway
+      protocol: TCP
+      port: {{ int $channel.entrypointPort }}
+      targetPort: gateway
+      {{- if and (eq $.Values.channelGateway.service.type "NodePort") $.Values.channelGateway.service.nodePort }}
+      nodePort: {{ $.Values.channelGateway.service.nodePort }}
+      {{- end }}
+  selector:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: channel-entry
+    channel: "{{ $channelId }}"
+{{ end }}
+{{ end }}

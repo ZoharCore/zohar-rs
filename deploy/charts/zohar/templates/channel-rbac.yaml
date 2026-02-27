@@ -1,0 +1,43 @@
+{{- if .Values.channelGateway.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "zohar.channelServiceAccountName" . }}
+  namespace: {{ include "zohar.namespace" . }}
+  labels:
+    {{- include "zohar.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "zohar.fullname" . }}-channel-discovery
+  namespace: {{ include "zohar.namespace" . }}
+  labels:
+    {{- include "zohar.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["agones.dev"]
+    resources: ["gameservers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "zohar.fullname" . }}-channel-discovery
+  namespace: {{ include "zohar.namespace" . }}
+  labels:
+    {{- include "zohar.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "zohar.channelServiceAccountName" . }}
+    namespace: {{ include "zohar.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "zohar.fullname" . }}-channel-discovery
+{{- end }}

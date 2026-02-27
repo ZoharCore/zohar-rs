@@ -1,0 +1,143 @@
+namespaceOverride: ""
+infraNamespace: infra
+tenant: nightlysrv
+profile: ""
+
+# Default chart values are the shared base profile.
+# For environment-specific deployments, layer:
+# -f values.yaml -f values-dev.yaml
+# or
+# -f values.yaml -f values-prod.yaml
+# Exactly one override file should be used on top of base.
+
+authDatabase:
+  # If set, this URL is used verbatim for the generated auth DB secret.
+  url: ""
+  secret:
+    create: true
+    name: ""
+    key: url
+
+gameDatabase:
+  # If set, this URL is used verbatim for the generated game DB secret.
+  url: ""
+  secret:
+    create: true
+    name: ""
+    key: url
+
+postgres:
+  enabled: true
+  # Create postgres namespace automatically when missing.
+  # Only applies when postgres namespace differs from workload namespace.
+  createNamespace: true
+  # Optional explicit override for Postgres namespace.
+  # If empty, Postgres deploys to infraNamespace.
+  namespaceOverride: ""
+  # DNS suffix used when building in-cluster Postgres hostnames.
+  clusterDomain: cluster.local
+  image: postgres:18
+  service:
+    type: ClusterIP
+    port: 5432
+    nodePort: null
+    loadBalancerIP: ""
+    annotations: {}
+    externalTrafficPolicy: Cluster
+  credentials:
+    username: zohar
+    password: dev
+    database: zohar
+  persistence:
+    enabled: false
+    storageClass: ""
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+auth:
+  enabled: true
+  image:
+    repository: zohar-auth
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  logFilter: info,zohar_auth_server=info,zohar_db=info
+  service:
+    type: LoadBalancer
+    port: 11000
+    nodePort: null
+    loadBalancerIP: ""
+    annotations: {}
+    externalTrafficPolicy: Cluster
+  token:
+    secret:
+      create: true
+      name: zohar-authsrv-token
+      key: secret
+      value: "dev-secret-change-me"
+  tokenWindowSecs: 30
+  resources: {}
+  extraEnv: []
+
+channelGateway:
+  enabled: true
+  image:
+    repository: zohar-chgw
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  logFilter: info,zohar_game_server=info,zohar_db=info
+  containerPort: 13000
+  heartbeatIntervalSecs: 30
+  tokenWindowSecs: 30
+  loginTokenIdleTtlSecs: 604800
+  service:
+    type: ClusterIP
+    annotations: {}
+    externalTrafficPolicy: Cluster
+    loadBalancerIP: ""
+    nodePort: null
+  resources: {}
+  extraEnv: []
+  extraArgs: []
+
+network:
+  mapAdvertiseIp: ""
+  mapEndpointMode: agones
+  mapEndpointService:
+    type: NodePort
+    annotations: {}
+    externalTrafficPolicy: Cluster
+
+topology:
+  channels:
+    - id: 1
+      entrypointPort: 13000
+  maps:
+    - metin2_map_a1
+    - metin2_map_b1
+    - metin2_map_c1
+
+core:
+  image:
+    repository: zohar-core
+    tag: latest
+    pullPolicy: IfNotPresent
+  containerPort: 13000
+  logFilter: info,zohar_game_server=info,zohar_db=info
+  contentDbPath: /var/lib/zohar/content.db
+  heartbeatIntervalSecs: 30
+  sessionStaleSecs: 90
+  tokenWindowSecs: 30
+  loginTokenIdleTtlSecs: 604800
+  serverId: ""
+  health:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  resources: {}
+  extraEnv: []
+  extraArgs: []

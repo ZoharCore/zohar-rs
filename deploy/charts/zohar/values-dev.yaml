@@ -1,0 +1,32 @@
+# Development profile
+# Usage: helm ... -f values.yaml -f values-dev.yaml
+
+namespaceOverride: ""
+profile: dev
+
+postgres:
+  service:
+    type: LoadBalancer
+
+auth:
+  service:
+    type: LoadBalancer
+
+channelGateway:
+  service:
+    type: LoadBalancer
+
+network:
+  # For service-nodeport mode, set this to a LAN-routable host IPv4.
+  mapAdvertiseIp: "192.168.0.143"
+  mapEndpointMode: service-nodeport
+
+topology:
+  channels:
+    - id: 1
+      entrypointPort: 13000
+  maps:
+    - metin2_map_c1
+
+core:
+  logFilter: info,zohar_game_server=info,zohar_db=info,zohar_net=trace

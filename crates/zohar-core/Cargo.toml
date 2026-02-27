@@ -1,0 +1,26 @@
+[package]
+name = "zohar-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zohar-content = { path = "../zohar-content" }
+zohar-db = { path = "../zohar-db", default-features = false, features = ["db-game", "postgres-backend"] }
+zohar-domain = { path = "../zohar-domain" }
+zohar-gamesrv = { path = "../zohar-gamesrv", features = ["kube-resolver"] }
+zohar-sim = { path = "../zohar-sim" }
+zohar-protocol = { path = "../zohar-protocol", default-features = false, features = ["token"] }
+
+anyhow.workspace = true
+bevy.workspace = true
+crossbeam-channel.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+kube.workspace = true
+k8s-openapi = { workspace = true, features = ["v1_32"] }
+rustls.workspace = true
+
+agones = "1"

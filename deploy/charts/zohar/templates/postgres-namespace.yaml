@@ -1,0 +1,14 @@
+{{- if and .Values.postgres.enabled .Values.postgres.createNamespace }}
+{{- $pgNs := include "zohar.postgresNamespace" . -}}
+{{- $appNs := include "zohar.namespace" . -}}
+{{- if and $pgNs (ne $pgNs $appNs) (not (lookup "v1" "Namespace" "" $pgNs)) }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $pgNs }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    zohar.io/component: infra
+    zohar.io/profile: {{ include "zohar.profile" . | quote }}
+{{- end }}
+{{- end }}

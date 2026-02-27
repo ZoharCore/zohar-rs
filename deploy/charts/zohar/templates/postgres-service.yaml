@@ -1,0 +1,33 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zohar.postgresServiceName" . }}
+  namespace: {{ include "zohar.postgresNamespace" . }}
+  {{- with .Values.postgres.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  labels:
+    {{- include "zohar.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: {{ .Values.postgres.service.type }}
+  {{- if and (eq .Values.postgres.service.type "LoadBalancer") .Values.postgres.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.postgres.service.loadBalancerIP | quote }}
+  {{- end }}
+  {{- if .Values.postgres.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.postgres.service.externalTrafficPolicy }}
+  {{- end }}
+  ports:
+    - name: postgres
+      port: {{ .Values.postgres.service.port }}
+      targetPort: postgres
+      protocol: TCP
+      {{- if and (eq .Values.postgres.service.type "NodePort") .Values.postgres.service.nodePort }}
+      nodePort: {{ .Values.postgres.service.nodePort }}
+      {{- end }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: postgres
+{{- end }}
