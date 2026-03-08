@@ -19,7 +19,11 @@ pub(super) fn emit_idle_chat(world: &mut World) {
     let shared = world.resource::<SharedConfig>().clone();
     let now_ms = world.resource::<RuntimeState>().sim_time_ms;
 
-    let mob_entities: Vec<(Entity, zohar_domain::MobId, zohar_domain::entity::EntityId)> = {
+    let mob_entities: Vec<(
+        Entity,
+        zohar_domain::entity::mob::MobId,
+        zohar_domain::entity::EntityId,
+    )> = {
         let mut query = world.query::<(Entity, &MobRef, &NetEntityId)>();
         query
             .iter(world)

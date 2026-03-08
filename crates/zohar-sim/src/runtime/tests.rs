@@ -7,6 +7,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 
+use super::players::map_has_players;
+use super::state::{
+    ChatIntent, ChatIntentQueue, LocalTransform, MapPendingMovements, MapSpawnRules, MobMarker,
+    MoveIntent, MoveIntentQueue, NetEntityId, PlayerIndex, RuntimeState, WanderState,
+};
+use super::util::sample_player_motion_at;
 use crate::api::{ClientIntent, PlayerEvent};
 use crate::bridge::{ClientIntentMsg, EnterMsg, InboundEvent, LeaveMsg, MapEventSender};
 use crate::motion::EntityMotionSpeedTable;
@@ -14,34 +20,41 @@ use crate::outbox::PlayerOutbox;
 use crate::types::MapInstanceKey;
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::{LocalPos, LocalSize};
+use zohar_domain::entity::mob::spawn::{
+    Direction, FacingStrategy, SpawnArea, SpawnRuleDef, SpawnTemplate,
+};
+use zohar_domain::entity::mob::{MobId, MobKind, MobPrototypeDef, MobRank};
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
-use zohar_domain::mob::{
-    Direction, FacingStrategy, MobPrototypeDef, SpawnArea, SpawnRuleDef, SpawnTemplate,
-};
-use zohar_domain::{MapId, MobId, MobKind, MobRank};
-
-use super::players::map_has_players;
-use super::state::{
-    ChatIntent, ChatIntentQueue, LocalTransform, MapPendingMovements, MapSpawnRules, MobMarker,
-    MoveIntent, MoveIntentQueue, NetEntityId, PlayerIndex, RuntimeState, WanderState,
-};
-use super::util::sample_player_motion_at;
+use zohar_domain::{BehaviorFlags, MapId};
 
 fn test_configs(map_key: MapInstanceKey) -> (SharedConfig, MapConfig) {
     (
         SharedConfig {
             motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
             mobs: Arc::new(HashMap::new()),
-            monster_wander: MonsterWanderConfig::default(),
+            wander: WanderConfig::default(),
             mob_chat: Arc::new(MobChatContent::default()),
         },
         MapConfig {
             map_key,
             empire: None,
+            local_size: LocalSize::new(16_384.0, 16_384.0),
             spawn_rules: Vec::new(),
         },
     )
+}
+
+fn test_wander_config(step_min_m: f32, step_max_m: f32) -> WanderConfig {
+    WanderConfig {
+        decision_pause_idle_min: Duration::ZERO,
+        decision_pause_idle_max: Duration::ZERO,
+        post_move_pause_min: Duration::ZERO,
+        post_move_pause_max: Duration::ZERO,
+        wander_chance_denominator: 1,
+        step_min_m,
+        step_max_m,
+    }
 }
 
 fn advance_tick(app: &mut bevy::prelude::App) {
@@ -175,6 +188,7 @@ fn simulation_plugin_preloads_map_spawns() {
             level: 1,
             move_speed: 100,
             attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }),
     );
@@ -202,6 +216,7 @@ fn simulation_plugin_preloads_map_spawns() {
         .get::<MapSpawnRules>()
         .expect("spawn rules attached");
     assert_eq!(spawn_rules.rules.len(), 1);
+    assert_eq!(spawn_rules.rules[0].active_instances, 3);
     assert_eq!(spawn_rules.rules[0].entities.len(), 3);
     assert!(spawn_rules.scheduled_spawns.is_empty());
 
@@ -211,6 +226,147 @@ fn simulation_plugin_preloads_map_spawns() {
         mob_query.iter(world).count()
     };
     assert_eq!(mob_count, 3);
+}
+
+#[test]
+fn simulation_plugin_preloads_full_group_for_single_group_instance() {
+    let map_id = MapId::new(41);
+    let leader_id = MobId::new(20025);
+    let pony_id = MobId::new(20029);
+    let horse_id = MobId::new(20030);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Group(Arc::from([
+            leader_id, pony_id, pony_id, horse_id, horse_id,
+        ])),
+        area: SpawnArea::new(LocalPos::new(714.0, 566.0), LocalSize::new(1.0, 1.0)),
+        facing: FacingStrategy::Random,
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+
+    for mob_id in [leader_id, pony_id, horse_id] {
+        Arc::make_mut(&mut shared.mobs).insert(
+            mob_id,
+            Arc::new(MobPrototypeDef {
+                mob_id,
+                mob_kind: MobKind::Npc,
+                name: format!("mob_{mob_id:?}"),
+                rank: MobRank::Pawn,
+                level: 1,
+                move_speed: 100,
+                attack_speed: 100,
+                bhv_flags: BehaviorFlags::empty(),
+                empire: None,
+            }),
+        );
+    }
+
+    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
+    let mut app = bevy::prelude::App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    app.update();
+
+    let map_entity = app
+        .world()
+        .resource::<RuntimeState>()
+        .map_entity
+        .expect("map entity initialized");
+    let spawn_rules = app
+        .world()
+        .entity(map_entity)
+        .get::<MapSpawnRules>()
+        .expect("spawn rules attached");
+    assert_eq!(spawn_rules.rules.len(), 1);
+    assert_eq!(spawn_rules.rules[0].active_instances, 1);
+    assert_eq!(spawn_rules.rules[0].entities.len(), 5);
+    assert!(spawn_rules.scheduled_spawns.is_empty());
+
+    let mut counts = HashMap::<MobId, usize>::new();
+    let world = app.world_mut();
+    let mut mob_query = world.query::<&super::state::MobRef>();
+    for mob_ref in mob_query.iter(world) {
+        *counts.entry(mob_ref.mob_id).or_default() += 1;
+    }
+
+    assert_eq!(counts.get(&leader_id), Some(&1));
+    assert_eq!(counts.get(&pony_id), Some(&2));
+    assert_eq!(counts.get(&horse_id), Some(&2));
+}
+
+#[test]
+fn grouped_spawn_near_map_edge_keeps_all_members_in_bounds() {
+    let map_id = MapId::new(41);
+    let leader_id = MobId::new(20025);
+    let follower_id = MobId::new(20029);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(4.0, 4.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Group(Arc::from([leader_id, follower_id, follower_id])),
+        area: SpawnArea::new(LocalPos::new(0.0, 0.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Random,
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+
+    for mob_id in [leader_id, follower_id] {
+        Arc::make_mut(&mut shared.mobs).insert(
+            mob_id,
+            Arc::new(MobPrototypeDef {
+                mob_id,
+                mob_kind: MobKind::Npc,
+                name: format!("mob_{mob_id:?}"),
+                rank: MobRank::Pawn,
+                level: 1,
+                move_speed: 100,
+                attack_speed: 100,
+                bhv_flags: BehaviorFlags::empty(),
+                empire: None,
+            }),
+        );
+    }
+
+    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
+    let mut app = bevy::prelude::App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    app.update();
+
+    let world = app.world_mut();
+    let mut mob_query = world.query::<(&super::state::MobRef, &LocalTransform)>();
+    let positions: Vec<(MobId, LocalPos)> = mob_query
+        .iter(world)
+        .map(|(mob_ref, transform)| (mob_ref.mob_id, transform.pos))
+        .collect();
+
+    assert_eq!(positions.len(), 3, "all grouped members should spawn");
+    for (_, pos) in &positions {
+        assert!(
+            pos.x >= 0.0 && pos.x < 4.0 && pos.y >= 0.0 && pos.y < 4.0,
+            "grouped spawn member must stay within map bounds: {pos:?}"
+        );
+    }
+    assert!(
+        positions
+            .iter()
+            .all(|(_, pos)| *pos == LocalPos::new(0.0, 0.0)),
+        "zero-area edge spawn should keep grouped members inside the authored spawn area"
+    );
 }
 
 #[test]
@@ -236,6 +392,7 @@ fn simulation_plugin_applies_fixed_spawn_facing_rotation() {
             level: 1,
             move_speed: 100,
             attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }),
     );
@@ -277,15 +434,7 @@ fn monster_wander_advances_without_players_at_idle_rate() {
         max_count: 1,
         regen_time: Duration::from_secs(60),
     }));
-    shared.monster_wander = MonsterWanderConfig {
-        decision_pause_idle_min: Duration::ZERO,
-        decision_pause_idle_max: Duration::ZERO,
-        post_move_pause_min: Duration::ZERO,
-        post_move_pause_max: Duration::ZERO,
-        wander_chance_denominator: 1,
-        step_min_m: 5.0,
-        step_max_m: 5.0,
-    };
+    shared.wander = test_wander_config(5.0, 5.0);
     Arc::make_mut(&mut shared.mobs).insert(
         mob_id,
         Arc::new(MobPrototypeDef {
@@ -296,6 +445,7 @@ fn monster_wander_advances_without_players_at_idle_rate() {
             level: 1,
             move_speed: 100,
             attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }),
     );
@@ -353,15 +503,7 @@ fn monster_wander_emits_wait_with_duration() {
         max_count: 1,
         regen_time: Duration::from_secs(60),
     }));
-    shared.monster_wander = MonsterWanderConfig {
-        decision_pause_idle_min: Duration::ZERO,
-        decision_pause_idle_max: Duration::ZERO,
-        post_move_pause_min: Duration::ZERO,
-        post_move_pause_max: Duration::ZERO,
-        wander_chance_denominator: 1,
-        step_min_m: 5.0,
-        step_max_m: 5.0,
-    };
+    shared.wander = test_wander_config(5.0, 5.0);
     Arc::make_mut(&mut shared.mobs).insert(
         mob_id,
         Arc::new(MobPrototypeDef {
@@ -372,6 +514,7 @@ fn monster_wander_emits_wait_with_duration() {
             level: 1,
             move_speed: 100,
             attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }),
     );
@@ -425,14 +568,10 @@ fn monster_wander_does_not_emit_terminal_wait_packet() {
         max_count: 1,
         regen_time: Duration::from_secs(60),
     }));
-    shared.monster_wander = MonsterWanderConfig {
-        decision_pause_idle_min: Duration::ZERO,
-        decision_pause_idle_max: Duration::ZERO,
+    shared.wander = WanderConfig {
         post_move_pause_min: Duration::from_secs(10),
         post_move_pause_max: Duration::from_secs(10),
-        wander_chance_denominator: 1,
-        step_min_m: 5.0,
-        step_max_m: 5.0,
+        ..test_wander_config(5.0, 5.0)
     };
     Arc::make_mut(&mut shared.mobs).insert(
         mob_id,
@@ -444,6 +583,7 @@ fn monster_wander_does_not_emit_terminal_wait_packet() {
             level: 1,
             move_speed: 100,
             attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }),
     );
@@ -526,6 +666,407 @@ fn monster_wander_does_not_emit_terminal_wait_packet() {
         Some(None),
         "mob pending wait should be cleared after wait expiry"
     );
+}
+
+#[test]
+fn movable_npc_gets_wander_state_and_moves() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(20_041);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Random,
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    shared.wander = test_wander_config(3.0, 3.0);
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        Arc::new(MobPrototypeDef {
+            mob_id,
+            mob_kind: MobKind::Npc,
+            name: "beggar".to_string(),
+            rank: MobRank::King,
+            level: 1,
+            move_speed: 100,
+            attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
+            empire: None,
+        }),
+    );
+
+    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
+    let mut app = bevy::prelude::App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    app.update();
+
+    let (before, has_wander_state) = {
+        let world = app.world_mut();
+        let mut q = world.query::<(&MobMarker, &LocalTransform, Option<&WanderState>)>();
+        q.iter(world)
+            .next()
+            .map(|(_, transform, wander)| (transform.pos, wander.is_some()))
+            .expect("npc position")
+    };
+    assert!(has_wander_state, "movable NPC should get WanderState");
+
+    for _ in 0..3 {
+        advance_tick(&mut app);
+    }
+
+    let after = {
+        let world = app.world_mut();
+        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
+        q.iter(world)
+            .next()
+            .map(|(_, transform)| transform.pos)
+            .expect("npc position after idle ticks")
+    };
+
+    assert!(
+        (before.x - after.x).abs() > f32::EPSILON || (before.y - after.y).abs() > f32::EPSILON,
+        "movable NPC should wander"
+    );
+}
+
+#[test]
+fn nomove_npc_does_not_get_wander_state_or_move() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(20_349);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Random,
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    shared.wander = test_wander_config(3.0, 3.0);
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        Arc::new(MobPrototypeDef {
+            mob_id,
+            mob_kind: MobKind::Npc,
+            name: "stable boy".to_string(),
+            rank: MobRank::King,
+            level: 70,
+            move_speed: 100,
+            attack_speed: 100,
+            bhv_flags: BehaviorFlags::NO_MOVE,
+            empire: None,
+        }),
+    );
+
+    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
+    let mut app = bevy::prelude::App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    app.update();
+
+    let (before, has_wander_state) = {
+        let world = app.world_mut();
+        let mut q = world.query::<(&MobMarker, &LocalTransform, Option<&WanderState>)>();
+        q.iter(world)
+            .next()
+            .map(|(_, transform, wander)| (transform.pos, wander.is_some()))
+            .expect("npc position")
+    };
+    assert!(!has_wander_state, "NOMOVE NPC should not get WanderState");
+
+    for _ in 0..3 {
+        advance_tick(&mut app);
+    }
+
+    let after = {
+        let world = app.world_mut();
+        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
+        q.iter(world)
+            .next()
+            .map(|(_, transform)| transform.pos)
+            .expect("npc position after idle ticks")
+    };
+
+    assert_eq!(before, after, "NOMOVE NPC must stay fixed");
+}
+
+#[test]
+fn idle_wander_can_leave_original_spawn_bounds() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(20_029);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Random,
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    shared.wander = test_wander_config(7.0, 7.0);
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        Arc::new(MobPrototypeDef {
+            mob_id,
+            mob_kind: MobKind::Npc,
+            name: "pony".to_string(),
+            rank: MobRank::King,
+            level: 1,
+            move_speed: 100,
+            attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
+            empire: None,
+        }),
+    );
+
+    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
+    let mut app = bevy::prelude::App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    app.update();
+    app.world_mut().resource_mut::<RuntimeState>().rng = SmallRng::seed_from_u64(0xC0FFEE);
+
+    let spawn_pos = {
+        let world = app.world_mut();
+        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
+        q.iter(world)
+            .next()
+            .map(|(_, transform)| transform.pos)
+            .expect("npc position after spawn")
+    };
+
+    let mut max_distance = 0.0f32;
+    for step in 0..12 {
+        run_pre_update(&mut app);
+        run_fixed_first(&mut app);
+        app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = 10_000 * (step + 1);
+        run_fixed_update(&mut app);
+        run_fixed_post_update(&mut app);
+        let pos = {
+            let world = app.world_mut();
+            let mut q = world.query::<(&MobMarker, &LocalTransform)>();
+            q.iter(world)
+                .next()
+                .map(|(_, transform)| transform.pos)
+                .expect("npc position after wander tick")
+        };
+        max_distance = max_distance.max((pos - spawn_pos).length());
+    }
+
+    assert!(
+        max_distance > 10.0,
+        "wander should be able to leave the original zero-area spawn bounds, max_distance={max_distance}"
+    );
+}
+
+#[test]
+fn invalid_idle_wander_sample_skips_movement_and_reschedules() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(4.0, 4.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Random,
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    shared.wander = test_wander_config(7.0, 7.0);
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        Arc::new(MobPrototypeDef {
+            mob_id,
+            mob_kind: MobKind::Monster,
+            name: "test_mob".to_string(),
+            rank: MobRank::Pawn,
+            level: 1,
+            move_speed: 100,
+            attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
+            empire: None,
+        }),
+    );
+
+    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
+    let mut app = bevy::prelude::App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    app.update();
+
+    let before = {
+        let world = app.world_mut();
+        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
+        q.iter(world)
+            .next()
+            .map(|(_, transform)| transform.pos)
+            .expect("mob position")
+    };
+
+    run_pre_update(&mut app);
+    run_fixed_first(&mut app);
+    run_fixed_update(&mut app);
+
+    let after = {
+        let world = app.world_mut();
+        let mut q = world.query::<(&MobMarker, &LocalTransform, &WanderState)>();
+        q.iter(world)
+            .next()
+            .map(|(_, transform, wander)| (transform.pos, wander.0))
+            .expect("mob position after invalid wander")
+    };
+    assert_eq!(
+        before, after.0,
+        "invalid wander sample must not move the mob"
+    );
+    assert!(
+        after.1.pending_wait_at_ms.is_none(),
+        "invalid wander sample must not start a movement wait"
+    );
+    assert!(
+        after.1.next_decision_at_ms >= app.world().resource::<RuntimeState>().sim_time_ms,
+        "invalid wander sample must reschedule the next decision"
+    );
+
+    let map_entity = app
+        .world()
+        .resource::<RuntimeState>()
+        .map_entity
+        .expect("map entity initialized");
+    let pending = app
+        .world()
+        .entity(map_entity)
+        .get::<MapPendingMovements>()
+        .expect("map pending movements attached");
+    assert!(
+        pending.0.is_empty(),
+        "invalid wander sample must not enqueue movement packets"
+    );
+}
+
+#[test]
+fn zero_distance_idle_wander_reschedules_without_packet() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Random,
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    shared.wander = test_wander_config(0.0, 0.0);
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        Arc::new(MobPrototypeDef {
+            mob_id,
+            mob_kind: MobKind::Monster,
+            name: "test_mob".to_string(),
+            rank: MobRank::Pawn,
+            level: 1,
+            move_speed: 100,
+            attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
+            empire: None,
+        }),
+    );
+
+    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
+    let mut app = bevy::prelude::App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    app.update();
+
+    run_pre_update(&mut app);
+    run_fixed_first(&mut app);
+    run_fixed_update(&mut app);
+
+    let map_entity = app
+        .world()
+        .resource::<RuntimeState>()
+        .map_entity
+        .expect("map entity initialized");
+    let pending = app
+        .world()
+        .entity(map_entity)
+        .get::<MapPendingMovements>()
+        .expect("map pending movements attached");
+    assert!(
+        pending.0.is_empty(),
+        "zero-distance idle wander must not emit movement packets"
+    );
+
+    let wander = {
+        let world = app.world_mut();
+        let mut q = world.query::<(&MobMarker, &WanderState)>();
+        q.iter(world)
+            .next()
+            .map(|(_, wander)| wander.0)
+            .expect("wander state")
+    };
+    assert!(wander.pending_wait_at_ms.is_none());
+    assert!(
+        wander.next_decision_at_ms >= app.world().resource::<RuntimeState>().sim_time_ms,
+        "zero-distance idle wander must reschedule the next decision"
+    );
+}
+
+#[test]
+fn wander_validator_checks_midpoint_and_endpoint_against_map_bounds() {
+    let map_size = LocalSize::new(10.0, 10.0);
+    let current = LocalPos::new(5.0, 5.0);
+
+    assert!(super::wander::is_wander_target_allowed(
+        map_size,
+        current,
+        LocalPos::new(8.0, 8.0),
+    ));
+    assert!(!super::wander::is_wander_target_allowed(
+        map_size,
+        current,
+        LocalPos::new(10.0, 8.0),
+    ));
+    assert!(!super::wander::is_wander_target_allowed(
+        map_size,
+        current,
+        LocalPos::new(8.0, -0.1),
+    ));
 }
 
 #[test]
@@ -1223,6 +1764,7 @@ fn monster_idle_chat_uses_strategy_and_sender_identity() {
             level: 1,
             move_speed: 100,
             attack_speed: 100,
+            bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }),
     );

@@ -1,3 +1,4 @@
+pub mod mob;
 pub mod player;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

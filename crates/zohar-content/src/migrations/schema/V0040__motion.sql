@@ -10,9 +10,10 @@ CREATE TABLE motion_entity (
 );
 
 CREATE TABLE motion_entity_mob (
-  motion_entity_id INTEGER PRIMARY KEY REFERENCES motion_entity(motion_entity_id),
-  mob_id INTEGER NOT NULL UNIQUE REFERENCES mob_proto(mob_id)
+  motion_entity_id INTEGER NOT NULL REFERENCES motion_entity(motion_entity_id),
+  mob_id INTEGER PRIMARY KEY REFERENCES mob_proto(mob_id)
 );
+CREATE INDEX motion_entity_mob_entity_idx ON motion_entity_mob(motion_entity_id);
 
 CREATE TABLE player_motion_profile (
   profile_id INTEGER PRIMARY KEY,

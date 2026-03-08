@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use std::sync::Arc;
 use zohar_content::ContentRuntimeBuilder;
 use zohar_gamesrv::ContentCoords;
-use zohar_sim::{MapConfig, MapInstanceKey, MonsterWanderConfig, SharedConfig};
+use zohar_sim::{MapConfig, MapInstanceKey, SharedConfig, WanderConfig};
 
 pub(crate) struct LoadedContent {
     pub(crate) coords: Arc<ContentCoords>,
@@ -40,12 +40,15 @@ pub(crate) fn load_content(
     let shared_config = SharedConfig {
         motion_speeds: entity_motion_speeds,
         mobs: all_mobs,
-        monster_wander: MonsterWanderConfig::default(),
+        wander: WanderConfig::default(),
         mob_chat,
     };
     let map_config = MapConfig {
         map_key,
         empire: all_empires.get(&map_id).copied().flatten(),
+        local_size: coords
+            .map_local_size(map_id)
+            .ok_or_else(|| anyhow!("missing local bounds for map '{}'", config.map))?,
         spawn_rules: all_spawn_rules.get(&map_id).cloned().unwrap_or_default(),
     };
 

@@ -1,18 +1,19 @@
-use bevy::prelude::*;
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
-use zohar_domain::mob::{FacingStrategy, SpawnRule};
-use zohar_domain::{MobId, MobKind};
-
 use super::state::{
-    MapEmpire, MapMarker, MapPendingLocalChats, MapPendingMovements, MapReplication, MapSpatial,
-    MapSpawnRules, MobMarker, MobRef, NetEntityId, NetEntityIndex, RuntimeState, SharedConfig,
-    SpawnRuleState, StartupReadySignal, WanderState,
+    LocalTransform, MapEmpire, MapMarker, MapPendingLocalChats, MapPendingMovements,
+    MapReplication, MapSpatial, MapSpawnRules, MobMarker, MobRef, NetEntityId, NetEntityIndex,
+    RuntimeState, SharedConfig, SpawnRuleState, StartupReadySignal, WanderState, WanderStateData,
 };
 use super::util::{
-    degrees_to_protocol_rot, expand_spawn_template, next_entity_id, random_idle_decision_delay,
+    degrees_to_protocol_rot, expand_spawn_template, next_entity_id, random_duration_between_ms,
     random_protocol_rot,
 };
+use bevy::prelude::*;
+use rand::RngExt;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
+use zohar_domain::coords::{LocalBox, LocalBoxExt, LocalPos, LocalSize};
+use zohar_domain::entity::mob::MobId;
+use zohar_domain::entity::mob::spawn::{FacingStrategy, SpawnRule};
 
 pub(super) fn bootstrap_map_runtime(world: &mut World) {
     let map_config = world.resource::<super::state::MapConfig>();
@@ -23,6 +24,7 @@ pub(super) fn bootstrap_map_runtime(world: &mut World) {
     for (idx, rule) in map_config.spawn_rules.iter().cloned().enumerate() {
         rules.push(SpawnRuleState {
             rule,
+            active_instances: 0,
             entities: HashSet::new(),
             respawn_at_ms: Some(sim_time_ms),
         });
@@ -101,7 +103,7 @@ pub(super) fn spawn_rules(world: &mut World) {
                         let rule_state = &mut spawn_rules.rules[rule_index];
                         if rule_state.respawn_at_ms != Some(respawn_at_ms) {
                             false
-                        } else if rule_state.entities.len() >= rule_state.rule.max_count {
+                        } else if rule_state.active_instances >= rule_state.rule.max_count {
                             rule_state.respawn_at_ms = None;
                             false
                         } else {
@@ -123,7 +125,7 @@ pub(super) fn spawn_rules(world: &mut World) {
             };
             (
                 spawn_rules.rules[rule_index].rule.clone(),
-                spawn_rules.rules[rule_index].entities.len(),
+                spawn_rules.rules[rule_index].active_instances,
             )
         };
 
@@ -131,31 +133,20 @@ pub(super) fn spawn_rules(world: &mut World) {
         let mut remaining_for_rule_tick = remaining_for_rule;
 
         while remaining_for_rule_tick > 0 {
-            let mob_ids = {
-                let mut state = world.resource_mut::<RuntimeState>();
-                expand_spawn_template(&rule.template, &mut state.rng)
-            };
-            if mob_ids.is_empty() {
+            let before_group_budget = remaining_for_rule_tick;
+            let spawned_entities = spawn_one_template(world, map_entity, &shared, &rule);
+            if spawned_entities.is_empty() {
                 break;
             }
-            let before_group_budget = remaining_for_rule_tick;
-            for mob_id in mob_ids {
-                if remaining_for_rule_tick == 0 {
-                    break;
-                }
 
-                let Some(entity_id) = spawn_one_mob(world, map_entity, &shared, &rule, mob_id)
-                else {
-                    continue;
-                };
-
-                let mut map_ent = world.entity_mut(map_entity);
-                let Some(mut spawn_rules) = map_ent.get_mut::<MapSpawnRules>() else {
-                    continue;
-                };
-                spawn_rules.rules[rule_index].entities.insert(entity_id);
-                remaining_for_rule_tick = remaining_for_rule_tick.saturating_sub(1);
-            }
+            let mut map_ent = world.entity_mut(map_entity);
+            let Some(mut spawn_rules) = map_ent.get_mut::<MapSpawnRules>() else {
+                continue;
+            };
+            let rule_state = &mut spawn_rules.rules[rule_index];
+            rule_state.entities.extend(spawned_entities);
+            rule_state.active_instances = rule_state.active_instances.saturating_add(1);
+            remaining_for_rule_tick = remaining_for_rule_tick.saturating_sub(1);
 
             if remaining_for_rule_tick == before_group_budget {
                 break;
@@ -167,7 +158,7 @@ pub(super) fn spawn_rules(world: &mut World) {
             let Some(mut spawn_rules) = map_ent.get_mut::<MapSpawnRules>() else {
                 continue;
             };
-            let current = spawn_rules.rules[rule_index].entities.len();
+            let current = spawn_rules.rules[rule_index].active_instances;
             let target = spawn_rules.rules[rule_index].rule.max_count;
             if current < target {
                 let retry_at = sim_time_ms.saturating_add(1);
@@ -206,7 +197,7 @@ pub(super) fn preload_map_to_spawn_cap_world(world: &mut World) {
                 let rule_state = &spawn_rules.rules[rule_index];
                 (
                     rule_state.rule.clone(),
-                    rule_state.entities.len(),
+                    rule_state.active_instances,
                     rule_state.rule.max_count,
                 )
             };
@@ -214,37 +205,26 @@ pub(super) fn preload_map_to_spawn_cap_world(world: &mut World) {
                 break;
             }
 
-            let mob_ids = {
-                let mut state = world.resource_mut::<RuntimeState>();
-                expand_spawn_template(&rule.template, &mut state.rng)
-            };
-            if mob_ids.is_empty() {
+            let current_count = world
+                .entity(map_entity)
+                .get::<MapSpawnRules>()
+                .map(|r| r.rules[rule_index].active_instances)
+                .unwrap_or(0);
+            if current_count >= target {
                 break;
             }
 
-            let mut spawned = 0usize;
-            for mob_id in mob_ids {
-                let current_count = world
-                    .entity(map_entity)
-                    .get::<MapSpawnRules>()
-                    .map(|r| r.rules[rule_index].entities.len())
-                    .unwrap_or(0);
-                if current_count >= target {
-                    break;
-                }
+            let spawned_entities = spawn_one_template(world, map_entity, &shared, &rule);
+            if spawned_entities.is_empty() {
+                break;
+            }
 
-                let Some(entity_id) = spawn_one_mob(world, map_entity, &shared, &rule, mob_id)
-                else {
-                    continue;
-                };
-
-                if let Some(mut spawn_rules) =
-                    world.entity_mut(map_entity).get_mut::<MapSpawnRules>()
-                {
-                    spawn_rules.rules[rule_index].entities.insert(entity_id);
-                }
-
-                spawned = spawned.saturating_add(1);
+            let mut spawned: usize = 0;
+            if let Some(mut spawn_rules) = world.entity_mut(map_entity).get_mut::<MapSpawnRules>() {
+                let rule_state = &mut spawn_rules.rules[rule_index];
+                rule_state.entities.extend(spawned_entities);
+                rule_state.active_instances = rule_state.active_instances.saturating_add(1);
+                spawned = 1;
             }
 
             if spawned == 0 {
@@ -261,35 +241,85 @@ pub(super) fn preload_map_to_spawn_cap_world(world: &mut World) {
     }
 }
 
-fn spawn_one_mob(
+fn spawn_one_template(
     world: &mut World,
     map_entity: Entity,
     shared: &SharedConfig,
     rule: &SpawnRule,
+) -> Vec<zohar_domain::entity::EntityId> {
+    let map_bounds = map_local_bounds(world.resource::<super::state::MapConfig>().local_size);
+    let mob_ids = {
+        let mut state = world.resource_mut::<RuntimeState>();
+        expand_spawn_template(&rule.template, &mut state.rng)
+    };
+    let mut spawned_entities = Vec::with_capacity(mob_ids.len());
+    let mut previous_pos = None;
+
+    for mob_id in mob_ids {
+        let Some((pos, rot)) = ({
+            let mut state = world.resource_mut::<RuntimeState>();
+            let allowed_bounds = match previous_pos {
+                Some(prev_pos) => {
+                    let chained_bounds = chained_group_member_bounds(prev_pos, &mut state);
+                    rule.area
+                        .bounds
+                        .intersect(chained_bounds)
+                        .and_then(|bounds| bounds.intersect(map_bounds))
+                }
+                None => rule.area.bounds.intersect(map_bounds),
+            };
+            let pos = allowed_bounds.map(|bounds| bounds.sample_pos(&mut state.rng));
+            let rot = match rule.facing {
+                FacingStrategy::Random => random_protocol_rot(&mut state.rng),
+                FacingStrategy::Fixed(direction) => degrees_to_protocol_rot(direction.to_angle()),
+            };
+            pos.map(|pos| (pos, rot))
+        }) else {
+            if previous_pos.is_none() {
+                return Vec::new();
+            }
+            continue;
+        };
+
+        let Some(entity_id) = spawn_one_mob(world, map_entity, shared, rule, mob_id, pos, rot)
+        else {
+            if previous_pos.is_none() {
+                return Vec::new();
+            }
+            continue;
+        };
+
+        spawned_entities.push(entity_id);
+        previous_pos = Some(pos);
+    }
+
+    spawned_entities
+}
+
+fn spawn_one_mob(
+    world: &mut World,
+    map_entity: Entity,
+    shared: &SharedConfig,
+    _rule: &SpawnRule,
     mob_id: MobId,
+    pos: LocalPos,
+    rot: u8,
 ) -> Option<zohar_domain::entity::EntityId> {
     let proto = shared.mobs.get(&mob_id)?;
 
-    let (entity_id, pos, rot, wander) = {
+    let (entity_id, wander) = {
         let mut state = world.resource_mut::<RuntimeState>();
         let entity_id = next_entity_id(&mut state);
-        let pos = rule.area.random_point(&mut state.rng);
-        let rot = match rule.facing {
-            FacingStrategy::Random => random_protocol_rot(&mut state.rng),
-            FacingStrategy::Fixed(direction) => degrees_to_protocol_rot(direction.to_angle()),
-        };
-        let wander = if proto.mob_kind == MobKind::Monster {
-            Some(super::state::MonsterWanderState {
-                next_decision_at_ms: state.sim_time_ms.saturating_add(random_idle_decision_delay(
-                    &mut state.rng,
-                    &shared.monster_wander,
-                )),
-                pending_wait_at_ms: None,
-            })
-        } else {
-            None
-        };
-        (entity_id, pos, rot, wander)
+        let wander = proto.bhv_flags.can_wander().then(|| WanderStateData {
+            next_decision_at_ms: state.sim_time_ms.saturating_add(random_duration_between_ms(
+                &mut state.rng,
+                shared.wander.decision_pause_idle_min,
+                shared.wander.decision_pause_idle_max,
+            )),
+            pending_wait_at_ms: None,
+        });
+
+        (entity_id, wander)
     };
 
     if let Some(mut spatial) = world.entity_mut(map_entity).get_mut::<MapSpatial>() {
@@ -300,7 +330,7 @@ fn spawn_one_mob(
         MobMarker,
         NetEntityId { net_id: entity_id },
         MobRef { mob_id },
-        super::state::LocalTransform { pos, rot },
+        LocalTransform { pos, rot },
     ));
     if let Some(wander) = wander {
         mob_cmd.insert(WanderState(wander));
@@ -313,4 +343,17 @@ fn spawn_one_mob(
         .insert(entity_id, mob_entity);
 
     Some(entity_id)
+}
+
+fn chained_group_member_bounds(pos: LocalPos, state: &mut RuntimeState) -> LocalBox {
+    let extent_x = state.rng.random_range(3.0..=5.0);
+    let extent_y = state.rng.random_range(3.0..=5.0);
+    LocalBox::from_center_half_extent(pos, LocalSize::new(extent_x, extent_y))
+}
+
+fn map_local_bounds(local_size: LocalSize) -> LocalBox {
+    LocalBox::new(
+        LocalPos::new(0.0, 0.0),
+        LocalPos::new(local_size.width, local_size.height),
+    )
 }

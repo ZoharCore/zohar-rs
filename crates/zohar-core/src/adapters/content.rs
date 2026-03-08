@@ -4,19 +4,21 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 use zohar_content::types::ContentCatalog;
-use zohar_content::types::mobs::{MobRank as ContentMobRank, MobType};
+use zohar_content::types::mobs::{MobAiFlags, MobRank as ContentMobRank, MobType};
 use zohar_content::types::motion::{
     MotionAction as ContentMotionAction, MotionEntityKind, MotionMode,
 };
 use zohar_content::types::player::{Gender as ContentGender, PlayerClass as ContentPlayerClass};
 use zohar_content::types::spawns::{SpawnTarget, SpawnType as ContentSpawnType};
 use zohar_domain::coords::{LocalPos, LocalSize};
-use zohar_domain::entity::player::{PlayerClass, PlayerGender};
-use zohar_domain::mob::{
-    Direction, FacingStrategy, MobPrototype, MobPrototypeDef, SpawnArea, SpawnRule, SpawnRuleDef,
-    SpawnTemplate, WeightedGroupChoice,
+use zohar_domain::entity::mob::spawn::{
+    Direction, FacingStrategy, SpawnArea, SpawnRule, SpawnRuleDef, SpawnTemplate,
+    WeightedGroupChoice,
 };
-use zohar_domain::{DefId, MapId, MobId, MobKind, MobRank};
+use zohar_domain::entity::mob::{MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank};
+use zohar_domain::entity::player::{PlayerClass, PlayerGender};
+use zohar_domain::util::FlagsMapper;
+use zohar_domain::{BehaviorFlags, DefId, MapId};
 use zohar_sim::{
     EntityMotionSpeedTable, MobChatContent, MobChatLine, MobChatStrategyInterval, MotionEntityKey,
     MotionMoveMode, PlayerMotionProfileKey,
@@ -60,9 +62,10 @@ pub(crate) fn build_entity_motion_speeds(catalog: &ContentCatalog) -> EntityMoti
                 let Some(raw_mob_id) = motion.mob_id else {
                     continue;
                 };
-                let Some(mob_id) =
-                    def_id_from_i64::<zohar_domain::MobDefTag>(raw_mob_id, "motion.mob_id")
-                else {
+                let Some(mob_id) = def_id_from_i64::<zohar_domain::entity::mob::MobDefTag>(
+                    raw_mob_id,
+                    "motion.mob_id",
+                ) else {
                     continue;
                 };
                 MotionEntityKey::Mob(mob_id)
@@ -97,7 +100,8 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
     let mut mob_proto: HashMap<MobId, MobPrototype> = HashMap::new();
 
     for mob in &catalog.mobs {
-        let Some(mob_id) = def_id_from_i64::<zohar_domain::MobDefTag>(mob.mob_id, "mobs.mob_id")
+        let Some(mob_id) =
+            def_id_from_i64::<zohar_domain::entity::mob::MobDefTag>(mob.mob_id, "mobs.mob_id")
         else {
             continue;
         };
@@ -120,6 +124,7 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
             level: mob.level as u32,
             move_speed: mob.move_speed as u8,
             attack_speed: mob.attack_speed as u8,
+            bhv_flags: mob.ai_flags.to_domain(),
             empire: None, // TODO FUTURE: add support for mob empires in catalog
         });
 
@@ -128,7 +133,6 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
 
     mob_proto
 }
-
 pub(crate) fn build_mob_chat_content(catalog: &ContentCatalog) -> MobChatContent {
     let mut out = MobChatContent::default();
 
@@ -176,7 +180,7 @@ pub(crate) fn build_mob_chat_content(catalog: &ContentCatalog) -> MobChatContent
                     .insert((strategy.chat_context.clone(), mob_kind), interval);
             }
             (None, Some(raw_mob_id)) => {
-                let Some(mob_id) = def_id_from_i64::<zohar_domain::MobDefTag>(
+                let Some(mob_id) = def_id_from_i64::<zohar_domain::entity::mob::MobDefTag>(
                     raw_mob_id,
                     "mob_chat_strategy.mob_id",
                 ) else {
@@ -198,9 +202,10 @@ pub(crate) fn build_mob_chat_content(catalog: &ContentCatalog) -> MobChatContent
         if line.source_key.trim().is_empty() {
             continue;
         }
-        let Some(mob_id) =
-            def_id_from_i64::<zohar_domain::MobDefTag>(line.mob_id, "mob_chat_line.mob_id")
-        else {
+        let Some(mob_id) = def_id_from_i64::<zohar_domain::entity::mob::MobDefTag>(
+            line.mob_id,
+            "mob_chat_line.mob_id",
+        ) else {
             continue;
         };
         out.lines_by_mob
@@ -235,7 +240,10 @@ pub(crate) fn build_spawn_rules(catalog: &ContentCatalog) -> HashMap<MapId, Vec<
                 .entries
                 .iter()
                 .filter_map(|entry| {
-                    def_id_from_i64::<zohar_domain::MobDefTag>(entry.mob_id, "mob_groups.mob_id")
+                    def_id_from_i64::<zohar_domain::entity::mob::MobDefTag>(
+                        entry.mob_id,
+                        "mob_groups.mob_id",
+                    )
                 })
                 .collect();
             (group.group_id, Arc::from(members))
@@ -271,9 +279,10 @@ pub(crate) fn build_spawn_rules(catalog: &ContentCatalog) -> HashMap<MapId, Vec<
 
         let template = match (&spawn.target, spawn.spawn_type) {
             (SpawnTarget::Mob(raw_mob_id), _) => {
-                let Some(mob_id) =
-                    def_id_from_i64::<zohar_domain::MobDefTag>(*raw_mob_id, "spawn_rules.mob_id")
-                else {
+                let Some(mob_id) = def_id_from_i64::<zohar_domain::entity::mob::MobDefTag>(
+                    *raw_mob_id,
+                    "spawn_rules.mob_id",
+                ) else {
                     warn!(?spawn, "Invalid mob id in spawn rule, skipping");
                     continue;
                 };
@@ -399,13 +408,24 @@ impl ToDomain<MobRank> for ContentMobRank {
 
 impl ToDomain<Option<MobKind>> for MobType {
     fn to_domain(self) -> Option<MobKind> {
-        match self {
-            MobType::Npc => Some(MobKind::Npc),
-            MobType::Monster => Some(MobKind::Monster),
-            MobType::Stone => Some(MobKind::Stone),
-            MobType::Warp => Some(MobKind::Portal),
-            _ => None,
-        }
+        Some(match self {
+            MobType::Npc => MobKind::Npc,
+            MobType::Monster => MobKind::Monster,
+            MobType::Stone => MobKind::Stone,
+            MobType::Warp => MobKind::Portal,
+            _ => return None,
+        })
+    }
+}
+
+impl ToDomain<BehaviorFlags> for MobAiFlags {
+    fn to_domain(self) -> BehaviorFlags {
+        const MAPPER: FlagsMapper<MobAiFlags, BehaviorFlags> = FlagsMapper::new(&[
+            (MobAiFlags::NOMOVE, BehaviorFlags::NO_MOVE),
+            (MobAiFlags::AGGR, BehaviorFlags::AGGRESSIVE),
+        ]);
+
+        MAPPER.map(self)
     }
 }
 
@@ -438,6 +458,7 @@ mod tests {
             mob_type,
             rank: ContentMobRank::Pawn,
             level: 1,
+            ai_flags: MobAiFlags::empty(),
             move_speed: 100,
             attack_speed: 100,
         }
@@ -486,6 +507,22 @@ mod tests {
         let protos = build_mob_proto(&catalog);
         let proto = protos.get(&MobId::new(101)).expect("proto");
         assert_eq!(proto.mob_kind, MobKind::Monster);
+    }
+
+    #[test]
+    fn build_mob_proto_preserves_ai_flags() {
+        let mut mob = valid_mob(101, MobType::Monster);
+        mob.ai_flags = MobAiFlags::NOMOVE | MobAiFlags::AGGR;
+
+        let catalog = ContentCatalog {
+            mobs: vec![mob],
+            ..ContentCatalog::default()
+        };
+
+        let protos = build_mob_proto(&catalog);
+        let proto = protos.get(&MobId::new(101)).expect("proto");
+        assert!(proto.bhv_flags.contains(BehaviorFlags::NO_MOVE));
+        assert!(proto.bhv_flags.contains(BehaviorFlags::AGGRESSIVE));
     }
 
     #[test]

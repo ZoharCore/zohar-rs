@@ -1,8 +1,8 @@
 use tracing::warn;
 use zohar_db::PlayerRow;
 use zohar_domain::Empire as DomainEmpire;
-use zohar_domain::MobKind;
 use zohar_domain::appearance::EntityKind;
+use zohar_domain::entity::mob::MobKind;
 use zohar_domain::entity::player::skill::{
     NinjaSkillBranch, ShamanSkillBranch, SkillBranch as DomainSkillBranch, SuraSkillBranch,
     WarriorSkillBranch,

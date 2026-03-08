@@ -35,6 +35,7 @@ impl Plugin for ContentPlugin {
         app.insert_resource(MapConfig {
             map_key: self.map.map_key,
             empire: self.map.empire,
+            local_size: self.map.local_size,
             spawn_rules: self.map.spawn_rules.clone(),
         });
     }

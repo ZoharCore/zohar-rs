@@ -1,3 +1,6 @@
+use super::state::{
+    DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC, MAX_MOVE_PACKET_STEP_M, PlayerMotionState, RuntimeState,
+};
 use crate::motion::{
     EntityMotionSpeedTable, MotionEntityKey, MotionMoveMode, PlayerMotionProfileKey,
 };
@@ -5,16 +8,11 @@ use rand::rngs::SmallRng;
 use rand::{Rng, RngExt};
 use std::time::{Duration, Instant};
 use zohar_domain::Empire;
-use zohar_domain::MobId;
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::LocalPos;
+use zohar_domain::entity::mob::MobId;
+use zohar_domain::entity::mob::spawn::{SpawnTemplate, WeightedGroupChoice};
 use zohar_domain::entity::{EntityId, MovementKind};
-use zohar_domain::mob::{SpawnTemplate, WeightedGroupChoice};
-
-use super::state::{
-    DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC, MAX_MOVE_PACKET_STEP_M, MonsterWanderConfig,
-    PlayerMotionState, RuntimeState,
-};
 
 pub(super) fn movement_kind_priority(kind: MovementKind) -> u8 {
     match kind {
@@ -90,25 +88,20 @@ pub(super) fn sample_player_motion_at(
     }
     let elapsed = packet_ts.saturating_sub(motion.segment_start_ts);
     let t = elapsed as f32 / total as f32;
-    let dx = motion.segment_end_pos.x - motion.segment_start_pos.x;
-    let dy = motion.segment_end_pos.y - motion.segment_start_pos.y;
-    LocalPos::new(
-        motion.segment_start_pos.x + dx * t,
-        motion.segment_start_pos.y + dy * t,
-    )
+    let delta = motion.segment_end_pos - motion.segment_start_pos;
+
+    motion.segment_start_pos + delta * t
 }
 
 pub(super) fn clamp_step_towards(from: LocalPos, to: LocalPos, max_step: f32) -> LocalPos {
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    let distance = (dx * dx + dy * dy).sqrt();
+    let delta = to - from;
+    let distance = delta.length();
 
     if distance <= max_step || distance <= 0.01 {
         return to;
     }
 
-    let ratio = max_step / distance;
-    LocalPos::new(from.x + dx * ratio, from.y + dy * ratio)
+    from + delta * (max_step / distance)
 }
 
 pub(super) fn calculate_move_duration_ms(
@@ -130,12 +123,13 @@ pub(super) fn calculate_move_duration_ms(
 pub(super) fn calculate_mob_move_duration_ms(
     motion_speeds: &EntityMotionSpeedTable,
     mob_id: MobId,
+    move_mode: MotionMoveMode,
     move_speed_attr: u8,
     start_pos: LocalPos,
     target_pos: LocalPos,
 ) -> u32 {
     let motion_speed = motion_speeds
-        .speed_for(MotionEntityKey::Mob(mob_id), MotionMoveMode::Run)
+        .speed_for(MotionEntityKey::Mob(mob_id), move_mode)
         .unwrap_or(DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC);
     duration_from_motion_speed(motion_speed, move_speed_attr, start_pos, target_pos)
 }
@@ -146,13 +140,11 @@ pub(super) fn duration_from_motion_speed(
     start_pos: LocalPos,
     target_pos: LocalPos,
 ) -> u32 {
-    let dx = target_pos.x - start_pos.x;
-    let dy = target_pos.y - start_pos.y;
-    let dist = (dx * dx + dy * dy).sqrt();
     if motion_speed_mps <= 0.0 {
         return 0;
     }
 
+    let dist = (target_pos - start_pos).length();
     let base_dur = (dist / motion_speed_mps) * 1000.0;
     let i = 100 - move_speed_attr as i32;
     let scale = if i > 0 {
@@ -170,18 +162,6 @@ pub(super) fn random_protocol_rot(rng: &mut SmallRng) -> u8 {
     rng.random_range(0..72)
 }
 
-pub(super) fn random_idle_decision_delay(rng: &mut SmallRng, cfg: &MonsterWanderConfig) -> u64 {
-    random_duration_between_ms(
-        rng,
-        cfg.decision_pause_idle_min,
-        cfg.decision_pause_idle_max,
-    )
-}
-
-pub(super) fn random_post_move_delay(rng: &mut SmallRng, cfg: &MonsterWanderConfig) -> u64 {
-    random_duration_between_ms(rng, cfg.post_move_pause_min, cfg.post_move_pause_max)
-}
-
 pub(super) fn random_duration_between_ms(rng: &mut SmallRng, min: Duration, max: Duration) -> u64 {
     let min_ms = min.as_millis().min(u64::MAX as u128) as u64;
     let max_ms = max.as_millis().min(u64::MAX as u128) as u64;
@@ -191,12 +171,11 @@ pub(super) fn random_duration_between_ms(rng: &mut SmallRng, min: Duration, max:
 }
 
 pub(super) fn rotation_from_delta(from: LocalPos, to: LocalPos, fallback_rot: u8) -> u8 {
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    if (dx * dx + dy * dy) <= 0.0001 {
+    let delta = to - from;
+    if delta.square_length() <= 0.0001 {
         return fallback_rot;
     }
-    let angle = dx.atan2(dy).to_degrees().rem_euclid(360.0);
+    let angle = delta.x.atan2(delta.y).to_degrees().rem_euclid(360.0);
     degrees_to_protocol_rot(angle)
 }
 

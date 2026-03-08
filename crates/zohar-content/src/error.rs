@@ -37,3 +37,13 @@ where
         value: raw.to_string(),
     })
 }
+
+pub(crate) fn parse_flags<E>(raw: &str, kind: &'static str) -> Result<E, ContentError>
+where
+    E: std::str::FromStr,
+{
+    raw.parse::<E>().map_err(|_| ContentError::InvalidEnum {
+        kind,
+        value: raw.to_string(),
+    })
+}

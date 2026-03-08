@@ -21,7 +21,7 @@ pub use motion::{
 };
 pub use outbox::{PlayerOutbox, PlayerOutboxStats};
 pub use runtime::{
-    ContentPlugin, MapConfig, MapPlugin, MonsterWanderConfig, NetworkPlugin, OutboxPlugin,
-    PlayerCount, SharedConfig, SimSet, SimulationPlugin, StartupReadySignal,
+    ContentPlugin, MapConfig, MapPlugin, NetworkPlugin, OutboxPlugin, PlayerCount, SharedConfig,
+    SimSet, SimulationPlugin, StartupReadySignal, WanderConfig,
 };
 pub use types::{InstanceId, MapInstanceKey, MapInstanceKind};

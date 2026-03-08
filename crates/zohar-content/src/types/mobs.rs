@@ -1,3 +1,29 @@
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct MobAiFlags: u32 {
+        const AGGR = 1 << 0;
+        const COWARD = 1 << 1;
+        const BERSERK = 1 << 2;
+        const STONESKIN = 1 << 3;
+        const GODSPEED = 1 << 4;
+        const DEATHBLOW = 1 << 5;
+        const REVIVE = 1 << 6;
+        const NOMOVE = 1 << 7;
+        const NOATTSHINSU = 1 << 8;
+        const NOATTCHUNJO = 1 << 9;
+        const NOATTJINNO = 1 << 10;
+        const ATTMOB = 1 << 11;
+    }
+}
+
+impl std::str::FromStr for MobAiFlags {
+    type Err = bitflags::parser::ParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        bitflags::parser::from_str::<Self>(value)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString)]
 pub enum MobType {
     #[strum(serialize = "NPC")]
@@ -46,6 +72,20 @@ pub struct ContentMob {
     pub mob_type: MobType,
     pub rank: MobRank,
     pub level: i64,
+    pub ai_flags: MobAiFlags,
     pub move_speed: i64,
     pub attack_speed: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MobAiFlags;
+
+    #[test]
+    fn mob_ai_flags_parse_pipe_delimited_tokens() {
+        let flags = "NOMOVE|AGGR|REVIVE".parse::<MobAiFlags>().expect("flags");
+        assert!(flags.contains(MobAiFlags::NOMOVE));
+        assert!(flags.contains(MobAiFlags::AGGR));
+        assert!(flags.contains(MobAiFlags::REVIVE));
+    }
 }

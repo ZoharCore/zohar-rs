@@ -1,11 +1,11 @@
 use bevy::prelude::*;
 use std::collections::HashSet;
 use zohar_domain::Empire;
-use zohar_domain::MobKind;
 use zohar_domain::appearance::{EntityDetails, EntityKind, PlayerAppearance, ShowEntity};
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::EntityId;
 use zohar_domain::entity::MovementKind;
+use zohar_domain::entity::mob::MobKind;
 use zohar_domain::entity::player::PlayerId;
 
 use crate::api::PlayerEvent;

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use zohar_domain::{MobId, MobKind};
+use zohar_domain::entity::mob::{MobId, MobKind};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MobChatStrategyInterval {

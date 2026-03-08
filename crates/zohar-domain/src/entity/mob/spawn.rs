@@ -1,5 +1,5 @@
-use crate::coords::{LocalBox, LocalPos, LocalSize};
-use crate::{MobId, MobKind, MobRank};
+use crate::coords::{LocalBox, LocalBoxExt, LocalPos, LocalSize};
+use crate::entity::mob::MobId;
 use rand::{Rng, RngExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,26 +79,11 @@ pub struct SpawnArea {
 impl SpawnArea {
     /// Create a spawn area from center and extent, pre-computing bounds.
     pub fn new(center: LocalPos, extent: LocalSize) -> Self {
-        let bounds = LocalBox::new(
-            LocalPos::new(center.x - extent.width, center.y - extent.height),
-            LocalPos::new(center.x + extent.width, center.y + extent.height),
-        );
+        let bounds = LocalBox::from_center_half_extent(center, extent);
         Self {
             center,
             extent,
             bounds,
-        }
-    }
-
-    /// Generate a random point within the spawn area.
-    pub fn random_point(&self, rng: &mut impl Rng) -> LocalPos {
-        if self.extent.width == 0.0 && self.extent.height == 0.0 {
-            self.center
-        } else {
-            LocalPos::new(
-                rng.random_range(self.bounds.min.x..=self.bounds.max.x),
-                rng.random_range(self.bounds.min.y..=self.bounds.max.y),
-            )
         }
     }
 }
@@ -129,38 +114,9 @@ pub struct SpawnRuleDef {
 /// Shared reference to a spawn rule definition.
 pub type SpawnRule = Arc<SpawnRuleDef>;
 
-#[derive(Debug)]
-pub struct MobPrototypeDef {
-    pub mob_id: MobId,
-    pub mob_kind: MobKind,
-    pub name: String,
-    pub rank: MobRank,
-    pub level: u32,
-    pub move_speed: u8,
-    pub attack_speed: u8,
-    pub empire: Option<crate::Empire>,
-}
-
-impl MobPrototypeDef {
-    pub fn placeholder() -> Self {
-        Self {
-            mob_id: MobId::new(101),
-            mob_kind: MobKind::Monster,
-            name: "mob_proto error".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 0,
-            attack_speed: 0,
-            empire: None,
-        }
-    }
-}
-
-pub type MobPrototype = Arc<MobPrototypeDef>;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::entity::mob::spawn::Direction;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
@@ -183,20 +139,5 @@ mod tests {
             let dir = Direction::random(&mut rng);
             assert!((0.0..360.0).contains(&dir.to_angle()));
         }
-    }
-
-    #[test]
-    fn spawn_area_random_point_stays_in_bounds_and_zero_extent_returns_center() {
-        let area = SpawnArea::new(LocalPos::new(10.0, 20.0), LocalSize::new(3.0, 4.0));
-        let mut rng = SmallRng::seed_from_u64(7);
-
-        for _ in 0..256 {
-            let point = area.random_point(&mut rng);
-            assert!(point.x >= area.bounds.min.x && point.x <= area.bounds.max.x);
-            assert!(point.y >= area.bounds.min.y && point.y <= area.bounds.max.y);
-        }
-
-        let zero = SpawnArea::new(LocalPos::new(5.0, 6.0), LocalSize::new(0.0, 0.0));
-        assert_eq!(zero.random_point(&mut rng), LocalPos::new(5.0, 6.0));
     }
 }

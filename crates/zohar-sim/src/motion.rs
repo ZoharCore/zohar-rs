@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use zohar_domain::MobId;
+use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 
 /// Shared locomotion mode used to select movement motion speeds.

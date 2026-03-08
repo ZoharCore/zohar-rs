@@ -5,7 +5,7 @@ use tracing::warn;
 use zohar_content::types::ContentCatalog;
 use zohar_content::types::empires::Empire as ContentEmpire;
 use zohar_db::PlayerRow;
-use zohar_domain::coords::{LocalPos, WorldPos};
+use zohar_domain::coords::{LocalPos, LocalSize, WorldPos};
 use zohar_domain::{Empire as DomainEmpire, Empire, MapId};
 use zohar_protocol::game_pkt::WireWorldCm;
 
@@ -153,6 +153,12 @@ impl ContentCoords {
             .iter()
             .map(|(map_id, empire_opt)| (*map_id, *empire_opt))
             .collect()
+    }
+
+    pub fn map_local_size(&self, map_id: MapId) -> Option<LocalSize> {
+        self.maps_by_id
+            .get(&map_id)
+            .map(|meta| LocalSize::new(meta.map_width, meta.map_height))
     }
 
     pub fn local_to_world(&self, map_id: MapId, local_pos: LocalPos) -> Option<WorldPos> {

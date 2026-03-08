@@ -1,9 +1,11 @@
 pub mod appearance;
 pub mod coords;
 pub mod entity;
-pub mod mob;
+pub mod util;
 
 use std::marker::PhantomData;
+
+pub use entity::mob::behavior::BehaviorFlags;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Empire {
@@ -67,26 +69,4 @@ impl<T> From<DefId<T>> for u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MapDefTag {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum MobDefTag {}
-
 pub type MapId = DefId<MapDefTag>;
-pub type MobId = DefId<MobDefTag>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MobKind {
-    Monster,
-    Npc,
-    Stone,
-    Portal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MobRank {
-    Pawn,
-    SuperPawn,
-    Knight,
-    SuperKnight,
-    Boss,
-    King,
-}

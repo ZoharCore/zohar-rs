@@ -14,12 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use zohar_domain::Empire;
-use zohar_domain::MobId;
 use zohar_domain::appearance::PlayerAppearance;
-use zohar_domain::coords::LocalPos;
+use zohar_domain::coords::{LocalPos, LocalSize};
+use zohar_domain::entity::mob::MobId;
+use zohar_domain::entity::mob::MobPrototype;
+use zohar_domain::entity::mob::spawn::SpawnRule;
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
-use zohar_domain::mob::{MobPrototype, SpawnRule};
 
 pub(super) const DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC: f32 = 4.5;
 pub(super) const MAX_MOVE_PACKET_STEP_M: f32 = 25.0;
@@ -27,7 +28,7 @@ pub(super) const MAX_MOVE_INTENTS_PER_TICK: usize = 64;
 pub(super) const MAX_CHAT_INTENTS_PER_TICK: usize = 16;
 
 #[derive(Debug, Clone)]
-pub struct MonsterWanderConfig {
+pub struct WanderConfig {
     pub decision_pause_idle_min: Duration,
     pub decision_pause_idle_max: Duration,
     pub post_move_pause_min: Duration,
@@ -37,7 +38,7 @@ pub struct MonsterWanderConfig {
     pub step_max_m: f32,
 }
 
-impl Default for MonsterWanderConfig {
+impl Default for WanderConfig {
     fn default() -> Self {
         Self {
             decision_pause_idle_min: Duration::from_secs(3),
@@ -55,7 +56,7 @@ impl Default for MonsterWanderConfig {
 pub struct SharedConfig {
     pub motion_speeds: Arc<EntityMotionSpeedTable>,
     pub mobs: Arc<HashMap<MobId, MobPrototype>>,
-    pub monster_wander: MonsterWanderConfig,
+    pub wander: WanderConfig,
     pub mob_chat: Arc<MobChatContent>,
 }
 
@@ -63,6 +64,7 @@ pub struct SharedConfig {
 pub struct MapConfig {
     pub map_key: MapInstanceKey,
     pub empire: Option<Empire>,
+    pub local_size: LocalSize,
     pub spawn_rules: Vec<SpawnRule>,
 }
 
@@ -115,6 +117,7 @@ pub(super) struct NetEntityIndex(pub(super) HashMap<EntityId, Entity>);
 #[derive(Debug, Clone)]
 pub(super) struct SpawnRuleState {
     pub(super) rule: SpawnRule,
+    pub(super) active_instances: usize,
     pub(super) entities: HashSet<EntityId>,
     pub(super) respawn_at_ms: Option<u64>,
 }
@@ -150,7 +153,7 @@ pub(super) struct PlayerMotionState {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct MonsterWanderState {
+pub(super) struct WanderStateData {
     pub(super) next_decision_at_ms: u64,
     pub(super) pending_wait_at_ms: Option<u64>,
 }
@@ -233,7 +236,7 @@ pub(super) struct MobRef {
 }
 
 #[derive(Component)]
-pub(super) struct WanderState(pub(super) MonsterWanderState);
+pub(super) struct WanderState(pub(super) WanderStateData);
 
 #[derive(Component)]
 pub(super) struct MobChatState {

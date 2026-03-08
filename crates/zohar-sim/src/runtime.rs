@@ -11,9 +11,7 @@ mod util;
 mod wander;
 
 pub use plugins::{ContentPlugin, MapPlugin, NetworkPlugin, OutboxPlugin, SimulationPlugin};
-pub use state::{
-    MapConfig, MonsterWanderConfig, PlayerCount, SharedConfig, SimSet, StartupReadySignal,
-};
+pub use state::{MapConfig, PlayerCount, SharedConfig, SimSet, StartupReadySignal, WanderConfig};
 
 #[cfg(test)]
 mod tests;

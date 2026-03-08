@@ -10,6 +10,7 @@ CREATE TABLE mob_proto (
   mob_type TEXT NOT NULL REFERENCES enum_mob_type(value),
   rank TEXT NOT NULL REFERENCES enum_mob_rank(value),
   level INTEGER NOT NULL DEFAULT 1,
+  ai_flags TEXT,
   move_speed INTEGER NOT NULL DEFAULT 100,
   attack_speed INTEGER NOT NULL DEFAULT 100
 );

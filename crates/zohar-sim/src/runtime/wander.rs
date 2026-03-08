@@ -1,15 +1,17 @@
 use bevy::prelude::*;
 use rand::RngExt;
-use zohar_domain::coords::LocalPos;
+use std::f32::consts::TAU;
+use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize};
 use zohar_domain::entity::MovementKind;
 
+use crate::motion::MotionMoveMode;
+
 use super::state::{
-    LocalTransform, MapPendingMovements, MapSpatial, MobRef, NetEntityId, NetEntityIndex,
-    PendingMovement, RuntimeState, SharedConfig, WanderState,
+    LocalTransform, MapConfig, MapPendingMovements, MapSpatial, MobRef, NetEntityId,
+    NetEntityIndex, PendingMovement, RuntimeState, SharedConfig, WanderState, WanderStateData,
 };
 use super::util::{
-    calculate_mob_move_duration_ms, packet_time_ms, random_idle_decision_delay,
-    random_post_move_delay, rotation_from_delta,
+    calculate_mob_move_duration_ms, packet_time_ms, random_duration_between_ms, rotation_from_delta,
 };
 
 pub(super) fn monster_wander(world: &mut World) {
@@ -17,6 +19,7 @@ pub(super) fn monster_wander(world: &mut World) {
     let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
         return;
     };
+    let validator = WanderValidator::new(world.resource::<MapConfig>().local_size);
 
     let (now_ms, now_ts) = {
         let state = world.resource::<RuntimeState>();
@@ -54,12 +57,17 @@ pub(super) fn monster_wander(world: &mut World) {
             (mob_ref.mob_id, transform.pos, transform.rot, wander_state.0)
         };
 
+        let Some(proto) = shared.mobs.get(&mob_id) else {
+            continue;
+        };
+        if !proto.bhv_flags.can_wander() {
+            continue;
+        }
+
         if let Some(wait_at_ms) = wander.pending_wait_at_ms {
             if now_ms >= wait_at_ms {
                 wander.pending_wait_at_ms = None;
-                if let Some(mut ws) = world.entity_mut(mob_entity).get_mut::<WanderState>() {
-                    ws.0 = wander;
-                }
+                store_wander_state(world, mob_entity, wander);
             }
             continue;
         }
@@ -70,73 +78,51 @@ pub(super) fn monster_wander(world: &mut World) {
 
         let should_wander = {
             let mut state = world.resource_mut::<RuntimeState>();
-            let chance_denom = shared.monster_wander.wander_chance_denominator.max(1);
+            let chance_denom = shared.wander.wander_chance_denominator.max(1);
             state.rng.random_range(0..chance_denom) == 0
         };
 
         if !should_wander {
-            let mut state = world.resource_mut::<RuntimeState>();
-            wander.next_decision_at_ms = now_ms.saturating_add(random_idle_decision_delay(
-                &mut state.rng,
-                &shared.monster_wander,
-            ));
-            if let Some(mut ws) = world.entity_mut(mob_entity).get_mut::<WanderState>() {
-                ws.0 = wander;
-            }
+            reschedule_idle_decision(world, mob_entity, &mut wander, now_ms, &shared);
             continue;
         }
 
-        let (new_pos, rot) = {
+        let Some((new_pos, rot)) = ({
             let mut state = world.resource_mut::<RuntimeState>();
-            let heading_rad = state.rng.random_range(0.0..std::f32::consts::TAU);
-            let distance = state.rng.random_range(
-                shared
-                    .monster_wander
-                    .step_min_m
-                    .min(shared.monster_wander.step_max_m)
-                    ..=shared
-                        .monster_wander
-                        .step_min_m
-                        .max(shared.monster_wander.step_max_m),
-            );
-            let new_pos = LocalPos::new(
-                old_pos.x + heading_rad.cos() * distance,
-                old_pos.y + heading_rad.sin() * distance,
-            );
-            let rot = rotation_from_delta(old_pos, new_pos, current_rot);
-            (new_pos, rot)
-        };
-
-        let Some(proto) = shared.mobs.get(&mob_id) else {
+            sample_idle_wander_target(
+                &mut state.rng,
+                validator,
+                old_pos,
+                current_rot,
+                shared.wander.step_min_m,
+                shared.wander.step_max_m,
+            )
+        }) else {
+            reschedule_idle_decision(world, mob_entity, &mut wander, now_ms, &shared);
             continue;
         };
 
         let duration = calculate_mob_move_duration_ms(
             &shared.motion_speeds,
             mob_id,
+            MotionMoveMode::Run,
             proto.move_speed,
             old_pos,
             new_pos,
         );
 
         if duration == 0 {
-            let mut state = world.resource_mut::<RuntimeState>();
-            wander.next_decision_at_ms = now_ms.saturating_add(random_idle_decision_delay(
-                &mut state.rng,
-                &shared.monster_wander,
-            ));
-            if let Some(mut ws) = world.entity_mut(mob_entity).get_mut::<WanderState>() {
-                ws.0 = wander;
-            }
+            reschedule_idle_decision(world, mob_entity, &mut wander, now_ms, &shared);
             continue;
         }
 
         let (wait_at_ms, next_decision_at_ms) = {
             let mut state = world.resource_mut::<RuntimeState>();
             let wait_at = now_ms.saturating_add(duration as u64);
-            let next_decision = wait_at.saturating_add(random_post_move_delay(
+            let next_decision = wait_at.saturating_add(random_duration_between_ms(
                 &mut state.rng,
-                &shared.monster_wander,
+                shared.wander.post_move_pause_min,
+                shared.wander.post_move_pause_max,
             ));
             (wait_at, next_decision)
         };
@@ -151,9 +137,7 @@ pub(super) fn monster_wander(world: &mut World) {
             transform.pos = new_pos;
             transform.rot = rot;
         }
-        if let Some(mut ws) = world.entity_mut(mob_entity).get_mut::<WanderState>() {
-            ws.0 = wander;
-        }
+        store_wander_state(world, mob_entity, wander);
         if let Some(mut pending) = world
             .entity_mut(map_entity)
             .get_mut::<MapPendingMovements>()
@@ -175,4 +159,85 @@ pub(super) fn monster_wander(world: &mut World) {
     if dirty_map {
         world.resource_mut::<RuntimeState>().is_dirty = true;
     }
+}
+
+fn reschedule_idle_decision(
+    world: &mut World,
+    mob_entity: Entity,
+    wander: &mut WanderStateData,
+    now_ms: u64,
+    shared: &SharedConfig,
+) {
+    let mut state = world.resource_mut::<RuntimeState>();
+    wander.next_decision_at_ms = now_ms.saturating_add(random_duration_between_ms(
+        &mut state.rng,
+        shared.wander.decision_pause_idle_min,
+        shared.wander.decision_pause_idle_max,
+    ));
+    store_wander_state(world, mob_entity, *wander);
+}
+
+fn store_wander_state(world: &mut World, mob_entity: Entity, wander: WanderStateData) {
+    if let Some(mut ws) = world.entity_mut(mob_entity).get_mut::<WanderState>() {
+        ws.0 = wander;
+    }
+}
+
+fn sample_idle_wander_target(
+    rng: &mut rand::rngs::SmallRng,
+    validator: WanderValidator,
+    current_pos: LocalPos,
+    current_rot: u8,
+    step_min_m: f32,
+    step_max_m: f32,
+) -> Option<(LocalPos, u8)> {
+    let step_min = step_min_m.min(step_max_m);
+    let step_max = step_min_m.max(step_max_m);
+    let heading = LocalRotation::radians(rng.random_range(0.0..TAU));
+    let distance = LocalDistMeters::new(rng.random_range(step_min..=step_max));
+    let candidate = current_pos.shifted(heading, distance);
+
+    if !validator.is_allowed(current_pos, candidate) {
+        return None;
+    }
+
+    let rot = rotation_from_delta(current_pos, candidate, current_rot);
+    Some((candidate, rot))
+}
+
+#[derive(Clone, Copy)]
+struct WanderValidator {
+    map_size: LocalSize,
+}
+
+impl WanderValidator {
+    fn new(map_size: LocalSize) -> Self {
+        Self { map_size }
+    }
+
+    fn is_allowed(self, current_pos: LocalPos, candidate: LocalPos) -> bool {
+        let midpoint = LocalPos::new(
+            (current_pos.x + candidate.x) * 0.5,
+            (current_pos.y + candidate.y) * 0.5,
+        );
+        self.contains_local(midpoint) && self.contains_local(candidate)
+    }
+
+    fn contains_local(self, pos: LocalPos) -> bool {
+        pos.x.is_finite()
+            && pos.y.is_finite()
+            && pos.x >= 0.0
+            && pos.y >= 0.0
+            && pos.x < self.map_size.width
+            && pos.y < self.map_size.height
+    }
+}
+
+#[cfg(test)]
+pub(super) fn is_wander_target_allowed(
+    map_size: LocalSize,
+    current_pos: LocalPos,
+    candidate: LocalPos,
+) -> bool {
+    WanderValidator::new(map_size).is_allowed(current_pos, candidate)
 }

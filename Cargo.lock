@@ -4395,6 +4395,7 @@ dependencies = [
 name = "zohar-content"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "hex",
  "sha2",
  "sqlx",
@@ -4445,6 +4446,7 @@ dependencies = [
 name = "zohar-domain"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "euclid",
  "rand 0.10.0",
 ]

@@ -1,7 +1,8 @@
+use crate::Empire;
 use crate::coords::LocalPos;
 use crate::entity::EntityId;
+use crate::entity::mob::{MobId, MobKind};
 use crate::entity::player::{PlayerClass, PlayerGender};
-use crate::{Empire, MobId, MobKind};
 
 /// Entity kind with variant-specific data for spawn packets.
 #[derive(Debug, Clone)]
