@@ -22,6 +22,14 @@ CREATE TABLE map_placement (
   base_y REAL NOT NULL
 );
 
+CREATE TABLE map_terrain_flags (
+  map_id INTEGER PRIMARY KEY REFERENCES map_def(map_id),
+  cell_size_m REAL NOT NULL CHECK (cell_size_m > 0),
+  codec TEXT NOT NULL,
+  raw_len INTEGER NOT NULL CHECK (raw_len >= 0),
+  data BLOB NOT NULL
+);
+
 CREATE TABLE map_town_spawn (
   map_id INTEGER NOT NULL REFERENCES map_def(map_id),
   empire TEXT NOT NULL REFERENCES enum_empire(value),
@@ -49,6 +57,46 @@ WHEN EXISTS (
 )
 BEGIN
   SELECT RAISE(ABORT, 'map_town_spawn out of map bounds');
+END;
+
+CREATE TRIGGER map_terrain_flags_validate_insert
+BEFORE INSERT ON map_terrain_flags
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1
+  FROM map_def d
+  WHERE d.map_id = NEW.map_id
+    AND (
+      ABS((d.map_width / NEW.cell_size_m) - ROUND(d.map_width / NEW.cell_size_m)) > 1e-6
+      OR ABS((d.map_height / NEW.cell_size_m) - ROUND(d.map_height / NEW.cell_size_m)) > 1e-6
+      OR NEW.raw_len != CAST(
+        ROUND(d.map_width / NEW.cell_size_m) * ROUND(d.map_height / NEW.cell_size_m)
+        AS INTEGER
+      )
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'map_terrain_flags dimensions/raw_len mismatch');
+END;
+
+CREATE TRIGGER map_terrain_flags_validate_update
+BEFORE UPDATE OF map_id, cell_size_m, raw_len ON map_terrain_flags
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1
+  FROM map_def d
+  WHERE d.map_id = NEW.map_id
+    AND (
+      ABS((d.map_width / NEW.cell_size_m) - ROUND(d.map_width / NEW.cell_size_m)) > 1e-6
+      OR ABS((d.map_height / NEW.cell_size_m) - ROUND(d.map_height / NEW.cell_size_m)) > 1e-6
+      OR NEW.raw_len != CAST(
+        ROUND(d.map_width / NEW.cell_size_m) * ROUND(d.map_height / NEW.cell_size_m)
+        AS INTEGER
+      )
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'map_terrain_flags dimensions/raw_len mismatch');
 END;
 
 CREATE TRIGGER map_town_spawn_bounds_update

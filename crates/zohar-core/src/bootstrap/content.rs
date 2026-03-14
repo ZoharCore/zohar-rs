@@ -1,5 +1,6 @@
 use crate::adapters::content::{
-    build_entity_motion_speeds, build_mob_chat_content, build_mob_proto, build_spawn_rules,
+    build_entity_motion_speeds, build_map_navigators, build_mob_chat_content, build_mob_proto,
+    build_spawn_rules,
 };
 use crate::app::CoreRuntimeConfig;
 use anyhow::anyhow;
@@ -35,6 +36,7 @@ pub(crate) fn load_content(
     let all_spawn_rules = build_spawn_rules(catalog);
     let all_mobs = Arc::new(build_mob_proto(catalog));
     let mob_chat = Arc::new(build_mob_chat_content(catalog));
+    let all_navigators = build_map_navigators(catalog);
     let all_empires = coords.map_empires_by_id();
 
     let shared_config = SharedConfig {
@@ -49,6 +51,7 @@ pub(crate) fn load_content(
         local_size: coords
             .map_local_size(map_id)
             .ok_or_else(|| anyhow!("missing local bounds for map '{}'", config.map))?,
+        navigator: all_navigators.get(&map_id).cloned(),
         spawn_rules: all_spawn_rules.get(&map_id).cloned().unwrap_or_default(),
     };
 

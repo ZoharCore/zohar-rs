@@ -9,6 +9,7 @@ tracing.workspace = true
 tokio.workspace = true
 sqlx = { workspace = true, features = ["sqlite"] }
 bitflags.workspace = true
+zstd = "0.13"
 
 hex = "0.4"
 strum = { version = "0.28", features = ["derive"] }

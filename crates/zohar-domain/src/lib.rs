@@ -1,11 +1,13 @@
 pub mod appearance;
 pub mod coords;
 pub mod entity;
+pub mod terrain;
 pub mod util;
 
 use std::marker::PhantomData;
 
 pub use entity::mob::behavior::BehaviorFlags;
+pub use terrain::TerrainFlags;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Empire {

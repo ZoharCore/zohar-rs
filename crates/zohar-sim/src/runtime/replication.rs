@@ -10,6 +10,7 @@ use zohar_domain::entity::player::PlayerId;
 
 use crate::api::PlayerEvent;
 use crate::replication::{InterestConfig, VisibilityDiff};
+use tracing::warn;
 
 use super::state::{
     LocalTransform, MapEmpire, MapPendingLocalChats, MapPendingMovements, MapReplication,
@@ -110,7 +111,7 @@ pub(super) fn aoi_reconcile(world: &mut World) {
             &spawn_candidates,
             &retain_candidates,
         );
-        queue_visibility_diff(world, &shared, observer.player_id, diff);
+        queue_visibility_diff(world, &shared, map_entity, observer, diff);
     }
 
     world.resource_mut::<RuntimeState>().is_dirty = false;
@@ -164,26 +165,39 @@ fn reconcile_visibility(
 fn queue_visibility_diff(
     world: &mut World,
     shared: &SharedConfig,
-    observer_player_id: PlayerId,
+    map_entity: Entity,
+    observer: VisibilityObserver,
     diff: VisibilityDiff,
 ) {
     let observer_entity = {
         let player_index = world.resource::<PlayerIndex>();
-        player_index.0.get(&observer_player_id).copied()
+        player_index.0.get(&observer.player_id).copied()
     };
     let Some(observer_entity) = observer_entity else {
+        rollback_entered_visibility(world, map_entity, observer.net_id, &diff.entered);
         return;
     };
 
     let mut entered_payloads = Vec::with_capacity(diff.entered.len());
+    let mut failed_targets = Vec::new();
     for target_id in diff.entered {
         if let Some((show, details)) = make_entity_spawn_payload(world, shared, target_id) {
             entered_payloads.push((show, details));
+        } else {
+            failed_targets.push(target_id);
         }
     }
 
+    rollback_entered_visibility(world, map_entity, observer.net_id, &failed_targets);
+
     let mut observer_ent = world.entity_mut(observer_entity);
     let Some(mut observer_outbox) = observer_ent.get_mut::<PlayerOutboxComp>() else {
+        let unsent_targets: Vec<_> = entered_payloads
+            .iter()
+            .map(|(show, _)| show.entity_id)
+            .collect();
+        drop(observer_ent);
+        rollback_entered_visibility(world, map_entity, observer.net_id, &unsent_targets);
         return;
     };
 
@@ -196,6 +210,32 @@ fn queue_visibility_diff(
         observer_outbox.0.push_reliable(PlayerEvent::EntityDespawn {
             entity_id: target_id,
         });
+    }
+}
+
+fn rollback_entered_visibility(
+    world: &mut World,
+    map_entity: Entity,
+    observer_net_id: EntityId,
+    target_ids: &[EntityId],
+) {
+    if target_ids.is_empty() {
+        return;
+    }
+
+    let mut map_ent = world.entity_mut(map_entity);
+    let Some(mut replication) = map_ent.get_mut::<MapReplication>() else {
+        return;
+    };
+
+    for &target_id in target_ids {
+        if replication.0.remove_visibility(observer_net_id, target_id) {
+            warn!(
+                observer = ?observer_net_id,
+                target = ?target_id,
+                "Rolled back visibility edge after spawn payload could not be queued"
+            );
+        }
     }
 }
 

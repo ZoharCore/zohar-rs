@@ -70,8 +70,12 @@ impl ContentRuntimeBuilder {
 }
 
 async fn load_catalog(conn: &SqlitePool) -> Result<ContentCatalog, ContentError> {
+    let maps = maps::load_maps(conn).await?;
+    let map_terrain_flags = maps::load_map_flag_grids(conn, &maps).await?;
+
     Ok(ContentCatalog {
-        maps: maps::load_maps(conn).await?,
+        maps,
+        map_terrain_flags,
         town_spawns: maps::load_town_spawns(conn).await?,
         mobs: mobs::load_mobs(conn).await?,
         mob_groups: mob_groups::load_mob_groups(conn).await?,

@@ -36,6 +36,7 @@ impl Plugin for ContentPlugin {
             map_key: self.map.map_key,
             empire: self.map.empire,
             local_size: self.map.local_size,
+            navigator: self.map.navigator.clone(),
             spawn_rules: self.map.spawn_rules.clone(),
         });
     }

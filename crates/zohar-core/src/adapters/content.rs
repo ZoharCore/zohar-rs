@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 use zohar_content::types::ContentCatalog;
+use zohar_content::types::maps::TerrainFlags as ContentTerrainFlags;
 use zohar_content::types::mobs::{MobAiFlags, MobRank as ContentMobRank, MobType};
 use zohar_content::types::motion::{
-    MotionAction as ContentMotionAction, MotionEntityKind, MotionMode,
+    MotionAction as ContentMotionAction, MotionMode, MotionSetKind,
 };
 use zohar_content::types::player::{Gender as ContentGender, PlayerClass as ContentPlayerClass};
 use zohar_content::types::spawns::{SpawnTarget, SpawnType as ContentSpawnType};
@@ -18,10 +19,10 @@ use zohar_domain::entity::mob::spawn::{
 use zohar_domain::entity::mob::{MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank};
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 use zohar_domain::util::FlagsMapper;
-use zohar_domain::{BehaviorFlags, DefId, MapId};
+use zohar_domain::{BehaviorFlags, DefId, MapId, TerrainFlags};
 use zohar_sim::{
-    EntityMotionSpeedTable, MobChatContent, MobChatLine, MobChatStrategyInterval, MotionEntityKey,
-    MotionMoveMode, PlayerMotionProfileKey,
+    EntityMotionSpeedTable, MapNavigator, MobChatContent, MobChatLine, MobChatStrategyInterval,
+    MotionEntityKey, MotionMoveMode, PlayerMotionProfileKey, TerrainFlagsGrid,
 };
 
 pub(crate) fn build_entity_motion_speeds(catalog: &ContentCatalog) -> EntityMotionSpeedTable {
@@ -48,9 +49,9 @@ pub(crate) fn build_entity_motion_speeds(catalog: &ContentCatalog) -> EntityMoti
             _ => continue,
         };
 
-        let motion_entity = match motion.entity_kind {
-            MotionEntityKind::Player => {
-                let Some(profile_id) = motion.player_profile_id else {
+        let motion_target = match motion.set_kind {
+            MotionSetKind::Player => {
+                let Some(profile_id) = motion.profile_id else {
                     continue;
                 };
                 let Some(&profile_key) = by_profile_id.get(&profile_id) else {
@@ -58,7 +59,7 @@ pub(crate) fn build_entity_motion_speeds(catalog: &ContentCatalog) -> EntityMoti
                 };
                 MotionEntityKey::Player(profile_key)
             }
-            MotionEntityKind::Mob => {
+            MotionSetKind::Mob => {
                 let Some(raw_mob_id) = motion.mob_id else {
                     continue;
                 };
@@ -90,7 +91,7 @@ pub(crate) fn build_entity_motion_speeds(catalog: &ContentCatalog) -> EntityMoti
             continue;
         }
 
-        table.upsert_speed(motion_entity, move_mode, units_per_sec as f32);
+        table.upsert_speed(motion_target, move_mode, units_per_sec as f32);
     }
 
     table
@@ -133,6 +134,47 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
 
     mob_proto
 }
+
+pub(crate) fn build_map_navigators(catalog: &ContentCatalog) -> HashMap<MapId, Arc<MapNavigator>> {
+    let mut out = HashMap::new();
+
+    for map_terrain_flags in &catalog.map_terrain_flags {
+        let Some(map_id) = def_id_from_i64::<zohar_domain::MapDefTag>(
+            map_terrain_flags.map_id,
+            "map_terrain_flags.map_id",
+        ) else {
+            continue;
+        };
+
+        let terrain_flags: Vec<TerrainFlags> = map_terrain_flags
+            .data
+            .iter()
+            .copied()
+            .map(ToDomain::to_domain)
+            .collect();
+
+        let Some(grid) = TerrainFlagsGrid::new(
+            map_terrain_flags.cell_size_m,
+            map_terrain_flags.grid_width,
+            map_terrain_flags.grid_height,
+            terrain_flags,
+        ) else {
+            warn!(
+                map_id = map_terrain_flags.map_id,
+                cell_size_m = map_terrain_flags.cell_size_m,
+                grid_width = map_terrain_flags.grid_width,
+                grid_height = map_terrain_flags.grid_height,
+                "Skipping invalid map navigation terrain"
+            );
+            continue;
+        };
+
+        out.insert(map_id, Arc::new(MapNavigator::new(grid)));
+    }
+
+    out
+}
+
 pub(crate) fn build_mob_chat_content(catalog: &ContentCatalog) -> MobChatContent {
     let mut out = MobChatContent::default();
 
@@ -423,6 +465,19 @@ impl ToDomain<BehaviorFlags> for MobAiFlags {
         const MAPPER: FlagsMapper<MobAiFlags, BehaviorFlags> = FlagsMapper::new(&[
             (MobAiFlags::NOMOVE, BehaviorFlags::NO_MOVE),
             (MobAiFlags::AGGR, BehaviorFlags::AGGRESSIVE),
+        ]);
+
+        MAPPER.map(self)
+    }
+}
+
+impl ToDomain<TerrainFlags> for ContentTerrainFlags {
+    fn to_domain(self) -> TerrainFlags {
+        const MAPPER: FlagsMapper<ContentTerrainFlags, TerrainFlags> = FlagsMapper::new(&[
+            (ContentTerrainFlags::BLOCK, TerrainFlags::BLOCK),
+            (ContentTerrainFlags::WATER, TerrainFlags::WATER),
+            (ContentTerrainFlags::SAFEZONE, TerrainFlags::SAFEZONE),
+            (ContentTerrainFlags::OBJECT, TerrainFlags::OBJECT),
         ]);
 
         MAPPER.map(self)

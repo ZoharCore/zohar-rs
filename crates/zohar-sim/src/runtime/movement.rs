@@ -1,17 +1,18 @@
+use super::players::player_entities_on_map;
+use super::state::{
+    ChatIntentQueue, LocalTransform, MapConfig, MapPendingLocalChats, MapPendingMovements,
+    MapSpatial, MoveIntent, MoveIntentQueue, NetEntityId, PendingLocalChat, PendingMovement,
+    PlayerAppearanceComp, PlayerMarker, PlayerMotion, RuntimeState, SharedConfig,
+};
+use super::util::{calculate_move_duration_ms, sample_player_motion_at, sanitize_packet_target};
+use crate::navigation::MapNavigator;
 use bevy::prelude::*;
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
 
-use super::players::player_entities_on_map;
-use super::state::{
-    ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovements, MapSpatial,
-    MoveIntent, MoveIntentQueue, NetEntityId, PendingLocalChat, PendingMovement,
-    PlayerAppearanceComp, PlayerMarker, PlayerMotion, RuntimeState, SharedConfig,
-};
-use super::util::{calculate_move_duration_ms, sample_player_motion_at, sanitize_packet_target};
-
 pub(super) fn process_intents(world: &mut World) {
     let shared = world.resource::<SharedConfig>().clone();
+    let navigator = world.resource::<MapConfig>().navigator.clone();
     let player_entities = player_entities_on_map(world);
 
     for player_entity in player_entities {
@@ -57,6 +58,7 @@ pub(super) fn process_intents(world: &mut World) {
             apply_move_intent(
                 world,
                 &shared,
+                navigator.as_deref(),
                 player_entity,
                 player_id,
                 mover_net_id,
@@ -110,6 +112,7 @@ fn enqueue_local_chat_intents(
 fn apply_move_intent(
     world: &mut World,
     shared: &SharedConfig,
+    navigator: Option<&MapNavigator>,
     player_entity: Entity,
     player_id: PlayerId,
     mover_net_id: EntityId,
@@ -128,7 +131,10 @@ fn apply_move_intent(
         };
 
         let old_pos = sample_player_motion_at(transform.pos, &mut motion.0, intent.ts);
-        let new_pos = sanitize_packet_target(old_pos, intent.target);
+        let mut new_pos = sanitize_packet_target(old_pos, intent.target);
+        if navigator.is_some_and(|nav| !nav.segment_clear(old_pos, new_pos)) {
+            new_pos = old_pos;
+        }
         transform.pos = new_pos;
         transform.rot = intent.rot;
 

@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn motion_entity_mob_allows_multiple_mobs_per_entity() {
+    async fn motion_set_mob_allows_multiple_mobs_per_set() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pool = open_fresh_connection(&dir.path().join("content.db"))
             .await
@@ -166,10 +166,10 @@ mod tests {
             .execute(&pool)
             .await
             .expect("mob rank");
-        sqlx::query("INSERT INTO enum_motion_entity_kind (value) VALUES ('MOB')")
+        sqlx::query("INSERT INTO enum_motion_set_kind (value) VALUES ('MOB')")
             .execute(&pool)
             .await
-            .expect("entity kind");
+            .expect("set kind");
         sqlx::query(
             "INSERT INTO mob_proto (mob_id, code, name, mob_type, rank, level)
              VALUES (101, 'MOB_101', 'Wolf A', 'MONSTER', 'PAWN', 1),
@@ -178,14 +178,12 @@ mod tests {
         .execute(&pool)
         .await
         .expect("mobs");
+        sqlx::query("INSERT INTO motion_set (motion_set_id, set_kind) VALUES (200001, 'MOB')")
+            .execute(&pool)
+            .await
+            .expect("motion set");
         sqlx::query(
-            "INSERT INTO motion_entity (motion_entity_id, entity_kind) VALUES (200001, 'MOB')",
-        )
-        .execute(&pool)
-        .await
-        .expect("motion entity");
-        sqlx::query(
-            "INSERT INTO motion_entity_mob (motion_entity_id, mob_id)
+            "INSERT INTO motion_set_mob (motion_set_id, mob_id)
              VALUES (200001, 101),
                     (200001, 102)",
         )
@@ -193,12 +191,126 @@ mod tests {
         .await
         .expect("motion links");
 
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM motion_set_mob WHERE motion_set_id = 200001")
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn motion_set_player_allows_multiple_profiles_per_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = open_fresh_connection(&dir.path().join("content.db"))
+            .await
+            .expect("conn");
+
+        apply_schema_migrations(&pool).await.expect("schema");
+
+        sqlx::query("INSERT INTO enum_player_class (value) VALUES ('WARRIOR'), ('NINJA')")
+            .execute(&pool)
+            .await
+            .expect("player classes");
+        sqlx::query("INSERT INTO enum_gender (value) VALUES ('MALE'), ('FEMALE')")
+            .execute(&pool)
+            .await
+            .expect("genders");
+        sqlx::query("INSERT INTO enum_motion_set_kind (value) VALUES ('PLAYER')")
+            .execute(&pool)
+            .await
+            .expect("set kind");
+        sqlx::query(
+            "INSERT INTO player_motion_profile (profile_id, legacy_race_num, player_class, gender)
+             VALUES (1, 0, 'WARRIOR', 'MALE'),
+                    (2, 4, 'WARRIOR', 'FEMALE')",
+        )
+        .execute(&pool)
+        .await
+        .expect("profiles");
+        sqlx::query("INSERT INTO motion_set (motion_set_id, set_kind) VALUES (300001, 'PLAYER')")
+            .execute(&pool)
+            .await
+            .expect("motion set");
+        sqlx::query(
+            "INSERT INTO motion_set_player_profile (motion_set_id, profile_id)
+             VALUES (300001, 1),
+                    (300001, 2)",
+        )
+        .execute(&pool)
+        .await
+        .expect("player motion links");
+
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM motion_entity_mob WHERE motion_entity_id = 200001",
+            "SELECT COUNT(*) FROM motion_set_player_profile WHERE motion_set_id = 300001",
         )
         .fetch_one(&pool)
         .await
         .expect("count");
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn map_terrain_flags_trigger_rejects_mismatched_raw_len() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = open_fresh_connection(&dir.path().join("content.db"))
+            .await
+            .expect("conn");
+
+        apply_schema_migrations(&pool).await.expect("schema");
+
+        sqlx::query(
+            "INSERT INTO map_def (map_id, code, name, map_width, map_height)
+             VALUES (1, 'map_a', 'Map A', 1024.0, 1280.0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("map def");
+
+        let err = sqlx::query(
+            "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
+             VALUES (1, 0.5, 'NONE', 3, X'010203')",
+        )
+        .execute(&pool)
+        .await
+        .expect_err("must reject mismatched raw_len");
+
+        assert!(
+            err.to_string()
+                .contains("map_terrain_flags dimensions/raw_len mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn map_terrain_flags_trigger_rejects_non_integral_cell_derivation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = open_fresh_connection(&dir.path().join("content.db"))
+            .await
+            .expect("conn");
+
+        apply_schema_migrations(&pool).await.expect("schema");
+
+        sqlx::query(
+            "INSERT INTO map_def (map_id, code, name, map_width, map_height)
+             VALUES (1, 'map_a', 'Map A', 1024.0, 1280.0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("map def");
+
+        let err = sqlx::query(
+            "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
+             VALUES (1, 0.3, 'NONE', 4, X'01020304')",
+        )
+        .execute(&pool)
+        .await
+        .expect_err("must reject non-integral derivation");
+
+        assert!(
+            err.to_string()
+                .contains("map_terrain_flags dimensions/raw_len mismatch"),
+            "unexpected error: {err}"
+        );
     }
 }

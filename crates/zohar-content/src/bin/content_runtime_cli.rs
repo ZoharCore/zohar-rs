@@ -15,6 +15,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("content runtime ready");
     println!("maps: {}", runtime.catalog().maps.len());
+    println!(
+        "map_terrain_flags: {}",
+        runtime.catalog().map_terrain_flags.len()
+    );
     println!("town_spawns: {}", runtime.catalog().town_spawns.len());
     println!("mobs: {}", runtime.catalog().mobs.len());
     println!("mob_groups: {}", runtime.catalog().mob_groups.len());

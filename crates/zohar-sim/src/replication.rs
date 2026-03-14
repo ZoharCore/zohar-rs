@@ -127,6 +127,27 @@ impl ReplicationGraph {
         observers.into_iter().collect()
     }
 
+    /// Remove one directed observer -> target visibility edge.
+    pub fn remove_visibility(&mut self, observer: EntityId, target: EntityId) -> bool {
+        let mut removed = false;
+
+        if let Some(targets) = self.visible_by_observer.get_mut(&observer) {
+            removed = targets.remove(&target);
+            if targets.is_empty() {
+                self.visible_by_observer.remove(&observer);
+            }
+        }
+
+        if removed && let Some(observers) = self.observers_by_target.get_mut(&target) {
+            observers.remove(&observer);
+            if observers.is_empty() {
+                self.observers_by_target.remove(&target);
+            }
+        }
+
+        removed
+    }
+
     /// Snapshot all observers currently receiving a given target.
     #[allow(dead_code)]
     pub fn observers_for(&self, target: EntityId) -> Vec<EntityId> {
@@ -191,5 +212,23 @@ mod tests {
 
         // No-op after target removal.
         assert!(graph.remove_observer(o1).is_empty());
+    }
+
+    #[test]
+    fn remove_visibility_drops_only_one_directed_edge() {
+        let mut graph = ReplicationGraph::default();
+        let o1 = EntityId(1);
+        let o2 = EntityId(2);
+        let t = EntityId(9);
+
+        let spawn: HashSet<_> = [t].into_iter().collect();
+        let retain: HashSet<_> = [t].into_iter().collect();
+        graph.reconcile_observer(o1, &spawn, &retain);
+        graph.reconcile_observer(o2, &spawn, &retain);
+
+        assert!(graph.remove_visibility(o1, t));
+        assert!(!graph.is_visible(o1, t));
+        assert!(graph.is_visible(o2, t));
+        assert_eq!(graph.observers_for(t), vec![o2]);
     }
 }

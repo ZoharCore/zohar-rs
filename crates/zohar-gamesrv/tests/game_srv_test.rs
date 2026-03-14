@@ -445,6 +445,121 @@ async fn test_ingame_set_channel_info_uses_configured_channel() -> anyhow::Resul
     Ok(())
 }
 
+#[tokio::test]
+async fn test_ingame_periodic_handshake_resync_runs_while_session_is_active() -> anyhow::Result<()>
+{
+    if !has_test_db_url() {
+        return Ok(());
+    }
+    let _ = tracing_subscriber::fmt::try_init();
+    let heartbeat_interval = Duration::from_millis(100);
+    let (addr, _resolver, ctx, username) =
+        setup_test_env_with_options_and_heartbeat(1, true, heartbeat_interval).await?;
+    let valid_token = issue_login_key(&ctx.db, &username).await?;
+
+    let mut ingame = connect_to_ingame(addr, &username, valid_token, [0; 16]).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(450);
+    let mut saw_initial_handshake = false;
+    let mut saw_periodic_handshake = false;
+
+    while tokio::time::Instant::now() < deadline {
+        tokio::select! {
+            maybe_packet = ingame.next() => {
+                let packet = maybe_packet
+                    .ok_or(anyhow::anyhow!("stream closed before periodic handshake"))??;
+                match packet {
+                    InGameS2c::Control(ControlS2c::RequestHandshake { data }) => {
+                        reply_to_ingame_handshake(&mut ingame, data).await?;
+                        if saw_initial_handshake {
+                            saw_periodic_handshake = true;
+                            break;
+                        }
+                        saw_initial_handshake = true;
+                    }
+                    InGameS2c::Control(ControlS2c::RequestHeartbeat) => {
+                        ingame
+                            .send(InGameC2s::Control(ControlC2s::HeartbeatResponse))
+                            .await?;
+                    }
+                    _ => {}
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                ingame
+                    .send(InGameC2s::Control(ControlC2s::HeartbeatResponse))
+                    .await?;
+            }
+        }
+    }
+
+    assert!(
+        saw_initial_handshake,
+        "expected initial in-game handshake request"
+    );
+    assert!(
+        saw_periodic_handshake,
+        "expected periodic handshake resync while the session remained active"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_ingame_periodic_handshake_resync_coexists_with_idle_heartbeat() -> anyhow::Result<()>
+{
+    if !has_test_db_url() {
+        return Ok(());
+    }
+    let _ = tracing_subscriber::fmt::try_init();
+    let heartbeat_interval = Duration::from_millis(100);
+    let (addr, _resolver, ctx, username) =
+        setup_test_env_with_options_and_heartbeat(1, true, heartbeat_interval).await?;
+    let valid_token = issue_login_key(&ctx.db, &username).await?;
+
+    let mut ingame = connect_to_ingame(addr, &username, valid_token, [0; 16]).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(450);
+    let mut handshake_count = 0;
+    let mut saw_heartbeat_request = false;
+
+    while tokio::time::Instant::now() < deadline {
+        let packet = timeout(Duration::from_millis(150), ingame.next())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for idle in-game control packet"))?
+            .ok_or(anyhow::anyhow!(
+                "stream closed before idle heartbeat test completed"
+            ))??;
+
+        match packet {
+            InGameS2c::Control(ControlS2c::RequestHandshake { data }) => {
+                handshake_count += 1;
+                reply_to_ingame_handshake(&mut ingame, data).await?;
+            }
+            InGameS2c::Control(ControlS2c::RequestHeartbeat) => {
+                saw_heartbeat_request = true;
+                ingame
+                    .send(InGameC2s::Control(ControlC2s::HeartbeatResponse))
+                    .await?;
+            }
+            _ => {}
+        }
+
+        if handshake_count >= 2 && saw_heartbeat_request {
+            break;
+        }
+    }
+
+    assert!(
+        handshake_count >= 2,
+        "expected initial and periodic in-game handshake requests"
+    );
+    assert!(
+        saw_heartbeat_request,
+        "expected idle heartbeat request alongside periodic handshake resync"
+    );
+
+    Ok(())
+}
+
 // ============================================================================
 // Test Helpers
 // ============================================================================
@@ -455,12 +570,26 @@ async fn setup_test_env() -> anyhow::Result<(
     Arc<GameContext>,
     String,
 )> {
-    setup_test_env_with_options(1, false).await
+    setup_test_env_with_options_and_heartbeat(1, false, Duration::from_secs(60)).await
 }
 
 async fn setup_test_env_with_options(
     channel_id: u32,
     seed_player: bool,
+) -> anyhow::Result<(
+    std::net::SocketAddr,
+    Arc<StaticMapResolver>,
+    Arc<GameContext>,
+    String,
+)> {
+    setup_test_env_with_options_and_heartbeat(channel_id, seed_player, Duration::from_secs(60))
+        .await
+}
+
+async fn setup_test_env_with_options_and_heartbeat(
+    channel_id: u32,
+    seed_player: bool,
+    heartbeat_interval: Duration,
 ) -> anyhow::Result<(
     std::net::SocketAddr,
     Arc<StaticMapResolver>,
@@ -511,7 +640,7 @@ async fn setup_test_env_with_options(
         token_signer: test_token_signer(),
         login_token_idle_ttl: Duration::from_secs(7 * 24 * 60 * 60),
         coords,
-        heartbeat_interval: Duration::from_secs(60),
+        heartbeat_interval,
         server_id: "GAME_SERVER_1".to_string(),
         active_session_stale_threshold: Duration::from_secs(60),
         channel_id,
@@ -830,6 +959,56 @@ async fn await_channel_info(
             return Ok(channel_id);
         }
     }
+}
+
+async fn connect_to_ingame(
+    addr: std::net::SocketAddr,
+    username: &str,
+    token: u32,
+    enc_key: [u8; 16],
+) -> anyhow::Result<Framed<TcpStream, SimpleBinRwCodec<InGameS2c, InGameC2s>>> {
+    let (mut select, mut sequencer) = connect_through_login(addr, username, token, enc_key)
+        .await?
+        .ok_or(anyhow::anyhow!("login unexpectedly failed"))?;
+    let _ = await_set_player_choices(&mut select).await?;
+
+    send_sequenced(
+        select.get_mut(),
+        &SelectC2s::Specific(SelectC2sSpecific::SubmitPlayerChoice {
+            slot: PlayerSelectSlot::First,
+        }),
+        &mut sequencer,
+    )
+    .await?;
+    await_phase_transition_select(&mut select, PhaseId::Loading).await?;
+
+    let mut loading = switch_select_to_loading(select);
+    send_sequenced(
+        loading.get_mut(),
+        &LoadingC2s::Specific(LoadingC2sSpecific::SignalLoadingComplete),
+        &mut sequencer,
+    )
+    .await?;
+    await_phase_transition_loading(&mut loading, PhaseId::InGame).await?;
+
+    Ok(switch_loading_to_ingame(loading))
+}
+
+async fn reply_to_ingame_handshake(
+    framed: &mut Framed<TcpStream, SimpleBinRwCodec<InGameS2c, InGameC2s>>,
+    data: HandshakeSyncData,
+) -> anyhow::Result<()> {
+    let reply_data = HandshakeSyncData {
+        handshake: data.handshake,
+        time: WireMillis32::from(data.time.as_duration()),
+        delta: WireDeltaMillis::from(Duration::ZERO),
+    };
+    framed
+        .send(InGameC2s::Control(ControlC2s::HandshakeResponse {
+            data: reply_data,
+        }))
+        .await?;
+    Ok(())
 }
 
 async fn run_game_client(

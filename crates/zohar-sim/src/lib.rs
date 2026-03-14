@@ -5,6 +5,7 @@ pub mod api;
 pub mod bridge;
 pub mod chat;
 pub mod motion;
+pub mod navigation;
 pub mod outbox;
 mod replication;
 pub mod runtime;
@@ -19,6 +20,7 @@ pub use motion::{
     EntityMotionSpeedTable, MobMotionSpeedTable, MobMotionSpeeds, MotionEntityKey, MotionMoveMode,
     PlayerMotionProfileKey, PlayerMotionSpeedTable, PlayerMotionSpeeds,
 };
+pub use navigation::{GridCell, MapNavigator, NavPath, TerrainFlagsGrid};
 pub use outbox::{PlayerOutbox, PlayerOutboxStats};
 pub use runtime::{
     ContentPlugin, MapConfig, MapPlugin, NetworkPlugin, OutboxPlugin, PlayerCount, SharedConfig,

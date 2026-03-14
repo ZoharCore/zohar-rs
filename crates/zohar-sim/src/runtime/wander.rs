@@ -5,6 +5,7 @@ use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation
 use zohar_domain::entity::MovementKind;
 
 use crate::motion::MotionMoveMode;
+use crate::navigation::MapNavigator;
 
 use super::state::{
     LocalTransform, MapConfig, MapPendingMovements, MapSpatial, MobRef, NetEntityId,
@@ -19,7 +20,8 @@ pub(super) fn monster_wander(world: &mut World) {
     let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
         return;
     };
-    let validator = WanderValidator::new(world.resource::<MapConfig>().local_size);
+    let map_config = world.resource::<MapConfig>();
+    let validator = WanderValidator::new(map_config.local_size, map_config.navigator.clone());
 
     let (now_ms, now_ts) = {
         let state = world.resource::<RuntimeState>();
@@ -91,7 +93,7 @@ pub(super) fn monster_wander(world: &mut World) {
             let mut state = world.resource_mut::<RuntimeState>();
             sample_idle_wander_target(
                 &mut state.rng,
-                validator,
+                &validator,
                 old_pos,
                 current_rot,
                 shared.wander.step_min_m,
@@ -185,7 +187,7 @@ fn store_wander_state(world: &mut World, mob_entity: Entity, wander: WanderState
 
 fn sample_idle_wander_target(
     rng: &mut rand::rngs::SmallRng,
-    validator: WanderValidator,
+    validator: &WanderValidator,
     current_pos: LocalPos,
     current_rot: u8,
     step_min_m: f32,
@@ -205,25 +207,29 @@ fn sample_idle_wander_target(
     Some((candidate, rot))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct WanderValidator {
     map_size: LocalSize,
+    navigator: Option<std::sync::Arc<MapNavigator>>,
 }
 
 impl WanderValidator {
-    fn new(map_size: LocalSize) -> Self {
-        Self { map_size }
+    fn new(map_size: LocalSize, navigator: Option<std::sync::Arc<MapNavigator>>) -> Self {
+        Self {
+            map_size,
+            navigator,
+        }
     }
 
-    fn is_allowed(self, current_pos: LocalPos, candidate: LocalPos) -> bool {
-        let midpoint = LocalPos::new(
-            (current_pos.x + candidate.x) * 0.5,
-            (current_pos.y + candidate.y) * 0.5,
-        );
-        self.contains_local(midpoint) && self.contains_local(candidate)
+    fn is_allowed(&self, current_pos: LocalPos, candidate: LocalPos) -> bool {
+        self.contains_local(candidate)
+            && self
+                .navigator
+                .as_ref()
+                .is_none_or(|nav| nav.segment_clear(current_pos, candidate))
     }
 
-    fn contains_local(self, pos: LocalPos) -> bool {
+    fn contains_local(&self, pos: LocalPos) -> bool {
         pos.x.is_finite()
             && pos.y.is_finite()
             && pos.x >= 0.0
@@ -239,5 +245,15 @@ pub(super) fn is_wander_target_allowed(
     current_pos: LocalPos,
     candidate: LocalPos,
 ) -> bool {
-    WanderValidator::new(map_size).is_allowed(current_pos, candidate)
+    WanderValidator::new(map_size, None).is_allowed(current_pos, candidate)
+}
+
+#[cfg(test)]
+pub(super) fn is_wander_target_allowed_with_collision(
+    map_size: LocalSize,
+    current_pos: LocalPos,
+    candidate: LocalPos,
+    navigator: std::sync::Arc<MapNavigator>,
+) -> bool {
+    WanderValidator::new(map_size, Some(navigator)).is_allowed(current_pos, candidate)
 }

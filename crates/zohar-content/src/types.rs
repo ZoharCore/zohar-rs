@@ -9,7 +9,7 @@ pub mod spawns;
 
 use chat::{MobChatLine, MobChatStrategy};
 use empires::EmpireStartConfig;
-use maps::{ContentMap, MapTownSpawn};
+use maps::{ContentMap, MapTownSpawn, TerrainFlagsGrid};
 use mob_groups::{MobGroupGroupRecord, MobGroupRecord};
 use mobs::ContentMob;
 use motion::{ContentMotion, PlayerMotionProfile};
@@ -18,6 +18,7 @@ use spawns::SpawnRuleRecord;
 #[derive(Debug, Default, Clone)]
 pub struct ContentCatalog {
     pub maps: Vec<ContentMap>,
+    pub map_terrain_flags: Vec<TerrainFlagsGrid>,
     pub town_spawns: Vec<MapTownSpawn>,
     pub mobs: Vec<ContentMob>,
     pub mob_groups: Vec<MobGroupRecord>,

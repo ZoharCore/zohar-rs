@@ -7,10 +7,12 @@ use super::util::{
     degrees_to_protocol_rot, expand_spawn_template, next_entity_id, random_duration_between_ms,
     random_protocol_rot,
 };
+use crate::navigation::MapNavigator;
 use bevy::prelude::*;
 use rand::RngExt;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
+use std::sync::Arc;
 use zohar_domain::coords::{LocalBox, LocalBoxExt, LocalPos, LocalSize};
 use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::spawn::{FacingStrategy, SpawnRule};
@@ -247,7 +249,9 @@ fn spawn_one_template(
     shared: &SharedConfig,
     rule: &SpawnRule,
 ) -> Vec<zohar_domain::entity::EntityId> {
-    let map_bounds = map_local_bounds(world.resource::<super::state::MapConfig>().local_size);
+    let map_config = world.resource::<super::state::MapConfig>();
+    let map_bounds = map_local_bounds(map_config.local_size);
+    let navigator = map_config.navigator.clone();
     let mob_ids = {
         let mut state = world.resource_mut::<RuntimeState>();
         expand_spawn_template(&rule.template, &mut state.rng)
@@ -268,7 +272,7 @@ fn spawn_one_template(
                 }
                 None => rule.area.bounds.intersect(map_bounds),
             };
-            let pos = allowed_bounds.map(|bounds| bounds.sample_pos(&mut state.rng));
+            let pos = sample_spawn_position(&mut state.rng, allowed_bounds, navigator.as_ref());
             let rot = match rule.facing {
                 FacingStrategy::Random => random_protocol_rot(&mut state.rng),
                 FacingStrategy::Fixed(direction) => degrees_to_protocol_rot(direction.to_angle()),
@@ -294,6 +298,36 @@ fn spawn_one_template(
     }
 
     spawned_entities
+}
+
+fn sample_spawn_position(
+    rng: &mut rand::rngs::SmallRng,
+    bounds: Option<LocalBox>,
+    navigator: Option<&Arc<MapNavigator>>,
+) -> Option<LocalPos> {
+    const MAX_SPAWN_POSITION_ATTEMPTS: usize = 32;
+
+    let bounds = bounds?;
+    for _ in 0..MAX_SPAWN_POSITION_ATTEMPTS {
+        let candidate = bounds.sample_pos(rng);
+        if navigator.is_some_and(|nav| !nav.can_stand(candidate)) {
+            continue;
+        }
+        return Some(candidate);
+    }
+    None
+}
+
+#[cfg(test)]
+pub(super) fn sample_spawn_position_for_test(
+    seed: u64,
+    bounds: LocalBox,
+    navigator: Option<Arc<MapNavigator>>,
+) -> Option<LocalPos> {
+    use rand::SeedableRng;
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+    sample_spawn_position(&mut rng, Some(bounds), navigator.as_ref())
 }
 
 fn spawn_one_mob(

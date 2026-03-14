@@ -12,7 +12,7 @@ use crate::GameContext;
 use crate::adapters::{ToDomain, ToProtocol};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::warn;
+use tracing::{debug, warn};
 use zohar_db::{GameDb, PlayersView, ProfilesView, SessionsView};
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::{LocalPos, WorldPos};
@@ -50,6 +50,7 @@ pub(super) struct InGameCtx<'a> {
 }
 
 const MAP_EVENT_BURST_LIMIT: usize = 32;
+const MOVEMENT_TS_SKEW_WARN_THRESHOLD_MS: u32 = 5_000;
 
 async fn handle_enter(state: &mut InGameCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
     let mut effects = spawn::enter_world_effects(state);
@@ -66,6 +67,23 @@ async fn handle_tick(
     now: Instant,
     state: &mut InGameCtx<'_>,
 ) -> PhaseResult<PhaseEffects<ThisPhase>> {
+    let periodic_sync = state.handshake.sync_data(now, Duration::ZERO);
+    let periodic_uptime_ms = u32::from(periodic_sync.time);
+    debug!(
+        username = %state.username,
+        player_id = ?state.player_id,
+        uptime_ms = periodic_uptime_ms,
+        "Sending periodic in-game handshake resync"
+    );
+
+    let mut effects = PhaseEffects::empty();
+    effects.push(
+        ControlS2c::RequestHandshake {
+            data: periodic_sync,
+        }
+        .into(),
+    );
+
     match state.session.on_tick(now) {
         Some(SessionTick::SendHeartbeat) => {
             // Keep active-session liveness on a coarse cadence, not per gameplay packet.
@@ -82,7 +100,6 @@ async fn handle_tick(
                     "Failed to update session heartbeat"
                 );
             }
-            let mut effects = PhaseEffects::empty();
             effects.push(ControlS2c::RequestHeartbeat.into());
             effects.push(InGameS2c::System(system::SystemS2c::SetServerTime {
                 time: state.handshake.uptime_at(now).into(),
@@ -90,7 +107,7 @@ async fn handle_tick(
             Ok(effects)
         }
         Some(SessionTick::TimedOut) => Ok(PhaseEffects::disconnect("heartbeat timeout")),
-        None => Ok(PhaseEffects::empty()),
+        None => Ok(effects),
     }
 }
 
@@ -124,6 +141,23 @@ async fn handle_packet(
         }) => {
             let kind = kind.to_domain();
             let packet_ts = u32::from(ts);
+            let server_uptime_ms = state
+                .handshake
+                .uptime_at(now)
+                .as_millis()
+                .min(u128::from(u32::MAX)) as u32;
+            let skew_ms = packet_ts.abs_diff(server_uptime_ms);
+            if skew_ms > MOVEMENT_TS_SKEW_WARN_THRESHOLD_MS {
+                warn!(
+                    username = %state.username,
+                    player_id = ?state.player_id,
+                    map_id = state.map_id.get(),
+                    packet_ts,
+                    server_uptime_ms,
+                    skew_ms,
+                    "Movement timestamp skew exceeds diagnostic threshold"
+                );
+            }
 
             // Send movement intent to MapActor for broadcast to all players
             let Some(local_pos) = state.ctx.coords.world_wire_to_local(state.map_id, x, y) else {

@@ -2,6 +2,7 @@ use crate::aoi::SpatialIndex;
 use crate::bridge::InboundEvent;
 use crate::chat::MobChatContent;
 use crate::motion::EntityMotionSpeedTable;
+use crate::navigation::MapNavigator;
 use crate::outbox::PlayerOutbox;
 use crate::replication::ReplicationGraph;
 use crate::types::MapInstanceKey;
@@ -65,6 +66,7 @@ pub struct MapConfig {
     pub map_key: MapInstanceKey,
     pub empire: Option<Empire>,
     pub local_size: LocalSize,
+    pub navigator: Option<Arc<MapNavigator>>,
     pub spawn_rules: Vec<SpawnRule>,
 }
 

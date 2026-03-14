@@ -1,19 +1,19 @@
 -- Minimal motion model for movement timing lookup.
 
 CREATE TABLE enum_motion_mode (value TEXT PRIMARY KEY);
-CREATE TABLE enum_motion_entity_kind (value TEXT PRIMARY KEY);
+CREATE TABLE enum_motion_set_kind (value TEXT PRIMARY KEY);
 CREATE TABLE enum_motion_action (value TEXT PRIMARY KEY);
 
-CREATE TABLE motion_entity (
-  motion_entity_id INTEGER PRIMARY KEY,
-  entity_kind TEXT NOT NULL REFERENCES enum_motion_entity_kind(value)
+CREATE TABLE motion_set (
+  motion_set_id INTEGER PRIMARY KEY,
+  set_kind TEXT NOT NULL REFERENCES enum_motion_set_kind(value)
 );
 
-CREATE TABLE motion_entity_mob (
-  motion_entity_id INTEGER NOT NULL REFERENCES motion_entity(motion_entity_id),
+CREATE TABLE motion_set_mob (
+  motion_set_id INTEGER NOT NULL REFERENCES motion_set(motion_set_id),
   mob_id INTEGER PRIMARY KEY REFERENCES mob_proto(mob_id)
 );
-CREATE INDEX motion_entity_mob_entity_idx ON motion_entity_mob(motion_entity_id);
+CREATE INDEX motion_set_mob_set_idx ON motion_set_mob(motion_set_id);
 
 CREATE TABLE player_motion_profile (
   profile_id INTEGER PRIMARY KEY,
@@ -22,10 +22,11 @@ CREATE TABLE player_motion_profile (
   gender TEXT NOT NULL REFERENCES enum_gender(value)
 );
 
-CREATE TABLE motion_entity_player (
-  motion_entity_id INTEGER PRIMARY KEY REFERENCES motion_entity(motion_entity_id),
-  profile_id INTEGER NOT NULL UNIQUE REFERENCES player_motion_profile(profile_id)
+CREATE TABLE motion_set_player_profile (
+  motion_set_id INTEGER NOT NULL REFERENCES motion_set(motion_set_id),
+  profile_id INTEGER PRIMARY KEY REFERENCES player_motion_profile(profile_id)
 );
+CREATE INDEX motion_set_player_profile_set_idx ON motion_set_player_profile(motion_set_id);
 
 -- Legacy index values are normalized to enum_motion_action.
 -- 1 WAIT, 2 WALK, 3 RUN, 5 DAMAGE, 6 DAMAGE_FLYING, 7 STAND_UP,
@@ -36,7 +37,7 @@ CREATE TABLE motion_entity_player (
 -- 171 SKILL_1, 172 SKILL_2, 173 SKILL_3, 174 SKILL_4, 175 SKILL_5.
 CREATE TABLE motion_entry (
   motion_id INTEGER PRIMARY KEY,
-  motion_entity_id INTEGER NOT NULL REFERENCES motion_entity(motion_entity_id),
+  motion_set_id INTEGER NOT NULL REFERENCES motion_set(motion_set_id),
   motion_mode TEXT NOT NULL REFERENCES enum_motion_mode(value),
   motion_action TEXT NOT NULL REFERENCES enum_motion_action(value),
   duration_ms INTEGER NOT NULL,
@@ -45,4 +46,4 @@ CREATE TABLE motion_entry (
   source TEXT NOT NULL
 );
 
-CREATE INDEX motion_entry_entity_idx ON motion_entry(motion_entity_id, motion_mode, motion_action);
+CREATE INDEX motion_entry_set_idx ON motion_entry(motion_set_id, motion_mode, motion_action);

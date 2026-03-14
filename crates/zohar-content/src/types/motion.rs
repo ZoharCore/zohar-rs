@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString)]
-pub enum MotionEntityKind {
+pub enum MotionSetKind {
     #[strum(serialize = "MOB")]
     Mob,
     #[strum(serialize = "PLAYER")]
@@ -113,10 +113,10 @@ pub struct PlayerMotionProfile {
 #[derive(Debug, Clone)]
 pub struct ContentMotion {
     pub motion_id: i64,
-    pub motion_entity_id: i64,
-    pub entity_kind: MotionEntityKind,
+    pub motion_set_id: i64,
+    pub set_kind: MotionSetKind,
     pub mob_id: Option<i64>,
-    pub player_profile_id: Option<i64>,
+    pub profile_id: Option<i64>,
     pub motion_mode: MotionMode,
     pub motion_action: MotionAction,
     pub duration_ms: i64,
