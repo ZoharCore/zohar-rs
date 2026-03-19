@@ -1,5 +1,5 @@
 {{- $appNs := include "zohar.namespace" . -}}
-{{- if and $appNs (ne $appNs .Release.Namespace) (not (lookup "v1" "Namespace" "" $appNs)) }}
+{{- if and .Values.tenantNamespace.create $appNs (ne $appNs .Release.Namespace) }}
 apiVersion: v1
 kind: Namespace
 metadata:

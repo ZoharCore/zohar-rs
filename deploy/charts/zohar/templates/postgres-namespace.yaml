@@ -1,7 +1,7 @@
 {{- if and .Values.postgres.enabled .Values.postgres.createNamespace }}
 {{- $pgNs := include "zohar.postgresNamespace" . -}}
 {{- $appNs := include "zohar.namespace" . -}}
-{{- if and $pgNs (ne $pgNs $appNs) (not (lookup "v1" "Namespace" "" $pgNs)) }}
+{{- if and $pgNs (ne $pgNs $appNs) }}
 apiVersion: v1
 kind: Namespace
 metadata:

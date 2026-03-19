@@ -1,4 +1,7 @@
 namespaceOverride: ""
+tenantNamespace:
+  # Keep the tenant namespace manifest stable across upgrades.
+  create: true
 infraNamespace: infra
 tenant: nightlysrv
 profile: ""
@@ -28,7 +31,7 @@ gameDatabase:
 
 postgres:
   enabled: true
-  # Create postgres namespace automatically when missing.
+  # Keep the Postgres namespace manifest stable across upgrades.
   # Only applies when postgres namespace differs from workload namespace.
   createNamespace: true
   # Optional explicit override for Postgres namespace.
