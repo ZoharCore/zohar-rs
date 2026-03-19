@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::grid::{GridCell, TerrainFlagsGrid};
 
-const UNASSIGNED_COMPONENT: u32 = 0;
+const UNASSIGNED_COMPONENT: u8 = 0;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WalkabilityView {
@@ -30,7 +30,7 @@ impl WalkabilityView {
 pub(crate) struct ReachabilityGrid {
     width: usize,
     height: usize,
-    components: Box<[u32]>,
+    components: Box<[u8]>,
 }
 
 impl ReachabilityGrid {
@@ -38,7 +38,7 @@ impl ReachabilityGrid {
     pub(crate) fn new(walkability: &WalkabilityView) -> Self {
         let terrain = walkability.terrain();
         let mut components = vec![UNASSIGNED_COMPONENT; terrain.width() * terrain.height()];
-        let mut next_component_id: u32 = 1;
+        let mut next_component_id: u8 = 1;
 
         for cell in terrain.all_cells() {
             let idx = terrain
@@ -56,7 +56,12 @@ impl ReachabilityGrid {
                 cell,
                 next_component_id,
             );
-            next_component_id = next_component_id.saturating_add(1);
+            next_component_id = next_component_id.checked_add(1).unwrap_or_else(|| {
+                panic!(
+                    "Reachability grid exceeded {} connected components; increase component id storage",
+                    u8::MAX
+                )
+            });
         }
 
         Self {
@@ -66,7 +71,7 @@ impl ReachabilityGrid {
         }
     }
 
-    pub(crate) fn component_for_cell(&self, cell: GridCell) -> Option<u32> {
+    pub(crate) fn component_for_cell(&self, cell: GridCell) -> Option<u8> {
         if cell.x >= self.width || cell.y >= self.height {
             return None;
         }
@@ -88,9 +93,9 @@ impl ReachabilityGrid {
     fn flood_fill_component(
         terrain: &TerrainFlagsGrid,
         walkability: &WalkabilityView,
-        components: &mut [u32],
+        components: &mut [u8],
         seed: GridCell,
-        component_id: u32,
+        component_id: u8,
     ) {
         let mut queue = VecDeque::from([seed]);
         let seed_idx = terrain.index_of(seed).expect("seed must stay in bounds");
@@ -143,5 +148,16 @@ mod tests {
 
         assert!(reachability.same_component(GridCell { x: 0, y: 0 }, GridCell { x: 0, y: 2 }));
         assert!(!reachability.same_component(GridCell { x: 0, y: 1 }, GridCell { x: 2, y: 1 }));
+    }
+
+    #[test]
+    #[should_panic(expected = "Reachability grid exceeded 255 connected components")]
+    fn panics_when_component_count_exceeds_u8_capacity() {
+        let blocked_cells = (0..32)
+            .flat_map(|y| (0..32).filter_map(move |x| ((x + y) % 2 == 1).then_some((x, y))))
+            .collect::<Vec<_>>();
+        let walkability = WalkabilityView::new(Arc::new(test_grid(32, 32, &blocked_cells)));
+
+        let _ = ReachabilityGrid::new(&walkability);
     }
 }

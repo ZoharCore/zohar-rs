@@ -312,32 +312,42 @@ fn push_movement_event(world: &mut World, recipient_entity: Entity, movement: Pe
         return;
     };
 
-    match movement.kind {
-        MovementKind::Move | MovementKind::Wait => {
-            outbox.0.set_latest_movement_with_priority(
-                movement.entity_id,
-                movement.kind,
-                movement.arg,
-                movement.rot,
-                movement.new_pos.x,
-                movement.new_pos.y,
-                movement.ts,
-                movement.duration,
-                movement.mover_player_id.is_some(),
-            );
-        }
-        MovementKind::Attack | MovementKind::Combo => {
-            outbox.0.push_reliable(PlayerEvent::EntityMove {
-                entity_id: movement.entity_id,
-                kind: movement.kind,
-                arg: movement.arg,
-                rot: movement.rot,
-                x: movement.new_pos.x,
-                y: movement.new_pos.y,
-                ts: movement.ts,
-                duration: movement.duration,
-            });
-        }
+    if movement.reliable {
+        outbox.0.push_reliable(PlayerEvent::EntityMove {
+            entity_id: movement.entity_id,
+            kind: movement.kind,
+            arg: movement.arg,
+            rot: movement.rot,
+            x: movement.new_pos.x,
+            y: movement.new_pos.y,
+            ts: movement.ts,
+            duration: movement.duration,
+        });
+    } else if movement.mover_player_id.is_some()
+        && matches!(movement.kind, MovementKind::Move | MovementKind::Wait)
+    {
+        outbox.0.set_latest_movement_with_priority(
+            movement.entity_id,
+            movement.kind,
+            movement.arg,
+            movement.rot,
+            movement.new_pos.x,
+            movement.new_pos.y,
+            movement.ts,
+            movement.duration,
+            true,
+        );
+    } else {
+        outbox.0.push_remote_movement(
+            movement.entity_id,
+            movement.kind,
+            movement.arg,
+            movement.rot,
+            movement.new_pos.x,
+            movement.new_pos.y,
+            movement.ts,
+            movement.duration,
+        );
     }
 }
 

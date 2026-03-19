@@ -137,6 +137,42 @@ fn ingame_routes_chat() {
 }
 
 #[test]
+fn ingame_routes_attack() {
+    let pkt = InGameC2s::Combat(ingame::combat::CombatC2s::InputAttack {
+        attack_type: game_pkt::ZeroOpt::some(Skill::Berserk),
+        target: NetId(0x0102_0304),
+        _unknown: 0x1122,
+    });
+    let decoded = round_trip(&pkt);
+    match decoded {
+        InGameC2s::Combat(ingame::combat::CombatC2s::InputAttack {
+            attack_type,
+            target,
+            _unknown,
+        }) => {
+            assert_eq!(attack_type, game_pkt::ZeroOpt::some(Skill::Berserk));
+            assert_eq!(target, NetId(0x0102_0304));
+            assert_eq!(unknown, 0x1122);
+        }
+        other => panic!("unexpected packet: {other:?}"),
+    }
+}
+
+#[test]
+fn ingame_routes_target() {
+    let pkt = InGameC2s::Combat(ingame::combat::CombatC2s::SignalTargetSwitch {
+        target: NetId(0x0506_0708),
+    });
+    let decoded = round_trip(&pkt);
+    match decoded {
+        InGameC2s::Combat(ingame::combat::CombatC2s::SignalTargetSwitch { target }) => {
+            assert_eq!(target, NetId(0x0506_0708));
+        }
+        other => panic!("unexpected packet: {other:?}"),
+    }
+}
+
+#[test]
 fn ingame_routes_system() {
     let pkt = InGameS2c::System(ingame::system::SystemS2c::SetChannelInfo { channel_id: 7 });
     let decoded = round_trip(&pkt);

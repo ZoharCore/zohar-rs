@@ -27,6 +27,7 @@ pub(super) const DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC: f32 = 4.5;
 pub(super) const MAX_MOVE_PACKET_STEP_M: f32 = 25.0;
 pub(super) const MAX_MOVE_INTENTS_PER_TICK: usize = 64;
 pub(super) const MAX_CHAT_INTENTS_PER_TICK: usize = 16;
+pub(super) const MAX_ATTACK_INTENTS_PER_TICK: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct WanderConfig {
@@ -90,6 +91,7 @@ impl StartupReadySignal {
 #[derive(Resource)]
 pub(super) struct RuntimeState {
     pub(super) next_net_id: u32,
+    pub(super) next_pack_id: u32,
     pub(super) map_entity: Option<Entity>,
     pub(super) is_dirty: bool,
     pub(super) sim_time_ms: u64,
@@ -101,6 +103,7 @@ impl Default for RuntimeState {
     fn default() -> Self {
         Self {
             next_net_id: 0,
+            next_pack_id: 0,
             map_entity: None,
             is_dirty: false,
             sim_time_ms: 0,
@@ -130,6 +133,7 @@ pub(super) struct PendingMovement {
     pub(super) entity_id: EntityId,
     pub(super) new_pos: LocalPos,
     pub(super) kind: MovementKind,
+    pub(super) reliable: bool,
     pub(super) arg: u8,
     pub(super) rot: u8,
     pub(super) ts: u32,
@@ -155,9 +159,11 @@ pub(super) struct PlayerMotionState {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct WanderStateData {
-    pub(super) next_decision_at_ms: u64,
-    pub(super) pending_wait_at_ms: Option<u64>,
+pub(super) struct MobMotionState {
+    pub(super) segment_start_pos: LocalPos,
+    pub(super) segment_end_pos: LocalPos,
+    pub(super) segment_start_at_ms: u64,
+    pub(super) segment_end_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -172,6 +178,12 @@ pub(super) struct MoveIntent {
 #[derive(Debug, Clone)]
 pub(super) struct ChatIntent {
     pub(super) message: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AttackIntent {
+    pub(super) target: EntityId,
+    pub(super) attack_type: u8,
 }
 
 #[derive(Component)]
@@ -218,6 +230,9 @@ pub(super) struct LocalTransform {
 pub(super) struct PlayerMotion(pub(super) PlayerMotionState);
 
 #[derive(Component)]
+pub(super) struct MobMotion(pub(super) MobMotionState);
+
+#[derive(Component)]
 pub(super) struct PlayerAppearanceComp(pub(super) PlayerAppearance);
 
 #[derive(Component)]
@@ -229,6 +244,9 @@ pub(super) struct MoveIntentQueue(pub(super) Vec<MoveIntent>);
 #[derive(Component, Default)]
 pub(super) struct ChatIntentQueue(pub(super) Vec<ChatIntent>);
 
+#[derive(Component, Default)]
+pub(super) struct AttackIntentQueue(pub(super) Vec<AttackIntent>);
+
 #[derive(Component)]
 pub(super) struct MobMarker;
 
@@ -237,8 +255,50 @@ pub(super) struct MobRef {
     pub(super) mob_id: MobId,
 }
 
-#[derive(Component)]
-pub(super) struct WanderState(pub(super) WanderStateData);
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct MobPackId {
+    pub(super) pack_id: u32,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub(super) struct MobHomeAnchor {
+    pub(super) pos: LocalPos,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MobBrainMode {
+    Idle,
+    Chasing,
+    Returning,
+    Attacking,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub(super) struct MobBrainState {
+    pub(super) mode: MobBrainMode,
+    pub(super) target: Option<EntityId>,
+    pub(super) target_locked_at_ms: u64,
+    pub(super) next_attack_at_ms: u64,
+    pub(super) attack_windup_until_ms: u64,
+    pub(super) next_chase_rethink_at_ms: u64,
+    pub(super) next_wander_decision_at_ms: u64,
+    pub(super) wander_wait_until_ms: Option<u64>,
+}
+
+impl Default for MobBrainState {
+    fn default() -> Self {
+        Self {
+            mode: MobBrainMode::Idle,
+            target: None,
+            target_locked_at_ms: 0,
+            next_attack_at_ms: 0,
+            attack_windup_until_ms: 0,
+            next_chase_rethink_at_ms: 0,
+            next_wander_decision_at_ms: 0,
+            wander_wait_until_ms: None,
+        }
+    }
+}
 
 #[derive(Component)]
 pub(super) struct MobChatState {
@@ -250,8 +310,11 @@ pub enum SimSet {
     DrainInbound,
     SyncTickRate,
     ProcessIntents,
+    SampleMobMotion,
     SpawnRules,
-    MonsterWander,
+    AttackIntents,
+    MobBrain,
+    MobChase,
     IdleChat,
     AoiReconcile,
     ReplicationFlush,

@@ -16,6 +16,18 @@ pub enum MobKind {
     Portal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MobBattleType {
+    Melee,
+    Range,
+    Magic,
+    Special,
+    Power,
+    Tanker,
+    SuperPower,
+    SuperTanker,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MobRank {
     Pawn,
@@ -32,9 +44,13 @@ pub struct MobPrototypeDef {
     pub mob_kind: MobKind,
     pub name: String,
     pub rank: MobRank,
+    pub battle_type: MobBattleType,
     pub level: u32,
     pub move_speed: u8,
     pub attack_speed: u8,
+    pub aggressive_sight: u16,
+    pub attack_range: u16,
+    pub combat_extent_m: f32,
     pub bhv_flags: BehaviorFlags,
     pub empire: Option<crate::Empire>,
 }
@@ -46,9 +62,13 @@ impl MobPrototypeDef {
             mob_kind: MobKind::Monster,
             name: "mob_proto error".to_string(),
             rank: MobRank::Pawn,
+            battle_type: MobBattleType::Melee,
             level: 1,
             move_speed: 0,
             attack_speed: 0,
+            aggressive_sight: 0,
+            attack_range: 150,
+            combat_extent_m: 1.0,
             bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }

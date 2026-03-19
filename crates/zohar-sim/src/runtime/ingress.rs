@@ -1,14 +1,14 @@
 use bevy::prelude::*;
 use zohar_domain::coords::LocalPos;
-use zohar_domain::entity::MovementKind;
 
 use crate::api::{ClientIntent, PlayerEvent};
 use crate::bridge::{ClientIntentMsg, InboundEvent};
 
 use super::players::{handle_player_enter, handle_player_leave, player_entities_on_map};
 use super::state::{
-    ChatIntent, ChatIntentQueue, MAX_CHAT_INTENTS_PER_TICK, MAX_MOVE_INTENTS_PER_TICK, MoveIntent,
-    MoveIntentQueue, PlayerAppearanceComp, PlayerIndex, PlayerOutboxComp, RuntimeState,
+    AttackIntent, AttackIntentQueue, ChatIntent, ChatIntentQueue, MAX_ATTACK_INTENTS_PER_TICK,
+    MAX_CHAT_INTENTS_PER_TICK, MAX_MOVE_INTENTS_PER_TICK, MoveIntent, MoveIntentQueue,
+    PlayerAppearanceComp, PlayerIndex, PlayerOutboxComp, RuntimeState,
 };
 use super::util::{format_global_shout, next_entity_id};
 
@@ -84,22 +84,36 @@ fn handle_client_intent(world: &mut World, msg: ClientIntentMsg) {
                 }
             }
         }
-        ClientIntent::Attack { .. } => {}
+        ClientIntent::Attack {
+            target,
+            attack_type,
+        } => {
+            if let Some(mut queue) = world
+                .entity_mut(player_entity)
+                .get_mut::<AttackIntentQueue>()
+            {
+                queue.0.push(AttackIntent {
+                    target,
+                    attack_type,
+                });
+                if queue.0.len() > MAX_ATTACK_INTENTS_PER_TICK {
+                    let overflow = queue.0.len() - MAX_ATTACK_INTENTS_PER_TICK;
+                    queue.0.drain(0..overflow);
+                }
+            }
+        }
     }
 }
 
 fn push_move_intent(queue: &mut Vec<MoveIntent>, intent: MoveIntent) {
-    if intent.kind == MovementKind::Move {
-        if let Some(last) = queue.last_mut()
-            && last.kind == MovementKind::Move
-        {
-            *last = intent;
-        } else {
-            queue.push(intent);
-        }
-    } else {
-        queue.push(intent);
+    if queue
+        .last()
+        .is_some_and(|last| move_intents_match(last, &intent))
+    {
+        return;
     }
+
+    queue.push(intent);
 
     if queue.len() > MAX_MOVE_INTENTS_PER_TICK {
         let overflow = queue.len() - MAX_MOVE_INTENTS_PER_TICK;
@@ -107,9 +121,18 @@ fn push_move_intent(queue: &mut Vec<MoveIntent>, intent: MoveIntent) {
     }
 }
 
+fn move_intents_match(lhs: &MoveIntent, rhs: &MoveIntent) -> bool {
+    lhs.kind == rhs.kind
+        && lhs.arg == rhs.arg
+        && lhs.rot == rhs.rot
+        && lhs.target == rhs.target
+        && lhs.ts == rhs.ts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zohar_domain::entity::MovementKind;
 
     fn intent(kind: MovementKind, ts: u32, x: f32, y: f32) -> MoveIntent {
         MoveIntent {
@@ -122,19 +145,31 @@ mod tests {
     }
 
     #[test]
-    fn move_intents_coalesce_to_latest() {
+    fn move_intents_preserve_order() {
         let mut queue = Vec::new();
         push_move_intent(&mut queue, intent(MovementKind::Move, 100, 1.0, 1.0));
         push_move_intent(&mut queue, intent(MovementKind::Move, 120, 2.0, 2.0));
 
-        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.len(), 2);
         assert_eq!(queue[0].kind, MovementKind::Move);
-        assert_eq!(queue[0].ts, 120);
-        assert_eq!(queue[0].target, LocalPos::new(2.0, 2.0));
+        assert_eq!(queue[0].ts, 100);
+        assert_eq!(queue[1].kind, MovementKind::Move);
+        assert_eq!(queue[1].ts, 120);
+        assert_eq!(queue[1].target, LocalPos::new(2.0, 2.0));
     }
 
     #[test]
-    fn wait_intents_do_not_coalesce() {
+    fn exact_duplicate_move_intents_are_deduplicated() {
+        let mut queue = Vec::new();
+        push_move_intent(&mut queue, intent(MovementKind::Move, 100, 1.0, 1.0));
+        push_move_intent(&mut queue, intent(MovementKind::Move, 100, 1.0, 1.0));
+
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].ts, 100);
+    }
+
+    #[test]
+    fn wait_intents_preserve_order() {
         let mut queue = Vec::new();
         push_move_intent(&mut queue, intent(MovementKind::Wait, 100, 1.0, 1.0));
         push_move_intent(&mut queue, intent(MovementKind::Wait, 120, 2.0, 2.0));
@@ -146,14 +181,21 @@ mod tests {
     }
 
     #[test]
-    fn move_intents_keep_only_latest() {
+    fn move_intent_overflow_keeps_latest_suffix_in_order() {
         let mut queue = Vec::new();
-        push_move_intent(&mut queue, intent(MovementKind::Move, 100, 1.0, 1.0));
-        push_move_intent(&mut queue, intent(MovementKind::Move, 101, 2.0, 2.0));
-        push_move_intent(&mut queue, intent(MovementKind::Move, 102, 3.0, 3.0));
+        for idx in 0..(MAX_MOVE_INTENTS_PER_TICK as u32 + 2) {
+            push_move_intent(
+                &mut queue,
+                intent(MovementKind::Move, 100 + idx, idx as f32, 0.0),
+            );
+        }
 
-        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.len(), MAX_MOVE_INTENTS_PER_TICK);
         assert_eq!(queue[0].ts, 102);
+        assert_eq!(
+            queue.last().expect("latest").ts,
+            101 + MAX_MOVE_INTENTS_PER_TICK as u32
+        );
     }
 }
 

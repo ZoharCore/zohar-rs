@@ -5,9 +5,10 @@ use crate::api::PlayerEvent;
 use crate::bridge::{EnterMsg, LeaveMsg};
 
 use super::state::{
-    ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovements, MapReplication,
-    MapSpatial, MoveIntentQueue, NetEntityId, NetEntityIndex, PlayerAppearanceComp, PlayerCount,
-    PlayerIndex, PlayerMarker, PlayerMotion, PlayerMotionState, PlayerOutboxComp, RuntimeState,
+    AttackIntentQueue, ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovements,
+    MapReplication, MapSpatial, MoveIntentQueue, NetEntityId, NetEntityIndex, PlayerAppearanceComp,
+    PlayerCount, PlayerIndex, PlayerMarker, PlayerMotion, PlayerMotionState, PlayerOutboxComp,
+    RuntimeState,
 };
 use tracing::{info, warn};
 
@@ -138,6 +139,7 @@ pub(super) fn handle_player_enter(world: &mut World, mut msg: EnterMsg) {
         PlayerOutboxComp(msg.outbox),
         MoveIntentQueue::default(),
         ChatIntentQueue::default(),
+        AttackIntentQueue::default(),
     ));
 
     world.resource_mut::<RuntimeState>().is_dirty = true;

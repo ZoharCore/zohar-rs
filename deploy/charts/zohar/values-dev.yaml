@@ -29,4 +29,4 @@ topology:
     - metin2_map_c1
 
 core:
-  logFilter: info,zohar_game_server=info,zohar_db=info,zohar_net=trace
+  logFilter: info,zohar_game_server=info,zohar_db=info,zohar_net=trace,zohar_sim=debug

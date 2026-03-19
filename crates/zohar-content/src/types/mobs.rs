@@ -64,6 +64,26 @@ pub enum MobRank {
     King,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString, strum::Display)]
+pub enum MobBattleType {
+    #[strum(serialize = "MELEE")]
+    Melee,
+    #[strum(serialize = "RANGE")]
+    Range,
+    #[strum(serialize = "MAGIC")]
+    Magic,
+    #[strum(serialize = "SPECIAL")]
+    Special,
+    #[strum(serialize = "POWER")]
+    Power,
+    #[strum(serialize = "TANKER")]
+    Tanker,
+    #[strum(serialize = "SUPER_POWER")]
+    SuperPower,
+    #[strum(serialize = "SUPER_TANKER")]
+    SuperTanker,
+}
+
 #[derive(Debug, Clone)]
 pub struct ContentMob {
     pub mob_id: i64,
@@ -71,10 +91,13 @@ pub struct ContentMob {
     pub name: String,
     pub mob_type: MobType,
     pub rank: MobRank,
+    pub battle_type: MobBattleType,
     pub level: i64,
     pub ai_flags: MobAiFlags,
     pub move_speed: i64,
     pub attack_speed: i64,
+    pub aggressive_sight: i64,
+    pub attack_range: i64,
 }
 
 #[cfg(test)]

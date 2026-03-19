@@ -5,14 +5,15 @@ use super::state::{
     PlayerAppearanceComp, PlayerMarker, PlayerMotion, RuntimeState, SharedConfig,
 };
 use super::util::{calculate_move_duration_ms, sample_player_motion_at, sanitize_packet_target};
-use crate::navigation::MapNavigator;
 use bevy::prelude::*;
+use tracing::debug;
+use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
 
 pub(super) fn process_intents(world: &mut World) {
     let shared = world.resource::<SharedConfig>().clone();
-    let navigator = world.resource::<MapConfig>().navigator.clone();
+    let map_size = world.resource::<MapConfig>().local_size;
     let player_entities = player_entities_on_map(world);
 
     for player_entity in player_entities {
@@ -58,7 +59,7 @@ pub(super) fn process_intents(world: &mut World) {
             apply_move_intent(
                 world,
                 &shared,
-                navigator.as_deref(),
+                map_size,
                 player_entity,
                 player_id,
                 mover_net_id,
@@ -112,7 +113,7 @@ fn enqueue_local_chat_intents(
 fn apply_move_intent(
     world: &mut World,
     shared: &SharedConfig,
-    navigator: Option<&MapNavigator>,
+    map_size: zohar_domain::coords::LocalSize,
     player_entity: Entity,
     player_id: PlayerId,
     mover_net_id: EntityId,
@@ -131,10 +132,8 @@ fn apply_move_intent(
         };
 
         let old_pos = sample_player_motion_at(transform.pos, &mut motion.0, intent.ts);
-        let mut new_pos = sanitize_packet_target(old_pos, intent.target);
-        if navigator.is_some_and(|nav| !nav.segment_clear(old_pos, new_pos)) {
-            new_pos = old_pos;
-        }
+        let requested_pos = sanitize_packet_target(old_pos, intent.target);
+        let new_pos = sanitize_player_target_to_map(requested_pos, map_size);
         transform.pos = new_pos;
         transform.rot = intent.rot;
 
@@ -157,6 +156,18 @@ fn apply_move_intent(
         }
         motion.0.last_client_ts = intent.ts;
 
+        debug!(
+            player = ?mover_net_id,
+            kind = ?intent.kind,
+            requested_pos = ?intent.target,
+            old_pos = ?old_pos,
+            new_pos = ?new_pos,
+            rot = intent.rot,
+            ts = intent.ts,
+            duration,
+            "Applied player movement intent"
+        );
+
         (old_pos, new_pos, duration)
     };
 
@@ -177,6 +188,7 @@ fn apply_move_intent(
             entity_id: mover_net_id,
             new_pos,
             kind: intent.kind,
+            reliable: false,
             arg: intent.arg,
             rot: intent.rot,
             ts: intent.ts,
@@ -185,4 +197,24 @@ fn apply_move_intent(
     }
 
     world.resource_mut::<RuntimeState>().is_dirty = true;
+}
+
+fn sanitize_player_target_to_map(
+    requested: LocalPos,
+    map_size: zohar_domain::coords::LocalSize,
+) -> LocalPos {
+    LocalPos::new(
+        clamp_axis_to_map(requested.x, map_size.width),
+        clamp_axis_to_map(requested.y, map_size.height),
+    )
+}
+
+fn clamp_axis_to_map(coord: f32, max_exclusive: f32) -> f32 {
+    if !coord.is_finite() {
+        return 0.0;
+    }
+    if !max_exclusive.is_finite() || max_exclusive <= 0.0 {
+        return 0.0;
+    }
+    coord.clamp(0.0, max_exclusive - 0.001)
 }

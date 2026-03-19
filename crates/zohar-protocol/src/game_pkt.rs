@@ -159,7 +159,7 @@ impl_zero_fallback_identity!(u8, u16, u32, u64, i8, i16, i32, i64);
 
 macro_rules! impl_zero_fallback_num_enum {
     ($ty:ty, $primitive:ty) => {
-        impl ZeroFallback for $ty {
+        impl $crate::game_pkt::ZeroFallback for $ty {
             type Primitive = $primitive;
 
             fn try_from_primitive(raw: Self::Primitive) -> Result<Self, &'static str> {
@@ -173,6 +173,7 @@ macro_rules! impl_zero_fallback_num_enum {
         }
     };
 }
+pub(crate) use impl_zero_fallback_num_enum;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ZeroOpt<T>(pub Option<T>);

@@ -1,7 +1,8 @@
 use super::state::{
     LocalTransform, MapEmpire, MapMarker, MapPendingLocalChats, MapPendingMovements,
-    MapReplication, MapSpatial, MapSpawnRules, MobMarker, MobRef, NetEntityId, NetEntityIndex,
-    RuntimeState, SharedConfig, SpawnRuleState, StartupReadySignal, WanderState, WanderStateData,
+    MapReplication, MapSpatial, MapSpawnRules, MobBrainMode, MobBrainState, MobHomeAnchor,
+    MobMarker, MobMotion, MobMotionState, MobPackId, MobRef, NetEntityId, NetEntityIndex,
+    RuntimeState, SharedConfig, SpawnRuleState, StartupReadySignal,
 };
 use super::util::{
     degrees_to_protocol_rot, expand_spawn_template, next_entity_id, random_duration_between_ms,
@@ -258,6 +259,14 @@ fn spawn_one_template(
     };
     let mut spawned_entities = Vec::with_capacity(mob_ids.len());
     let mut previous_pos = None;
+    let pack_id = (mob_ids.len() > 1).then(|| {
+        let mut state = world.resource_mut::<RuntimeState>();
+        state.next_pack_id = state.next_pack_id.wrapping_add(1);
+        if state.next_pack_id == 0 {
+            state.next_pack_id = 1;
+        }
+        state.next_pack_id
+    });
 
     for mob_id in mob_ids {
         let Some((pos, rot)) = ({
@@ -285,7 +294,8 @@ fn spawn_one_template(
             continue;
         };
 
-        let Some(entity_id) = spawn_one_mob(world, map_entity, shared, rule, mob_id, pos, rot)
+        let Some(entity_id) =
+            spawn_one_mob(world, map_entity, shared, rule, mob_id, pos, rot, pack_id)
         else {
             if previous_pos.is_none() {
                 return Vec::new();
@@ -318,18 +328,6 @@ fn sample_spawn_position(
     None
 }
 
-#[cfg(test)]
-pub(super) fn sample_spawn_position_for_test(
-    seed: u64,
-    bounds: LocalBox,
-    navigator: Option<Arc<MapNavigator>>,
-) -> Option<LocalPos> {
-    use rand::SeedableRng;
-
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
-    sample_spawn_position(&mut rng, Some(bounds), navigator.as_ref())
-}
-
 fn spawn_one_mob(
     world: &mut World,
     map_entity: Entity,
@@ -338,22 +336,24 @@ fn spawn_one_mob(
     mob_id: MobId,
     pos: LocalPos,
     rot: u8,
+    pack_id: Option<u32>,
 ) -> Option<zohar_domain::entity::EntityId> {
     let proto = shared.mobs.get(&mob_id)?;
 
-    let (entity_id, wander) = {
+    let (entity_id, next_wander_decision_at_ms) = {
         let mut state = world.resource_mut::<RuntimeState>();
         let entity_id = next_entity_id(&mut state);
-        let wander = proto.bhv_flags.can_wander().then(|| WanderStateData {
-            next_decision_at_ms: state.sim_time_ms.saturating_add(random_duration_between_ms(
+        let next_wander_decision_at_ms = if proto.bhv_flags.can_wander() {
+            state.sim_time_ms.saturating_add(random_duration_between_ms(
                 &mut state.rng,
                 shared.wander.decision_pause_idle_min,
                 shared.wander.decision_pause_idle_max,
-            )),
-            pending_wait_at_ms: None,
-        });
+            ))
+        } else {
+            0
+        };
 
-        (entity_id, wander)
+        (entity_id, next_wander_decision_at_ms)
     };
 
     if let Some(mut spatial) = world.entity_mut(map_entity).get_mut::<MapSpatial>() {
@@ -365,9 +365,26 @@ fn spawn_one_mob(
         NetEntityId { net_id: entity_id },
         MobRef { mob_id },
         LocalTransform { pos, rot },
+        MobMotion(MobMotionState {
+            segment_start_pos: pos,
+            segment_end_pos: pos,
+            segment_start_at_ms: 0,
+            segment_end_at_ms: 0,
+        }),
+        MobHomeAnchor { pos },
+        MobBrainState {
+            mode: MobBrainMode::Idle,
+            target: None,
+            target_locked_at_ms: 0,
+            next_attack_at_ms: 0,
+            attack_windup_until_ms: 0,
+            next_chase_rethink_at_ms: 0,
+            next_wander_decision_at_ms,
+            wander_wait_until_ms: None,
+        },
     ));
-    if let Some(wander) = wander {
-        mob_cmd.insert(WanderState(wander));
+    if let Some(pack_id) = pack_id {
+        mob_cmd.insert(MobPackId { pack_id });
     }
     let mob_entity = mob_cmd.id();
 

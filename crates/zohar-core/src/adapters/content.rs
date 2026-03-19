@@ -5,7 +5,9 @@ use std::time::Duration;
 use tracing::warn;
 use zohar_content::types::ContentCatalog;
 use zohar_content::types::maps::TerrainFlags as ContentTerrainFlags;
-use zohar_content::types::mobs::{MobAiFlags, MobRank as ContentMobRank, MobType};
+use zohar_content::types::mobs::{
+    MobAiFlags, MobBattleType as ContentMobBattleType, MobRank as ContentMobRank, MobType,
+};
 use zohar_content::types::motion::{
     MotionAction as ContentMotionAction, MotionMode, MotionSetKind,
 };
@@ -16,7 +18,9 @@ use zohar_domain::entity::mob::spawn::{
     Direction, FacingStrategy, SpawnArea, SpawnRule, SpawnRuleDef, SpawnTemplate,
     WeightedGroupChoice,
 };
-use zohar_domain::entity::mob::{MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank};
+use zohar_domain::entity::mob::{
+    MobBattleType, MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank,
+};
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 use zohar_domain::util::FlagsMapper;
 use zohar_domain::{BehaviorFlags, DefId, MapId, TerrainFlags};
@@ -122,9 +126,13 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
             mob_kind,
             name: mob.name.clone(),
             rank: mob.rank.to_domain(),
+            battle_type: mob.battle_type.to_domain(),
             level: mob.level as u32,
             move_speed: mob.move_speed as u8,
             attack_speed: mob.attack_speed as u8,
+            aggressive_sight: mob.aggressive_sight as u16,
+            attack_range: mob.attack_range as u16,
+            combat_extent_m: default_mob_combat_extent_m(mob_kind),
             bhv_flags: mob.ai_flags.to_domain(),
             empire: None, // TODO FUTURE: add support for mob empires in catalog
         });
@@ -173,6 +181,15 @@ pub(crate) fn build_map_navigators(catalog: &ContentCatalog) -> HashMap<MapId, A
     }
 
     out
+}
+
+fn default_mob_combat_extent_m(mob_kind: MobKind) -> f32 {
+    match mob_kind {
+        // The client checks melee click range against authored defending spheres.
+        // Until we load those extents directly, keep a per-kind fallback here.
+        MobKind::Monster | MobKind::Stone => 1.0,
+        MobKind::Npc | MobKind::Portal => 0.0,
+    }
 }
 
 pub(crate) fn build_mob_chat_content(catalog: &ContentCatalog) -> MobChatContent {
@@ -448,6 +465,21 @@ impl ToDomain<MobRank> for ContentMobRank {
     }
 }
 
+impl ToDomain<MobBattleType> for ContentMobBattleType {
+    fn to_domain(self) -> MobBattleType {
+        match self {
+            ContentMobBattleType::Melee => MobBattleType::Melee,
+            ContentMobBattleType::Range => MobBattleType::Range,
+            ContentMobBattleType::Magic => MobBattleType::Magic,
+            ContentMobBattleType::Special => MobBattleType::Special,
+            ContentMobBattleType::Power => MobBattleType::Power,
+            ContentMobBattleType::Tanker => MobBattleType::Tanker,
+            ContentMobBattleType::SuperPower => MobBattleType::SuperPower,
+            ContentMobBattleType::SuperTanker => MobBattleType::SuperTanker,
+        }
+    }
+}
+
 impl ToDomain<Option<MobKind>> for MobType {
     fn to_domain(self) -> Option<MobKind> {
         Some(match self {
@@ -512,10 +544,13 @@ mod tests {
             name: "mob".to_string(),
             mob_type,
             rank: ContentMobRank::Pawn,
+            battle_type: ContentMobBattleType::Melee,
             level: 1,
             ai_flags: MobAiFlags::empty(),
             move_speed: 100,
             attack_speed: 100,
+            aggressive_sight: 0,
+            attack_range: 150,
         }
     }
 

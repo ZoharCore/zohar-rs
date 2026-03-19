@@ -39,6 +39,7 @@ pub enum ClientIntent {
     },
     Attack {
         target: EntityId,
+        attack_type: u8,
     },
 }
 

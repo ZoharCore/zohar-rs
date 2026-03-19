@@ -4,8 +4,12 @@ use std::time::Duration;
 
 use crate::bridge::InboundEvent;
 
+use super::combat::process_attack_intents;
 use super::idle_chat::emit_idle_chat;
 use super::ingress::drain_inbound;
+use super::mob_brain::mob_brain_tick;
+use super::mob_chase::mob_chase_tick;
+use super::mob_motion::sample_mob_motion;
 use super::movement::process_intents;
 use super::outbox::outbox_flush;
 use super::players::{on_player_added, on_player_removed};
@@ -16,7 +20,6 @@ use super::state::{
     SharedConfig, SimSet,
 };
 use super::util::packet_time_ms;
-use super::wander::monster_wander;
 
 pub struct ContentPlugin {
     shared: SharedConfig,
@@ -94,8 +97,11 @@ impl Plugin for SimulationPlugin {
             FixedUpdate,
             (
                 SimSet::ProcessIntents,
+                SimSet::SampleMobMotion,
                 SimSet::SpawnRules,
-                SimSet::MonsterWander,
+                SimSet::AttackIntents,
+                SimSet::MobBrain,
+                SimSet::MobChase,
                 SimSet::IdleChat,
                 SimSet::AoiReconcile,
             )
@@ -109,8 +115,17 @@ impl Plugin for SimulationPlugin {
         .add_systems(PostStartup, signal_startup_ready)
         .add_systems(FixedFirst, advance_sim_time)
         .add_systems(FixedUpdate, process_intents.in_set(SimSet::ProcessIntents))
+        .add_systems(
+            FixedUpdate,
+            sample_mob_motion.in_set(SimSet::SampleMobMotion),
+        )
         .add_systems(FixedUpdate, spawn_rules.in_set(SimSet::SpawnRules))
-        .add_systems(FixedUpdate, monster_wander.in_set(SimSet::MonsterWander))
+        .add_systems(
+            FixedUpdate,
+            process_attack_intents.in_set(SimSet::AttackIntents),
+        )
+        .add_systems(FixedUpdate, mob_brain_tick.in_set(SimSet::MobBrain))
+        .add_systems(FixedUpdate, mob_chase_tick.in_set(SimSet::MobChase))
         .add_systems(FixedUpdate, emit_idle_chat.in_set(SimSet::IdleChat))
         .add_systems(
             FixedUpdate,

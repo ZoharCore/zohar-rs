@@ -2,6 +2,7 @@
 
 CREATE TABLE enum_mob_type (value TEXT PRIMARY KEY);
 CREATE TABLE enum_mob_rank (value TEXT PRIMARY KEY);
+CREATE TABLE enum_battle_type (value TEXT PRIMARY KEY);
 
 CREATE TABLE mob_proto (
   mob_id INTEGER PRIMARY KEY,
@@ -9,10 +10,13 @@ CREATE TABLE mob_proto (
   name TEXT NOT NULL,
   mob_type TEXT NOT NULL REFERENCES enum_mob_type(value),
   rank TEXT NOT NULL REFERENCES enum_mob_rank(value),
+  battle_type TEXT NOT NULL REFERENCES enum_battle_type(value) DEFAULT 'MELEE',
   level INTEGER NOT NULL DEFAULT 1,
   ai_flags TEXT,
   move_speed INTEGER NOT NULL DEFAULT 100,
-  attack_speed INTEGER NOT NULL DEFAULT 100
+  attack_speed INTEGER NOT NULL DEFAULT 100,
+  aggressive_sight INTEGER NOT NULL DEFAULT 0,
+  attack_range INTEGER NOT NULL DEFAULT 150
 );
 
 CREATE TABLE mob_chat_strategy (

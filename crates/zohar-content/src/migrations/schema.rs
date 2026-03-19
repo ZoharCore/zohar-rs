@@ -147,6 +147,9 @@ mod tests {
             .await
             .expect("mob proto columns");
         assert!(columns.iter().any(|column| column == "ai_flags"));
+        assert!(columns.iter().any(|column| column == "battle_type"));
+        assert!(columns.iter().any(|column| column == "aggressive_sight"));
+        assert!(columns.iter().any(|column| column == "attack_range"));
     }
 
     #[tokio::test]
@@ -166,6 +169,10 @@ mod tests {
             .execute(&pool)
             .await
             .expect("mob rank");
+        sqlx::query("INSERT INTO enum_battle_type (value) VALUES ('MELEE')")
+            .execute(&pool)
+            .await
+            .expect("battle type");
         sqlx::query("INSERT INTO enum_motion_set_kind (value) VALUES ('MOB')")
             .execute(&pool)
             .await
@@ -197,6 +204,34 @@ mod tests {
                 .await
                 .expect("count");
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn mob_proto_battle_type_requires_enum_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = open_fresh_connection(&dir.path().join("content.db"))
+            .await
+            .expect("conn");
+
+        apply_schema_migrations(&pool).await.expect("schema");
+
+        sqlx::query("INSERT INTO enum_mob_type (value) VALUES ('MONSTER')")
+            .execute(&pool)
+            .await
+            .expect("mob type");
+        sqlx::query("INSERT INTO enum_mob_rank (value) VALUES ('PAWN')")
+            .execute(&pool)
+            .await
+            .expect("mob rank");
+
+        let result = sqlx::query(
+            "INSERT INTO mob_proto (mob_id, code, name, mob_type, rank, battle_type, level)
+             VALUES (101, 'MOB_101', 'Wolf A', 'MONSTER', 'PAWN', 'NOT_REAL', 1)",
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(result.is_err(), "battle_type should be FK-validated");
     }
 
     #[tokio::test]

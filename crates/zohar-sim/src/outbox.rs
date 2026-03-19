@@ -25,7 +25,7 @@ pub struct PlayerOutbox {
     owner_player_id: Option<PlayerId>,
     events: VecDeque<PlayerEvent>,
     movement_latest_player: HashMap<EntityId, MovementUpdate>,
-    movement_latest: HashMap<EntityId, MovementUpdate>,
+    movement_remote: VecDeque<MovementUpdate>,
     tx: tokio::sync::mpsc::Sender<PlayerEvent>,
 }
 
@@ -56,7 +56,7 @@ impl PlayerOutbox {
             owner_player_id: None,
             events: VecDeque::new(),
             movement_latest_player: HashMap::new(),
-            movement_latest: HashMap::new(),
+            movement_remote: VecDeque::new(),
             tx,
         }
     }
@@ -122,12 +122,53 @@ impl PlayerOutbox {
             duration,
         };
         if prioritize {
-            self.movement_latest.remove(&entity_id);
+            self.movement_remote
+                .retain(|queued| queued.entity_id != entity_id);
             self.movement_latest_player.insert(entity_id, update);
         } else {
             self.movement_latest_player.remove(&entity_id);
-            self.movement_latest.insert(entity_id, update);
+            self.push_remote_movement_update(update);
         }
+    }
+
+    pub fn push_remote_movement(
+        &mut self,
+        entity_id: EntityId,
+        kind: MovementKind,
+        arg: u8,
+        rot: u8,
+        x: f32,
+        y: f32,
+        time: u32,
+        duration: u32,
+    ) {
+        let update = MovementUpdate {
+            entity_id,
+            kind,
+            arg,
+            rot,
+            x,
+            y,
+            time,
+            duration,
+        };
+        self.push_remote_movement_update(update);
+    }
+
+    fn push_remote_movement_update(&mut self, update: MovementUpdate) {
+        if self.movement_remote.back().is_some_and(|last| {
+            last.entity_id == update.entity_id
+                && last.kind == update.kind
+                && last.arg == update.arg
+                && last.rot == update.rot
+                && last.x == update.x
+                && last.y == update.y
+                && last.time == update.time
+                && last.duration == update.duration
+        }) {
+            return;
+        }
+        self.movement_remote.push_back(update);
     }
 
     pub fn flush(&mut self) -> PlayerOutboxStats {
@@ -153,7 +194,7 @@ impl PlayerOutbox {
                     );
                     self.events.clear();
                     self.movement_latest_player.clear();
-                    self.movement_latest.clear();
+                    self.movement_remote.clear();
                     stats.total_events = stats.sent_reliable + stats.sent_movement;
                     return stats;
                 }
@@ -175,14 +216,14 @@ impl PlayerOutbox {
                     "Outbox receiver closed while sending movement update"
                 );
                 self.movement_latest_player.clear();
-                self.movement_latest.clear();
+                self.movement_remote.clear();
                 stats.total_events = stats.sent_reliable + stats.sent_movement;
                 return stats;
             }
         }
 
-        // 3. Send remaining movement updates (e.g. mobs).
-        match self.flush_movement_bucket(&mut stats, false) {
+        // 3. Send ordered remote movement updates (e.g. mobs).
+        match self.flush_remote_movement_queue(&mut stats) {
             MovementFlushOutcome::Complete => {}
             MovementFlushOutcome::Full => {
                 stats.total_events = stats.sent_reliable + stats.sent_movement;
@@ -196,7 +237,7 @@ impl PlayerOutbox {
                     "Outbox receiver closed while sending movement update"
                 );
                 self.movement_latest_player.clear();
-                self.movement_latest.clear();
+                self.movement_remote.clear();
                 stats.total_events = stats.sent_reliable + stats.sent_movement;
                 return stats;
             }
@@ -209,13 +250,9 @@ impl PlayerOutbox {
     fn flush_movement_bucket(
         &mut self,
         stats: &mut PlayerOutboxStats,
-        prioritize_players: bool,
+        _prioritize_players: bool,
     ) -> MovementFlushOutcome {
-        let bucket = if prioritize_players {
-            &mut self.movement_latest_player
-        } else {
-            &mut self.movement_latest
-        };
+        let bucket = &mut self.movement_latest_player;
         let mut pending_movement = std::mem::take(bucket).into_iter();
         while let Some((_, update)) = pending_movement.next() {
             let event = PlayerEvent::EntityMove {
@@ -250,15 +287,48 @@ impl PlayerOutbox {
         MovementFlushOutcome::Complete
     }
 
+    fn flush_remote_movement_queue(
+        &mut self,
+        stats: &mut PlayerOutboxStats,
+    ) -> MovementFlushOutcome {
+        while let Some(update) = self.movement_remote.pop_front() {
+            let event = PlayerEvent::EntityMove {
+                entity_id: update.entity_id,
+                kind: update.kind,
+                arg: update.arg,
+                rot: update.rot,
+                x: update.x,
+                y: update.y,
+                ts: update.time,
+                duration: update.duration,
+            };
+
+            match self.tx.try_send(event) {
+                Ok(()) => {
+                    stats.sent_movement += 1;
+                }
+                Err(TrySendError::Full(_)) => {
+                    self.movement_remote.push_front(update);
+                    return MovementFlushOutcome::Full;
+                }
+                Err(TrySendError::Closed(_)) => {
+                    self.movement_remote.clear();
+                    return MovementFlushOutcome::Closed;
+                }
+            }
+        }
+        MovementFlushOutcome::Complete
+    }
+
     fn pending_movement_count(&self) -> usize {
-        self.movement_latest_player.len() + self.movement_latest.len()
+        self.movement_latest_player.len() + self.movement_remote.len()
     }
 
     /// Check if outbox is empty.
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
             && self.movement_latest_player.is_empty()
-            && self.movement_latest.is_empty()
+            && self.movement_remote.is_empty()
     }
 }
 
@@ -455,6 +525,89 @@ mod tests {
                 delivered.get(&entity_id).copied().unwrap_or(0) > 0,
                 "entity {entity_id:?} was starved under sustained backpressure"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_movement_preserves_multiple_segments_for_same_entity() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut outbox = PlayerOutbox::new(tx);
+
+        outbox.push_remote_movement(
+            EntityId(301),
+            MovementKind::Wait,
+            0,
+            10,
+            1.0,
+            1.0,
+            1000,
+            400,
+        );
+        outbox.push_remote_movement(
+            EntityId(301),
+            MovementKind::Wait,
+            0,
+            12,
+            2.0,
+            1.0,
+            1400,
+            400,
+        );
+
+        let stats = outbox.flush();
+        assert_eq!(stats.sent_movement, 2);
+
+        match rx.recv().await {
+            Some(PlayerEvent::EntityMove {
+                entity_id, ts, x, ..
+            }) => {
+                assert_eq!(entity_id, EntityId(301));
+                assert_eq!(ts, 1000);
+                assert_eq!(x, 1.0);
+            }
+            other => panic!("expected first remote movement packet, got: {other:?}"),
+        }
+
+        match rx.recv().await {
+            Some(PlayerEvent::EntityMove {
+                entity_id, ts, x, ..
+            }) => {
+                assert_eq!(entity_id, EntityId(301));
+                assert_eq!(ts, 1400);
+                assert_eq!(x, 2.0);
+            }
+            other => panic!("expected second remote movement packet, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_wait_is_sent_before_remote_attack() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut outbox = PlayerOutbox::new(tx);
+
+        outbox.push_remote_movement(EntityId(301), MovementKind::Wait, 0, 10, 1.0, 1.0, 1000, 0);
+        outbox.push_remote_movement(
+            EntityId(301),
+            MovementKind::Attack,
+            0,
+            10,
+            1.0,
+            1.0,
+            1180,
+            600,
+        );
+
+        let stats = outbox.flush();
+        assert_eq!(stats.sent_movement, 2);
+
+        match rx.recv().await {
+            Some(PlayerEvent::EntityMove { kind, .. }) => assert_eq!(kind, MovementKind::Wait),
+            other => panic!("expected wait movement packet first, got: {other:?}"),
+        }
+
+        match rx.recv().await {
+            Some(PlayerEvent::EntityMove { kind, .. }) => assert_eq!(kind, MovementKind::Attack),
+            other => panic!("expected attack movement packet second, got: {other:?}"),
         }
     }
 

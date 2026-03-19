@@ -1,5 +1,6 @@
 use super::state::{
-    DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC, MAX_MOVE_PACKET_STEP_M, PlayerMotionState, RuntimeState,
+    DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC, MAX_MOVE_PACKET_STEP_M, MobMotionState,
+    PlayerMotionState, RuntimeState,
 };
 use crate::motion::{
     EntityMotionSpeedTable, MotionEntityKey, MotionMoveMode, PlayerMotionProfileKey,
@@ -93,6 +94,30 @@ pub(super) fn sample_player_motion_at(
     motion.segment_start_pos + delta * t
 }
 
+pub(super) fn sample_mob_motion_at(motion: &MobMotionState, now_ms: u64) -> LocalPos {
+    if motion.segment_end_at_ms <= motion.segment_start_at_ms {
+        return motion.segment_end_pos;
+    }
+    if now_ms <= motion.segment_start_at_ms {
+        return motion.segment_start_pos;
+    }
+    if now_ms >= motion.segment_end_at_ms {
+        return motion.segment_end_pos;
+    }
+
+    let total = motion
+        .segment_end_at_ms
+        .saturating_sub(motion.segment_start_at_ms);
+    if total == 0 {
+        return motion.segment_end_pos;
+    }
+    let elapsed = now_ms.saturating_sub(motion.segment_start_at_ms);
+    let t = elapsed as f32 / total as f32;
+    let delta = motion.segment_end_pos - motion.segment_start_pos;
+
+    motion.segment_start_pos + delta * t
+}
+
 pub(super) fn clamp_step_towards(from: LocalPos, to: LocalPos, max_step: f32) -> LocalPos {
     let delta = to - from;
     let distance = delta.length();
@@ -140,22 +165,13 @@ pub(super) fn duration_from_motion_speed(
     start_pos: LocalPos,
     target_pos: LocalPos,
 ) -> u32 {
-    if motion_speed_mps <= 0.0 {
+    if motion_speed_mps <= 0.0 || move_speed_attr == 0 {
         return 0;
     }
 
     let dist = (target_pos - start_pos).length();
     let base_dur = (dist / motion_speed_mps) * 1000.0;
-    let i = 100 - move_speed_attr as i32;
-    let scale = if i > 0 {
-        100 + i
-    } else if i < 0 {
-        10000 / (100 - i)
-    } else {
-        100
-    };
-
-    ((base_dur * scale as f32) / 100.0) as u32
+    (base_dur * (100.0 / move_speed_attr as f32)) as u32
 }
 
 pub(super) fn random_protocol_rot(rng: &mut SmallRng) -> u8 {
@@ -175,7 +191,7 @@ pub(super) fn rotation_from_delta(from: LocalPos, to: LocalPos, fallback_rot: u8
     if delta.square_length() <= 0.0001 {
         return fallback_rot;
     }
-    let angle = delta.x.atan2(delta.y).to_degrees().rem_euclid(360.0);
+    let angle = delta.x.atan2(-delta.y).to_degrees().rem_euclid(360.0);
     degrees_to_protocol_rot(angle)
 }
 

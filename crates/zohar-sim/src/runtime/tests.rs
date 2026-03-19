@@ -1,31 +1,34 @@
 use super::*;
 use crate::chat::MobChatContent;
 use crate::navigation::{MapNavigator, TerrainFlagsGrid};
-use rand::SeedableRng;
+use bevy::prelude::{App, Entity};
+use crossbeam_channel::Sender as InboundSender;
 use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
 use std::collections::HashMap;
+use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 
 use super::players::map_has_players;
 use super::state::{
-    ChatIntent, ChatIntentQueue, LocalTransform, MapPendingMovements, MapSpawnRules, MobMarker,
-    MoveIntent, MoveIntentQueue, NetEntityId, NetEntityIndex, PlayerIndex, RuntimeState,
-    WanderState,
+    LocalTransform, MapPendingMovements, MapSpawnRules, MobBrainMode, MobBrainState, MobMarker,
+    MobMotion, MobMotionState, MoveIntent, MoveIntentQueue, NetEntityId, PendingMovement,
+    PlayerIndex, RuntimeState,
 };
 use super::util::sample_player_motion_at;
 use crate::api::{ClientIntent, PlayerEvent};
-use crate::bridge::{ClientIntentMsg, EnterMsg, InboundEvent, LeaveMsg, MapEventSender};
+use crate::bridge::{ClientIntentMsg, EnterMsg, InboundEvent, LeaveMsg};
 use crate::motion::EntityMotionSpeedTable;
 use crate::outbox::PlayerOutbox;
 use crate::types::MapInstanceKey;
 use zohar_domain::appearance::PlayerAppearance;
-use zohar_domain::coords::{LocalPos, LocalSize};
+use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize};
 use zohar_domain::entity::mob::spawn::{
     Direction, FacingStrategy, SpawnArea, SpawnRuleDef, SpawnTemplate,
 };
-use zohar_domain::entity::mob::{MobId, MobKind, MobPrototypeDef, MobRank};
+use zohar_domain::entity::mob::{MobBattleType, MobId, MobKind, MobPrototypeDef, MobRank};
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
 use zohar_domain::{BehaviorFlags, MapId, TerrainFlags};
@@ -62,39 +65,170 @@ fn test_navigator(
     ))
 }
 
-fn test_wander_config(step_min_m: f32, step_max_m: f32) -> WanderConfig {
-    WanderConfig {
-        decision_pause_idle_min: Duration::ZERO,
-        decision_pause_idle_max: Duration::ZERO,
-        post_move_pause_min: Duration::ZERO,
-        post_move_pause_max: Duration::ZERO,
-        wander_chance_denominator: 1,
-        step_min_m,
-        step_max_m,
-    }
+fn test_mob_proto(
+    mob_id: MobId,
+    mob_kind: MobKind,
+    name: impl Into<String>,
+    rank: MobRank,
+    level: u32,
+    move_speed: u8,
+    attack_speed: u8,
+    bhv_flags: BehaviorFlags,
+) -> Arc<MobPrototypeDef> {
+    Arc::new(MobPrototypeDef {
+        mob_id,
+        mob_kind,
+        name: name.into(),
+        rank,
+        battle_type: MobBattleType::Melee,
+        level,
+        move_speed,
+        attack_speed,
+        aggressive_sight: 0,
+        attack_range: 150,
+        combat_extent_m: 1.0,
+        bhv_flags,
+        empire: None,
+    })
 }
 
-fn advance_tick(app: &mut bevy::prelude::App) {
+#[allow(clippy::too_many_arguments)]
+fn test_mob_proto_with_combat(
+    mob_id: MobId,
+    mob_kind: MobKind,
+    name: impl Into<String>,
+    rank: MobRank,
+    battle_type: MobBattleType,
+    level: u32,
+    move_speed: u8,
+    attack_speed: u8,
+    aggressive_sight: u16,
+    attack_range: u16,
+    bhv_flags: BehaviorFlags,
+) -> Arc<MobPrototypeDef> {
+    Arc::new(MobPrototypeDef {
+        mob_id,
+        mob_kind,
+        name: name.into(),
+        rank,
+        battle_type,
+        level,
+        move_speed,
+        attack_speed,
+        aggressive_sight,
+        attack_range,
+        combat_extent_m: 1.0,
+        bhv_flags,
+        empire: None,
+    })
+}
+
+fn build_runtime_app(
+    shared: SharedConfig,
+    map: MapConfig,
+    with_outbox: bool,
+) -> (App, InboundSender<InboundEvent>) {
+    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(64);
+    let mut app = App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    if with_outbox {
+        app.add_plugins((
+            ContentPlugin::new(shared, map),
+            NetworkPlugin::new(inbound_rx),
+            MapPlugin,
+            SimulationPlugin,
+            OutboxPlugin,
+        ));
+    } else {
+        app.add_plugins((
+            ContentPlugin::new(shared, map),
+            NetworkPlugin::new(inbound_rx),
+            MapPlugin,
+            SimulationPlugin,
+        ));
+    }
+    app.update();
+    (app, inbound_tx)
+}
+
+fn advance_tick(app: &mut App) {
     run_pre_update(app);
     run_fixed_first(app);
     run_fixed_update(app);
     run_fixed_post_update(app);
 }
 
-fn run_pre_update(app: &mut bevy::prelude::App) {
+fn run_pre_update(app: &mut App) {
     let _ = app.world_mut().try_run_schedule(bevy::prelude::PreUpdate);
 }
 
-fn run_fixed_first(app: &mut bevy::prelude::App) {
+fn run_fixed_first(app: &mut App) {
     app.world_mut().run_schedule(bevy::prelude::FixedFirst);
 }
 
-fn run_fixed_update(app: &mut bevy::prelude::App) {
+fn run_fixed_update(app: &mut App) {
     app.world_mut().run_schedule(bevy::prelude::FixedUpdate);
 }
 
-fn run_fixed_post_update(app: &mut bevy::prelude::App) {
+fn run_fixed_post_update(app: &mut App) {
     app.world_mut().run_schedule(bevy::prelude::FixedPostUpdate);
+}
+
+fn enter_player(
+    inbound_tx: &InboundSender<InboundEvent>,
+    player_id: PlayerId,
+    player_net_id: EntityId,
+    initial_pos: LocalPos,
+) -> Receiver<PlayerEvent> {
+    enter_player_with_appearance(
+        inbound_tx,
+        player_id,
+        player_net_id,
+        initial_pos,
+        PlayerAppearance::default(),
+    )
+}
+
+fn enter_player_with_appearance(
+    inbound_tx: &InboundSender<InboundEvent>,
+    player_id: PlayerId,
+    player_net_id: EntityId,
+    initial_pos: LocalPos,
+    appearance: PlayerAppearance,
+) -> Receiver<PlayerEvent> {
+    let (map_tx, map_rx) = tokio::sync::mpsc::channel(64);
+    inbound_tx
+        .send(InboundEvent::PlayerEnter {
+            msg: EnterMsg {
+                player_id,
+                player_net_id,
+                initial_pos,
+                appearance,
+                outbox: PlayerOutbox::new(map_tx),
+            },
+        })
+        .expect("player enter");
+    map_rx
+}
+
+fn attack_target(
+    inbound_tx: &InboundSender<InboundEvent>,
+    player_id: PlayerId,
+    target: EntityId,
+    attack_type: u8,
+) {
+    inbound_tx
+        .send(InboundEvent::ClientIntent {
+            msg: ClientIntentMsg {
+                player_id,
+                intent: ClientIntent::Attack {
+                    target,
+                    attack_type,
+                },
+            },
+        })
+        .expect("attack intent");
 }
 
 fn drain_player_events(rx: &mut Receiver<PlayerEvent>) -> Vec<PlayerEvent> {
@@ -103,25 +237,6 @@ fn drain_player_events(rx: &mut Receiver<PlayerEvent>) -> Vec<PlayerEvent> {
         events.push(event);
     }
     events
-}
-
-fn first_local_chat(events: &[PlayerEvent]) -> Option<(Option<EntityId>, Vec<u8>)> {
-    events.iter().find_map(|event| match event {
-        PlayerEvent::Chat {
-            kind,
-            sender_entity_id,
-            message,
-            ..
-        } if *kind == 0 => Some((*sender_entity_id, message.clone())),
-        _ => None,
-    })
-}
-
-fn first_spawn(events: &[PlayerEvent]) -> Option<EntityId> {
-    events.iter().find_map(|event| match event {
-        PlayerEvent::EntitySpawn { show, .. } => Some(show.entity_id),
-        _ => None,
-    })
 }
 
 fn movement_events(events: &[PlayerEvent]) -> Vec<(EntityId, MovementKind)> {
@@ -136,50 +251,207 @@ fn movement_events(events: &[PlayerEvent]) -> Vec<(EntityId, MovementKind)> {
         .collect()
 }
 
+fn first_mob_entity(app: &mut App) -> Entity {
+    let world = app.world_mut();
+    let mut q = world.query::<(Entity, &MobMarker)>();
+    q.iter(world)
+        .next()
+        .map(|(entity, _)| entity)
+        .expect("mob entity")
+}
+
+fn first_mob_net_id(app: &mut App) -> EntityId {
+    let world = app.world_mut();
+    let mut q = world.query::<(&MobMarker, &NetEntityId)>();
+    q.iter(world)
+        .next()
+        .map(|(_, net_id)| net_id.net_id)
+        .expect("mob net id")
+}
+
+fn map_entity(app: &App) -> Entity {
+    app.world()
+        .resource::<RuntimeState>()
+        .map_entity
+        .expect("map entity")
+}
+
+fn pending_movements(app: &App) -> Vec<PendingMovement> {
+    app.world()
+        .entity(map_entity(app))
+        .get::<MapPendingMovements>()
+        .map(|pending| pending.0.clone())
+        .unwrap_or_default()
+}
+
+fn clear_pending_movements(app: &mut App) {
+    let map_entity = map_entity(app);
+    app.world_mut()
+        .entity_mut(map_entity)
+        .get_mut::<MapPendingMovements>()
+        .expect("map pending movements")
+        .0
+        .clear();
+}
+
+fn run_mob_ai(app: &mut App) {
+    super::mob_brain::mob_brain_tick(app.world_mut());
+    super::mob_chase::mob_chase_tick(app.world_mut());
+}
+
+fn east_rot() -> u8 {
+    super::util::rotation_from_delta(LocalPos::new(1.0, 1.0), LocalPos::new(2.0, 1.0), 0)
+}
+
+fn north_rot() -> u8 {
+    super::util::rotation_from_delta(LocalPos::new(1.0, 1.0), LocalPos::new(1.0, 2.0), 0)
+}
+
+fn set_stationary_mob(app: &mut App, mob_entity: Entity, pos: LocalPos, rot: u8, now_ms: u64) {
+    let mut entity = app.world_mut().entity_mut(mob_entity);
+    entity.get_mut::<LocalTransform>().expect("transform").pos = pos;
+    entity.get_mut::<LocalTransform>().expect("transform").rot = rot;
+    entity.get_mut::<MobMotion>().expect("mob motion").0 = MobMotionState {
+        segment_start_pos: pos,
+        segment_end_pos: pos,
+        segment_start_at_ms: now_ms,
+        segment_end_at_ms: now_ms,
+    };
+}
+
+fn set_mob_chasing(
+    app: &mut App,
+    mob_entity: Entity,
+    target: EntityId,
+    now_ms: u64,
+    next_attack_at_ms: u64,
+) {
+    let mut entity = app.world_mut().entity_mut(mob_entity);
+    let mut brain = entity.get_mut::<MobBrainState>().expect("brain");
+    brain.mode = MobBrainMode::Chasing;
+    brain.target = Some(target);
+    brain.target_locked_at_ms = now_ms;
+    brain.next_attack_at_ms = next_attack_at_ms;
+    brain.attack_windup_until_ms = 0;
+    brain.next_chase_rethink_at_ms = now_ms;
+}
+
+fn set_mob_returning(app: &mut App, mob_entity: Entity, now_ms: u64) {
+    let mut entity = app.world_mut().entity_mut(mob_entity);
+    let mut brain = entity.get_mut::<MobBrainState>().expect("brain");
+    brain.mode = MobBrainMode::Returning;
+    brain.target = None;
+    brain.target_locked_at_ms = 0;
+    brain.next_attack_at_ms = 0;
+    brain.attack_windup_until_ms = 0;
+    brain.next_chase_rethink_at_ms = now_ms;
+}
+
+fn set_mob_idle(app: &mut App, mob_entity: Entity, now_ms: u64) {
+    let mut entity = app.world_mut().entity_mut(mob_entity);
+    let mut brain = entity.get_mut::<MobBrainState>().expect("brain");
+    brain.mode = MobBrainMode::Idle;
+    brain.target = None;
+    brain.target_locked_at_ms = 0;
+    brain.next_attack_at_ms = 0;
+    brain.attack_windup_until_ms = 0;
+    brain.next_chase_rethink_at_ms = 0;
+    brain.next_wander_decision_at_ms = now_ms;
+    brain.wander_wait_until_ms = None;
+}
+
+fn sample_test_wander_candidate(
+    rng: &mut SmallRng,
+    current_pos: LocalPos,
+    step_m: f32,
+) -> LocalPos {
+    let heading = LocalRotation::radians(rng.random_range(0.0..TAU));
+    current_pos.shifted(heading, LocalDistMeters::new(step_m))
+}
+
+fn test_pos_inside_map(map_size: LocalSize, candidate: LocalPos) -> bool {
+    candidate.x.is_finite()
+        && candidate.y.is_finite()
+        && candidate.x >= 0.0
+        && candidate.y >= 0.0
+        && candidate.x < map_size.width
+        && candidate.y < map_size.height
+}
+
+fn find_seed_with_blocked_first_wander_candidate(
+    map_size: LocalSize,
+    navigator: &MapNavigator,
+    current_pos: LocalPos,
+    step_m: f32,
+) -> (u64, LocalPos) {
+    for seed in 0..100_000 {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let _ = rng.random_range(0..1);
+        let first_candidate = sample_test_wander_candidate(&mut rng, current_pos, step_m);
+        if !test_pos_inside_map(map_size, first_candidate)
+            || navigator.segment_clear(current_pos, first_candidate)
+        {
+            continue;
+        }
+
+        let has_clear_retry = (0..7).any(|_| {
+            let retry_candidate = sample_test_wander_candidate(&mut rng, current_pos, step_m);
+            test_pos_inside_map(map_size, retry_candidate)
+                && navigator.can_stand(retry_candidate)
+                && navigator.segment_clear(current_pos, retry_candidate)
+        });
+        if has_clear_retry {
+            return (seed, first_candidate);
+        }
+    }
+
+    panic!("expected a deterministic wander seed with a blocked first candidate");
+}
+
 #[test]
 fn sample_player_motion_at_interpolates_within_segment() {
     let mut motion = super::state::PlayerMotionState {
         segment_start_pos: LocalPos::new(0.0, 0.0),
         segment_end_pos: LocalPos::new(10.0, 0.0),
-        segment_start_ts: 1_000,
-        segment_end_ts: 2_000,
-        last_client_ts: 1_000,
+        segment_start_ts: 100,
+        segment_end_ts: 200,
+        last_client_ts: 101,
     };
 
-    let sampled = sample_player_motion_at(LocalPos::new(0.0, 0.0), &mut motion, 1_500);
-    assert!((sampled.x - 5.0).abs() < 0.001);
-    assert!((sampled.y - 0.0).abs() < 0.001);
+    let pos = sample_player_motion_at(LocalPos::new(0.0, 0.0), &mut motion, 150);
+    assert!((pos.x - 5.0).abs() < 0.01);
+    assert!((pos.y - 0.0).abs() < 0.01);
 }
 
 #[test]
 fn sample_player_motion_at_clamps_to_segment_end_after_overshoot() {
     let mut motion = super::state::PlayerMotionState {
         segment_start_pos: LocalPos::new(0.0, 0.0),
-        segment_end_pos: LocalPos::new(3.0, 4.0),
-        segment_start_ts: 5_000,
-        segment_end_ts: 5_500,
-        last_client_ts: 5_000,
+        segment_end_pos: LocalPos::new(10.0, 0.0),
+        segment_start_ts: 100,
+        segment_end_ts: 200,
+        last_client_ts: 101,
     };
 
-    let sampled = sample_player_motion_at(LocalPos::new(0.0, 0.0), &mut motion, 5_800);
-    assert!((sampled.x - 3.0).abs() < 0.001);
-    assert!((sampled.y - 4.0).abs() < 0.001);
+    assert_eq!(
+        sample_player_motion_at(LocalPos::new(0.0, 0.0), &mut motion, 250),
+        LocalPos::new(10.0, 0.0)
+    );
 }
 
 #[test]
 fn sample_player_motion_at_keeps_current_pos_for_stale_ts() {
     let mut motion = super::state::PlayerMotionState {
-        segment_start_pos: LocalPos::new(1.0, 1.0),
-        segment_end_pos: LocalPos::new(9.0, 1.0),
-        segment_start_ts: 10_000,
-        segment_end_ts: 11_000,
-        last_client_ts: 10_500,
+        segment_start_pos: LocalPos::new(0.0, 0.0),
+        segment_end_pos: LocalPos::new(10.0, 0.0),
+        segment_start_ts: 100,
+        segment_end_ts: 200,
+        last_client_ts: 175,
     };
 
-    let current = LocalPos::new(4.0, 1.0);
-    let sampled = sample_player_motion_at(current, &mut motion, 10_400);
-    assert!((sampled.x - current.x).abs() < 0.001);
-    assert!((sampled.y - current.y).abs() < 0.001);
+    let pos = sample_player_motion_at(LocalPos::new(7.5, 0.0), &mut motion, 150);
+    assert!((pos.x - 7.5).abs() < 0.01);
+    assert!((pos.y - 0.0).abs() < 0.01);
 }
 
 #[test]
@@ -190,38 +462,26 @@ fn simulation_plugin_preloads_map_spawns() {
     let (mut shared, mut map) = test_configs(map_key);
     map.spawn_rules.push(Arc::new(SpawnRuleDef {
         template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
+        area: SpawnArea::new(LocalPos::new(6_400.0, 6_400.0), LocalSize::new(0.0, 0.0)),
         facing: FacingStrategy::Random,
         max_count: 3,
         regen_time: Duration::from_secs(60),
     }));
     Arc::make_mut(&mut shared.mobs).insert(
         mob_id,
-        Arc::new(MobPrototypeDef {
+        test_mob_proto(
             mob_id,
-            mob_kind: MobKind::Monster,
-            name: "test_mob".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
+            MobKind::Monster,
+            "test_mob",
+            MobRank::Pawn,
+            1,
+            100,
+            100,
+            BehaviorFlags::empty(),
+        ),
     );
 
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
     let map_entity = app
         .world()
         .resource::<RuntimeState>()
@@ -235,1133 +495,27 @@ fn simulation_plugin_preloads_map_spawns() {
     assert_eq!(spawn_rules.rules.len(), 1);
     assert_eq!(spawn_rules.rules[0].active_instances, 3);
     assert_eq!(spawn_rules.rules[0].entities.len(), 3);
-    assert!(spawn_rules.scheduled_spawns.is_empty());
-
-    let mob_count = {
-        let world = app.world_mut();
-        let mut mob_query = world.query::<&super::state::MobMarker>();
-        mob_query.iter(world).count()
-    };
-    assert_eq!(mob_count, 3);
-}
-
-#[test]
-fn simulation_plugin_preloads_full_group_for_single_group_instance() {
-    let map_id = MapId::new(41);
-    let leader_id = MobId::new(20025);
-    let pony_id = MobId::new(20029);
-    let horse_id = MobId::new(20030);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Group(Arc::from([
-            leader_id, pony_id, pony_id, horse_id, horse_id,
-        ])),
-        area: SpawnArea::new(LocalPos::new(714.0, 566.0), LocalSize::new(1.0, 1.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-
-    for mob_id in [leader_id, pony_id, horse_id] {
-        Arc::make_mut(&mut shared.mobs).insert(
-            mob_id,
-            Arc::new(MobPrototypeDef {
-                mob_id,
-                mob_kind: MobKind::Npc,
-                name: format!("mob_{mob_id:?}"),
-                rank: MobRank::Pawn,
-                level: 1,
-                move_speed: 100,
-                attack_speed: 100,
-                bhv_flags: BehaviorFlags::empty(),
-                empire: None,
-            }),
-        );
-    }
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    let map_entity = app
-        .world()
-        .resource::<RuntimeState>()
-        .map_entity
-        .expect("map entity initialized");
-    let spawn_rules = app
-        .world()
-        .entity(map_entity)
-        .get::<MapSpawnRules>()
-        .expect("spawn rules attached");
-    assert_eq!(spawn_rules.rules.len(), 1);
-    assert_eq!(spawn_rules.rules[0].active_instances, 1);
-    assert_eq!(spawn_rules.rules[0].entities.len(), 5);
-    assert!(spawn_rules.scheduled_spawns.is_empty());
-
-    let mut counts = HashMap::<MobId, usize>::new();
-    let world = app.world_mut();
-    let mut mob_query = world.query::<&super::state::MobRef>();
-    for mob_ref in mob_query.iter(world) {
-        *counts.entry(mob_ref.mob_id).or_default() += 1;
-    }
-
-    assert_eq!(counts.get(&leader_id), Some(&1));
-    assert_eq!(counts.get(&pony_id), Some(&2));
-    assert_eq!(counts.get(&horse_id), Some(&2));
-}
-
-#[test]
-fn grouped_spawn_near_map_edge_keeps_all_members_in_bounds() {
-    let map_id = MapId::new(41);
-    let leader_id = MobId::new(20025);
-    let follower_id = MobId::new(20029);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.local_size = LocalSize::new(4.0, 4.0);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Group(Arc::from([leader_id, follower_id, follower_id])),
-        area: SpawnArea::new(LocalPos::new(0.0, 0.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-
-    for mob_id in [leader_id, follower_id] {
-        Arc::make_mut(&mut shared.mobs).insert(
-            mob_id,
-            Arc::new(MobPrototypeDef {
-                mob_id,
-                mob_kind: MobKind::Npc,
-                name: format!("mob_{mob_id:?}"),
-                rank: MobRank::Pawn,
-                level: 1,
-                move_speed: 100,
-                attack_speed: 100,
-                bhv_flags: BehaviorFlags::empty(),
-                empire: None,
-            }),
-        );
-    }
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
 
     let world = app.world_mut();
-    let mut mob_query = world.query::<(&super::state::MobRef, &LocalTransform)>();
-    let positions: Vec<(MobId, LocalPos)> = mob_query
-        .iter(world)
-        .map(|(mob_ref, transform)| (mob_ref.mob_id, transform.pos))
-        .collect();
-
-    assert_eq!(positions.len(), 3, "all grouped members should spawn");
-    for (_, pos) in &positions {
-        assert!(
-            pos.x >= 0.0 && pos.x < 4.0 && pos.y >= 0.0 && pos.y < 4.0,
-            "grouped spawn member must stay within map bounds: {pos:?}"
-        );
-    }
-    assert!(
-        positions
-            .iter()
-            .all(|(_, pos)| *pos == LocalPos::new(0.0, 0.0)),
-        "zero-area edge spawn should keep grouped members inside the authored spawn area"
-    );
-}
-
-#[test]
-fn simulation_plugin_applies_fixed_spawn_facing_rotation() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(101);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Fixed(Direction::East),
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Monster,
-            name: "test_mob".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    let expected = super::util::degrees_to_protocol_rot(Direction::East.to_angle());
-    let actual = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform)| transform.rot)
-            .expect("preloaded mob rotation")
-    };
-    assert_eq!(actual, expected);
-}
-
-#[test]
-fn monster_wander_advances_without_players_at_idle_rate() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(101);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    shared.wander = test_wander_config(5.0, 5.0);
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Monster,
-            name: "test_mob".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    let before = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&super::state::MobMarker, &LocalTransform)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform)| transform.pos)
-            .expect("preloaded mob position")
-    };
-
-    for _ in 0..3 {
-        advance_tick(&mut app);
-    }
-
-    let after = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&super::state::MobMarker, &LocalTransform)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform)| transform.pos)
-            .expect("mob position after idle ticks")
-    };
-
-    assert!(
-        (before.x - after.x).abs() > f32::EPSILON || (before.y - after.y).abs() > f32::EPSILON,
-        "mob should wander even when there are no players"
-    );
-}
-
-#[test]
-fn monster_wander_emits_wait_with_duration() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(101);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    shared.wander = test_wander_config(5.0, 5.0);
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Monster,
-            name: "test_mob".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    let map_entity = app
-        .world()
-        .resource::<RuntimeState>()
-        .map_entity
-        .expect("map entity initialized");
-
-    run_pre_update(&mut app);
-    run_fixed_first(&mut app);
-    run_fixed_update(&mut app);
-
-    let pending = app
-        .world()
-        .entity(map_entity)
-        .get::<MapPendingMovements>()
-        .expect("map pending movements attached");
-    assert_eq!(pending.0.len(), 1, "expected one initial wander packet");
-    let movement = pending.0[0];
-    assert_eq!(movement.kind, MovementKind::Wait);
-    assert!(
-        movement.duration > 0,
-        "wander movement packet must carry travel duration"
-    );
-}
-
-#[test]
-fn monster_wander_does_not_emit_terminal_wait_packet() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(101);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    shared.wander = WanderConfig {
-        post_move_pause_min: Duration::from_secs(10),
-        post_move_pause_max: Duration::from_secs(10),
-        ..test_wander_config(5.0, 5.0)
-    };
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Monster,
-            name: "test_mob".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    let map_entity = app
-        .world()
-        .resource::<RuntimeState>()
-        .map_entity
-        .expect("map entity initialized");
-
-    run_pre_update(&mut app);
-    run_fixed_first(&mut app);
-    run_fixed_update(&mut app);
-
-    let wait_at_ms = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &WanderState)>();
-        q.iter(world)
-            .next()
-            .and_then(|(_, wander)| wander.0.pending_wait_at_ms)
-            .expect("mob should have a pending wait deadline after wander start")
-    };
-
-    {
-        let pending = app
-            .world()
-            .entity(map_entity)
-            .get::<MapPendingMovements>()
-            .expect("map pending movements attached");
-        assert_eq!(pending.0.len(), 1, "expected one initial wander packet");
-        assert_eq!(pending.0[0].kind, MovementKind::Wait);
-        assert!(pending.0[0].duration > 0);
-    }
-
-    {
-        let mut map_ent = app.world_mut().entity_mut(map_entity);
-        map_ent
-            .get_mut::<MapPendingMovements>()
-            .expect("map pending movements attached")
-            .0
-            .clear();
-    }
-
-    run_pre_update(&mut app);
-    run_fixed_first(&mut app);
-    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = wait_at_ms;
-    run_fixed_update(&mut app);
-
-    let pending_after = app
-        .world()
-        .entity(map_entity)
-        .get::<MapPendingMovements>()
-        .expect("map pending movements attached");
-    assert!(
-        pending_after.0.is_empty(),
-        "wander wait expiry should not emit an extra terminal wait packet"
-    );
-
-    let wander_pending = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &WanderState)>();
-        q.iter(world)
-            .next()
-            .map(|(_, wander)| wander.0.pending_wait_at_ms)
-    };
-    assert_eq!(
-        wander_pending,
-        Some(None),
-        "mob pending wait should be cleared after wait expiry"
-    );
-}
-
-#[test]
-fn movable_npc_gets_wander_state_and_moves() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(20_041);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    shared.wander = test_wander_config(3.0, 3.0);
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Npc,
-            name: "beggar".to_string(),
-            rank: MobRank::King,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    let (before, has_wander_state) = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &LocalTransform, Option<&WanderState>)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform, wander)| (transform.pos, wander.is_some()))
-            .expect("npc position")
-    };
-    assert!(has_wander_state, "movable NPC should get WanderState");
-
-    for _ in 0..3 {
-        advance_tick(&mut app);
-    }
-
-    let after = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform)| transform.pos)
-            .expect("npc position after idle ticks")
-    };
-
-    assert!(
-        (before.x - after.x).abs() > f32::EPSILON || (before.y - after.y).abs() > f32::EPSILON,
-        "movable NPC should wander"
-    );
-}
-
-#[test]
-fn nomove_npc_does_not_get_wander_state_or_move() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(20_349);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    shared.wander = test_wander_config(3.0, 3.0);
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Npc,
-            name: "stable boy".to_string(),
-            rank: MobRank::King,
-            level: 70,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::NO_MOVE,
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    let (before, has_wander_state) = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &LocalTransform, Option<&WanderState>)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform, wander)| (transform.pos, wander.is_some()))
-            .expect("npc position")
-    };
-    assert!(!has_wander_state, "NOMOVE NPC should not get WanderState");
-
-    for _ in 0..3 {
-        advance_tick(&mut app);
-    }
-
-    let after = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform)| transform.pos)
-            .expect("npc position after idle ticks")
-    };
-
-    assert_eq!(before, after, "NOMOVE NPC must stay fixed");
-}
-
-#[test]
-fn idle_wander_can_leave_original_spawn_bounds() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(20_029);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    shared.wander = test_wander_config(7.0, 7.0);
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Npc,
-            name: "pony".to_string(),
-            rank: MobRank::King,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-    app.world_mut().resource_mut::<RuntimeState>().rng = SmallRng::seed_from_u64(0xC0FFEE);
-
-    let spawn_pos = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform)| transform.pos)
-            .expect("npc position after spawn")
-    };
-
-    let mut max_distance = 0.0f32;
-    for step in 0..12 {
-        run_pre_update(&mut app);
-        run_fixed_first(&mut app);
-        app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = 10_000 * (step + 1);
-        run_fixed_update(&mut app);
-        run_fixed_post_update(&mut app);
-        let pos = {
-            let world = app.world_mut();
-            let mut q = world.query::<(&MobMarker, &LocalTransform)>();
-            q.iter(world)
-                .next()
-                .map(|(_, transform)| transform.pos)
-                .expect("npc position after wander tick")
-        };
-        max_distance = max_distance.max((pos - spawn_pos).length());
-    }
-
-    assert!(
-        max_distance > 10.0,
-        "wander should be able to leave the original zero-area spawn bounds, max_distance={max_distance}"
-    );
-}
-
-#[test]
-fn invalid_idle_wander_sample_skips_movement_and_reschedules() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(101);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.local_size = LocalSize::new(4.0, 4.0);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    shared.wander = test_wander_config(7.0, 7.0);
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Monster,
-            name: "test_mob".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    let before = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &LocalTransform)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform)| transform.pos)
-            .expect("mob position")
-    };
-
-    run_pre_update(&mut app);
-    run_fixed_first(&mut app);
-    run_fixed_update(&mut app);
-
-    let after = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &LocalTransform, &WanderState)>();
-        q.iter(world)
-            .next()
-            .map(|(_, transform, wander)| (transform.pos, wander.0))
-            .expect("mob position after invalid wander")
-    };
-    assert_eq!(
-        before, after.0,
-        "invalid wander sample must not move the mob"
-    );
-    assert!(
-        after.1.pending_wait_at_ms.is_none(),
-        "invalid wander sample must not start a movement wait"
-    );
-    assert!(
-        after.1.next_decision_at_ms >= app.world().resource::<RuntimeState>().sim_time_ms,
-        "invalid wander sample must reschedule the next decision"
-    );
-
-    let map_entity = app
-        .world()
-        .resource::<RuntimeState>()
-        .map_entity
-        .expect("map entity initialized");
-    let pending = app
-        .world()
-        .entity(map_entity)
-        .get::<MapPendingMovements>()
-        .expect("map pending movements attached");
-    assert!(
-        pending.0.is_empty(),
-        "invalid wander sample must not enqueue movement packets"
-    );
-}
-
-#[test]
-fn zero_distance_idle_wander_reschedules_without_packet() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(101);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    shared.wander = test_wander_config(0.0, 0.0);
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Monster,
-            name: "test_mob".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
-
-    run_pre_update(&mut app);
-    run_fixed_first(&mut app);
-    run_fixed_update(&mut app);
-
-    let map_entity = app
-        .world()
-        .resource::<RuntimeState>()
-        .map_entity
-        .expect("map entity initialized");
-    let pending = app
-        .world()
-        .entity(map_entity)
-        .get::<MapPendingMovements>()
-        .expect("map pending movements attached");
-    assert!(
-        pending.0.is_empty(),
-        "zero-distance idle wander must not emit movement packets"
-    );
-
-    let wander = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &WanderState)>();
-        q.iter(world)
-            .next()
-            .map(|(_, wander)| wander.0)
-            .expect("wander state")
-    };
-    assert!(wander.pending_wait_at_ms.is_none());
-    assert!(
-        wander.next_decision_at_ms >= app.world().resource::<RuntimeState>().sim_time_ms,
-        "zero-distance idle wander must reschedule the next decision"
-    );
-}
-
-#[test]
-fn wander_validator_checks_destination_against_map_bounds() {
-    let map_size = LocalSize::new(10.0, 10.0);
-    let current = LocalPos::new(5.0, 5.0);
-
-    assert!(super::wander::is_wander_target_allowed(
-        map_size,
-        current,
-        LocalPos::new(8.0, 8.0),
-    ));
-    assert!(!super::wander::is_wander_target_allowed(
-        map_size,
-        current,
-        LocalPos::new(10.0, 8.0),
-    ));
-    assert!(!super::wander::is_wander_target_allowed(
-        map_size,
-        current,
-        LocalPos::new(8.0, -0.1),
-    ));
-}
-
-#[test]
-fn wander_validator_rejects_blocked_crossing_or_endpoint() {
-    let map_size = LocalSize::new(10.0, 10.0);
-    let current = LocalPos::new(1.0, 1.0);
-    let navigator = test_navigator(10, 10, &[(3, 1)]);
-
-    assert!(!super::wander::is_wander_target_allowed_with_collision(
-        map_size,
-        current,
-        LocalPos::new(5.0, 1.0),
-        Arc::clone(&navigator),
-    ));
-    assert!(!super::wander::is_wander_target_allowed_with_collision(
-        map_size,
-        current,
-        LocalPos::new(3.0, 1.0),
-        navigator,
-    ));
-}
-
-#[test]
-fn spawn_sampling_rejects_blocked_cells_but_fails_open_without_navigation() {
-    let blocked = test_navigator(4, 4, &[(1, 1)]);
-    let blocked_bounds =
-        zohar_domain::coords::LocalBox::new(LocalPos::new(1.0, 1.0), LocalPos::new(1.0, 1.0));
-    let open_bounds =
-        zohar_domain::coords::LocalBox::new(LocalPos::new(2.0, 2.0), LocalPos::new(2.0, 2.0));
-
-    assert!(
-        super::spawn::sample_spawn_position_for_test(7, blocked_bounds, Some(blocked)).is_none()
-    );
-    assert!(super::spawn::sample_spawn_position_for_test(7, blocked_bounds, None).is_some());
-    assert!(super::spawn::sample_spawn_position_for_test(7, open_bounds, None).is_some());
-}
-
-#[test]
-fn moving_out_and_back_into_npc_aoi_despawns_and_respawns() {
-    let map_id = MapId::new(41);
-    let npc_id = MobId::new(20355);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(npc_id),
-        area: SpawnArea::new(LocalPos::new(6_400.0, 6_400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Fixed(Direction::South),
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    Arc::make_mut(&mut shared.mobs).insert(
-        npc_id,
-        Arc::new(MobPrototypeDef {
-            mob_id: npc_id,
-            mob_kind: MobKind::Npc,
-            name: "city_guard".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (map_tx, mut map_rx) = tokio::sync::mpsc::channel(64);
-    let player_id = PlayerId::from(1);
-    let player_net_id = EntityId(5_301);
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id,
-                player_net_id,
-                initial_pos: LocalPos::new(6_400.0, 6_400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(map_tx),
-            },
-        })
-        .expect("enter");
-    advance_tick(&mut app);
-
-    let spawn_events = drain_player_events(&mut map_rx);
-    let npc_spawn = spawn_events.iter().find_map(|event| match event {
-        PlayerEvent::EntitySpawn { show, .. } if show.entity_id != player_net_id => {
-            Some(show.entity_id)
-        }
-        _ => None,
-    });
-    let npc_entity_id = npc_spawn.expect("nearby NPC should spawn on first AOI reconcile");
-
-    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
-    let map_entity = app
-        .world()
-        .resource::<RuntimeState>()
-        .map_entity
-        .expect("map entity");
-    {
-        let far_pos = LocalPos::new(6_600.0, 6_400.0);
-        let mut player_ent = app.world_mut().entity_mut(player_entity);
-        let mut transform = player_ent
-            .get_mut::<LocalTransform>()
-            .expect("player transform");
-        transform.pos = far_pos;
-
-        let mut map_ent = app.world_mut().entity_mut(map_entity);
-        let mut spatial = map_ent
-            .get_mut::<super::state::MapSpatial>()
-            .expect("map spatial");
-        spatial.0.update_position(player_net_id, far_pos);
-
-        app.world_mut().resource_mut::<RuntimeState>().is_dirty = true;
-    }
-    advance_tick(&mut app);
-
-    let despawn_events = drain_player_events(&mut map_rx);
-    assert!(
-        despawn_events.iter().any(|event| matches!(
-            event,
-            PlayerEvent::EntityDespawn { entity_id } if *entity_id == npc_entity_id
-        )),
-        "walking out of range should despawn the NPC",
-    );
-
-    {
-        let near_pos = LocalPos::new(6_400.0, 6_400.0);
-        let mut player_ent = app.world_mut().entity_mut(player_entity);
-        let mut transform = player_ent
-            .get_mut::<LocalTransform>()
-            .expect("player transform");
-        transform.pos = near_pos;
-
-        let mut map_ent = app.world_mut().entity_mut(map_entity);
-        let mut spatial = map_ent
-            .get_mut::<super::state::MapSpatial>()
-            .expect("map spatial");
-        spatial.0.update_position(player_net_id, near_pos);
-
-        app.world_mut().resource_mut::<RuntimeState>().is_dirty = true;
-    }
-    advance_tick(&mut app);
-
-    let respawn_events = drain_player_events(&mut map_rx);
-    assert!(
-        respawn_events.iter().any(|event| matches!(
-            event,
-            PlayerEvent::EntitySpawn { show, .. } if show.entity_id == npc_entity_id
-        )),
-        "walking back into range should respawn the NPC",
-    );
-}
-
-#[test]
-fn visibility_retry_succeeds_after_temporary_spawn_payload_failure() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (alice_tx, mut alice_rx) = tokio::sync::mpsc::channel(64);
-    let alice_id = PlayerId::from(1);
-    let alice_net_id = EntityId(5_401);
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: alice_id,
-                player_net_id: alice_net_id,
-                initial_pos: LocalPos::new(6_400.0, 6_400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(alice_tx),
-            },
-        })
-        .expect("alice enter");
-    advance_tick(&mut app);
-    let _ = drain_player_events(&mut alice_rx);
-
-    let (bob_tx, _bob_rx) = tokio::sync::mpsc::channel(64);
-    let bob_id = PlayerId::from(2);
-    let bob_net_id = EntityId(5_402);
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: bob_id,
-                player_net_id: bob_net_id,
-                initial_pos: LocalPos::new(6_405.0, 6_400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(bob_tx),
-            },
-        })
-        .expect("bob enter");
-
-    run_pre_update(&mut app);
-    app.world_mut()
-        .resource_mut::<NetEntityIndex>()
-        .0
-        .remove(&bob_net_id);
-    run_fixed_first(&mut app);
-    run_fixed_update(&mut app);
-    run_fixed_post_update(&mut app);
-
-    assert!(
-        drain_player_events(&mut alice_rx).into_iter().all(
-            |event| !matches!(event, PlayerEvent::EntitySpawn { show, .. } if show.entity_id == bob_net_id)
-        ),
-        "bob spawn should fail while his payload is intentionally unavailable",
-    );
-
-    let bob_entity = app.world().resource::<PlayerIndex>().0[&bob_id];
-    app.world_mut()
-        .resource_mut::<NetEntityIndex>()
-        .0
-        .insert(bob_net_id, bob_entity);
-    app.world_mut().resource_mut::<RuntimeState>().is_dirty = true;
-    advance_tick(&mut app);
-
-    assert!(
-        drain_player_events(&mut alice_rx).into_iter().any(
-            |event| matches!(event, PlayerEvent::EntitySpawn { show, .. } if show.entity_id == bob_net_id)
-        ),
-        "failed visibility edges must be retried on the next dirty tick",
-    );
+    let mut mob_query = world.query::<&MobMarker>();
+    assert_eq!(mob_query.iter(world).count(), 3);
 }
 
 #[test]
 fn player_count_follows_enter_leave() {
     let map_id = MapId::new(41);
     let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
     let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
 
     let player_id = PlayerId::from(1);
-    let player_net_id = EntityId(5001);
-    let (map_tx, _map_rx) = tokio::sync::mpsc::channel(8);
-    let msg = EnterMsg {
+    let player_net_id = EntityId(5_001);
+    let _rx = enter_player(
+        &inbound_tx,
         player_id,
         player_net_id,
-        initial_pos: LocalPos::new(6400.0, 6400.0),
-        appearance: PlayerAppearance::default(),
-        outbox: PlayerOutbox::new(map_tx),
-    };
-    inbound_tx
-        .send(InboundEvent::PlayerEnter { msg })
-        .expect("send enter event");
+        LocalPos::new(6_400.0, 6_400.0),
+    );
     advance_tick(&mut app);
     assert_eq!(app.world().resource::<PlayerCount>().0, 1);
     assert!(map_has_players(app.world_mut()));
@@ -1373,49 +527,20 @@ fn player_count_follows_enter_leave() {
                 player_net_id,
             },
         })
-        .expect("send leave event");
+        .expect("player leave");
     advance_tick(&mut app);
     assert_eq!(app.world().resource::<PlayerCount>().0, 0);
     assert!(!map_has_players(app.world_mut()));
 }
 
 #[test]
-fn fixed_schedule_order_is_first_update_post() {
-    #[derive(bevy::prelude::Resource, Default)]
-    struct Trace(Vec<&'static str>);
-
-    fn first(mut trace: bevy::prelude::ResMut<Trace>) {
-        trace.0.push("first");
-    }
-    fn sim(mut trace: bevy::prelude::ResMut<Trace>) {
-        trace.0.push("sim");
-    }
-    fn post(mut trace: bevy::prelude::ResMut<Trace>) {
-        trace.0.push("post");
-    }
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.init_resource::<Trace>();
-    app.add_systems(bevy::prelude::FixedFirst, first);
-    app.add_systems(bevy::prelude::FixedUpdate, sim);
-    app.add_systems(bevy::prelude::FixedPostUpdate, post);
-
-    advance_tick(&mut app);
-
-    let trace = &app.world().resource::<Trace>().0;
-    assert_eq!(trace, &vec!["first", "sim", "post"]);
-}
-
-#[test]
 fn startup_ready_signal_fires_after_map_bootstrap() {
     let map_id = MapId::new(41);
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
     let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
+    let (_inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
     let (startup_tx, startup_rx) = tokio::sync::oneshot::channel();
 
-    let mut app = bevy::prelude::App::new();
+    let mut app = App::new();
     app.add_plugins(bevy::prelude::MinimalPlugins);
     app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
     app.insert_resource(StartupReadySignal::new(startup_tx));
@@ -1427,1227 +552,101 @@ fn startup_ready_signal_fires_after_map_bootstrap() {
     ));
     app.update();
 
-    assert!(
-        startup_rx.blocking_recv().is_ok(),
-        "startup ready signal should be emitted after startup schedules run"
-    );
+    assert!(startup_rx.blocking_recv().is_ok());
 }
 
 #[test]
-fn process_intents_consumes_directly_inserted_queue() {
+fn player_move_ignores_navigation_blockers_in_pre_alpha_policy() {
     let map_id = MapId::new(41);
     let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let player_id = PlayerId::from(1);
-    let player_net_id = EntityId(5001);
-    let (map_tx, _map_rx) = tokio::sync::mpsc::channel(8);
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id,
-                player_net_id,
-                initial_pos: LocalPos::new(0.0, 0.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(map_tx),
-            },
-        })
-        .expect("enter");
-    advance_tick(&mut app);
-
-    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
-    {
-        let mut ent = app.world_mut().entity_mut(player_entity);
-        let mut queue = ent.get_mut::<MoveIntentQueue>().expect("move queue exists");
-        queue.0.push(MoveIntent {
-            kind: MovementKind::Move,
-            arg: 0,
-            rot: 0,
-            target: LocalPos::new(5.0, 0.0),
-            ts: 1000,
-        });
-    }
-
-    advance_tick(&mut app);
-
-    let transform = app
-        .world()
-        .entity(player_entity)
-        .get::<LocalTransform>()
-        .expect("transform exists");
-    assert!(transform.pos.x > 0.0);
-    let queue = app
-        .world()
-        .entity(player_entity)
-        .get::<MoveIntentQueue>()
-        .expect("queue exists");
-    assert!(queue.0.is_empty(), "intent queue should be consumed");
-}
-
-#[test]
-fn blocked_player_move_endpoint_is_rejected() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
     let (shared, mut map) = test_configs(map_key);
     map.navigator = Some(test_navigator(16, 16, &[(5, 0)]));
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
 
     let player_id = PlayerId::from(1);
     let player_net_id = EntityId(5_101);
-    let (map_tx, _map_rx) = tokio::sync::mpsc::channel(8);
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id,
-                player_net_id,
-                initial_pos: LocalPos::new(0.0, 0.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(map_tx),
-            },
-        })
-        .expect("enter");
+    let _rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(0.0, 0.0),
+    );
     advance_tick(&mut app);
 
     let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
     {
         let mut ent = app.world_mut().entity_mut(player_entity);
-        let mut queue = ent.get_mut::<MoveIntentQueue>().expect("move queue exists");
-        queue.0.push(MoveIntent {
-            kind: MovementKind::Move,
-            arg: 0,
-            rot: 0,
-            target: LocalPos::new(5.0, 0.0),
-            ts: 1000,
-        });
-    }
-
-    advance_tick(&mut app);
-
-    let transform = app
-        .world()
-        .entity(player_entity)
-        .get::<LocalTransform>()
-        .expect("transform exists");
-    assert_eq!(transform.pos, LocalPos::new(0.0, 0.0));
-}
-
-#[test]
-fn blocked_player_move_midpoint_is_rejected() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, mut map) = test_configs(map_key);
-    map.navigator = Some(test_navigator(16, 16, &[(2, 0)]));
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let player_id = PlayerId::from(1);
-    let player_net_id = EntityId(5_102);
-    let (map_tx, _map_rx) = tokio::sync::mpsc::channel(8);
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id,
-                player_net_id,
-                initial_pos: LocalPos::new(0.0, 0.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(map_tx),
-            },
-        })
-        .expect("enter");
-    advance_tick(&mut app);
-
-    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
-    {
-        let mut ent = app.world_mut().entity_mut(player_entity);
-        let mut queue = ent.get_mut::<MoveIntentQueue>().expect("move queue exists");
-        queue.0.push(MoveIntent {
-            kind: MovementKind::Move,
-            arg: 0,
-            rot: 0,
-            target: LocalPos::new(5.0, 0.0),
-            ts: 1000,
-        });
-    }
-
-    advance_tick(&mut app);
-
-    let transform = app
-        .world()
-        .entity(player_entity)
-        .get::<LocalTransform>()
-        .expect("transform exists");
-    assert_eq!(transform.pos, LocalPos::new(0.0, 0.0));
-}
-
-#[test]
-fn player_chat_events_include_sender_and_name_prefix() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (map_tx, mut map_rx) = tokio::sync::mpsc::channel(32);
-    let player_id = PlayerId::from(1);
-    let player_net_id = EntityId(5_001);
-    let mut appearance = PlayerAppearance::default();
-    appearance.name = "alice".to_string();
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id,
-                player_net_id,
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance,
-                outbox: PlayerOutbox::new(map_tx),
-            },
-        })
-        .expect("enter");
-    advance_tick(&mut app);
-
-    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
-    {
-        let mut ent = app.world_mut().entity_mut(player_entity);
-        let mut queue = ent.get_mut::<ChatIntentQueue>().expect("chat queue exists");
-        queue.0.push(ChatIntent {
-            message: b"hello\0".to_vec(),
-        });
-    }
-
-    advance_tick(&mut app);
-    let events = drain_player_events(&mut map_rx);
-
-    let Some((sender_entity_id, message)) = events.into_iter().find_map(|event| match event {
-        PlayerEvent::Chat {
-            kind,
-            sender_entity_id,
-            message,
-            ..
-        } if kind == 0 => Some((sender_entity_id, message)),
-        _ => None,
-    }) else {
-        panic!("missing talking chat event");
-    };
-
-    assert_eq!(sender_entity_id, Some(player_net_id));
-    assert_eq!(message, b"alice : hello\0");
-}
-
-#[test]
-fn same_empire_talking_preserves_raw_payload_for_observers() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (tx_alice, mut rx_alice) = tokio::sync::mpsc::channel(32);
-    let (tx_bob, mut rx_bob) = tokio::sync::mpsc::channel(32);
-    let alice_id = PlayerId::from(1);
-    let bob_id = PlayerId::from(2);
-    let alice_net_id = EntityId(5_201);
-
-    let mut alice_appearance = PlayerAppearance::default();
-    alice_appearance.name = "alice".to_string();
-    alice_appearance.empire = zohar_domain::Empire::Red;
-
-    let mut bob_appearance = PlayerAppearance::default();
-    bob_appearance.name = "bob".to_string();
-    bob_appearance.empire = zohar_domain::Empire::Red;
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: alice_id,
-                player_net_id: alice_net_id,
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: alice_appearance,
-                outbox: PlayerOutbox::new(tx_alice),
-            },
-        })
-        .expect("alice enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: bob_id,
-                player_net_id: EntityId(5_202),
-                initial_pos: LocalPos::new(6401.0, 6400.0),
-                appearance: bob_appearance,
-                outbox: PlayerOutbox::new(tx_bob),
-            },
-        })
-        .expect("bob enter");
-
-    advance_tick(&mut app);
-    let _ = drain_player_events(&mut rx_alice);
-    let _ = drain_player_events(&mut rx_bob);
-
-    let alice_entity = app.world().resource::<PlayerIndex>().0[&alice_id];
-    {
-        let mut ent = app.world_mut().entity_mut(alice_entity);
-        let mut queue = ent.get_mut::<ChatIntentQueue>().expect("chat queue exists");
-        queue.0.push(ChatIntent {
-            message: b"hello :-)\0".to_vec(),
-        });
-    }
-    advance_tick(&mut app);
-    let events_alice = drain_player_events(&mut rx_alice);
-    let events_bob = drain_player_events(&mut rx_bob);
-
-    let Some((sender_alice, msg_alice)) = events_alice.into_iter().find_map(|event| match event {
-        PlayerEvent::Chat {
-            kind,
-            sender_entity_id,
-            message,
-            ..
-        } if kind == 0 => Some((sender_entity_id, message)),
-        _ => None,
-    }) else {
-        panic!("missing self talking chat event");
-    };
-    let Some((sender_bob, msg_bob)) = events_bob.into_iter().find_map(|event| match event {
-        PlayerEvent::Chat {
-            kind,
-            sender_entity_id,
-            message,
-            ..
-        } if kind == 0 => Some((sender_entity_id, message)),
-        _ => None,
-    }) else {
-        panic!("missing observer talking chat event");
-    };
-
-    assert_eq!(sender_alice, Some(alice_net_id));
-    assert_eq!(sender_bob, Some(alice_net_id));
-    assert_eq!(msg_alice, b"alice : hello :-)\0");
-    assert_eq!(msg_bob, msg_alice);
-}
-
-#[test]
-fn cross_empire_talking_obfuscates_payload_for_observers() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-    app.world_mut().resource_mut::<RuntimeState>().rng = SmallRng::seed_from_u64(0xC0FFEE);
-
-    let (tx_alice, mut rx_alice) = tokio::sync::mpsc::channel(32);
-    let (tx_bob, mut rx_bob) = tokio::sync::mpsc::channel(32);
-    let alice_id = PlayerId::from(1);
-    let bob_id = PlayerId::from(2);
-    let alice_net_id = EntityId(5_301);
-
-    let mut alice_appearance = PlayerAppearance::default();
-    alice_appearance.name = "alice".to_string();
-    alice_appearance.empire = zohar_domain::Empire::Red;
-
-    let mut bob_appearance = PlayerAppearance::default();
-    bob_appearance.name = "bob".to_string();
-    bob_appearance.empire = zohar_domain::Empire::Blue;
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: alice_id,
-                player_net_id: alice_net_id,
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: alice_appearance,
-                outbox: PlayerOutbox::new(tx_alice),
-            },
-        })
-        .expect("alice enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: bob_id,
-                player_net_id: EntityId(5_302),
-                initial_pos: LocalPos::new(6401.0, 6400.0),
-                appearance: bob_appearance,
-                outbox: PlayerOutbox::new(tx_bob),
-            },
-        })
-        .expect("bob enter");
-
-    advance_tick(&mut app);
-    let _ = drain_player_events(&mut rx_alice);
-    let _ = drain_player_events(&mut rx_bob);
-
-    let alice_entity = app.world().resource::<PlayerIndex>().0[&alice_id];
-    {
-        let mut ent = app.world_mut().entity_mut(alice_entity);
-        let mut queue = ent.get_mut::<ChatIntentQueue>().expect("chat queue exists");
-        queue.0.push(ChatIntent {
-            message: b"hello friend\0".to_vec(),
-        });
-    }
-    advance_tick(&mut app);
-    let events_alice = drain_player_events(&mut rx_alice);
-    let events_bob = drain_player_events(&mut rx_bob);
-
-    let Some((sender_alice, msg_alice)) = events_alice.into_iter().find_map(|event| match event {
-        PlayerEvent::Chat {
-            kind,
-            sender_entity_id,
-            message,
-            ..
-        } if kind == 0 => Some((sender_entity_id, message)),
-        _ => None,
-    }) else {
-        panic!("missing self talking chat event");
-    };
-    let Some((sender_bob, msg_bob)) = events_bob.into_iter().find_map(|event| match event {
-        PlayerEvent::Chat {
-            kind,
-            sender_entity_id,
-            message,
-            ..
-        } if kind == 0 => Some((sender_entity_id, message)),
-        _ => None,
-    }) else {
-        panic!("missing observer talking chat event");
-    };
-
-    assert_eq!(sender_alice, Some(alice_net_id));
-    assert_eq!(sender_bob, Some(alice_net_id));
-    assert_eq!(msg_alice, b"alice : hello friend\0");
-    assert_ne!(msg_bob, msg_alice);
-    assert!(msg_bob.starts_with(b"alice : "));
-    assert_eq!(msg_bob.last().copied(), Some(0));
-}
-
-#[test]
-fn local_talking_chat_only_reaches_visible_observers() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (tx_alice, mut rx_alice) = tokio::sync::mpsc::channel(32);
-    let (tx_bob, mut rx_bob) = tokio::sync::mpsc::channel(32);
-    let (tx_cara, mut rx_cara) = tokio::sync::mpsc::channel(32);
-
-    let mut alice = PlayerAppearance::default();
-    alice.name = "alice".to_string();
-    alice.empire = zohar_domain::Empire::Red;
-
-    let mut bob = PlayerAppearance::default();
-    bob.name = "bob".to_string();
-    bob.empire = zohar_domain::Empire::Red;
-
-    let mut cara = PlayerAppearance::default();
-    cara.name = "cara".to_string();
-    cara.empire = zohar_domain::Empire::Red;
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(1),
-                player_net_id: EntityId(5_401),
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: alice,
-                outbox: PlayerOutbox::new(tx_alice),
-            },
-        })
-        .expect("alice enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(2),
-                player_net_id: EntityId(5_402),
-                initial_pos: LocalPos::new(6401.0, 6400.0),
-                appearance: bob,
-                outbox: PlayerOutbox::new(tx_bob),
-            },
-        })
-        .expect("bob enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(3),
-                player_net_id: EntityId(5_403),
-                initial_pos: LocalPos::new(6600.0, 6400.0),
-                appearance: cara,
-                outbox: PlayerOutbox::new(tx_cara),
-            },
-        })
-        .expect("cara enter");
-
-    advance_tick(&mut app);
-    let _ = drain_player_events(&mut rx_alice);
-    let _ = drain_player_events(&mut rx_bob);
-    let _ = drain_player_events(&mut rx_cara);
-
-    let alice_entity = app.world().resource::<PlayerIndex>().0[&PlayerId::from(1)];
-    {
-        let mut ent = app.world_mut().entity_mut(alice_entity);
-        let mut queue = ent.get_mut::<ChatIntentQueue>().expect("chat queue exists");
-        queue.0.push(ChatIntent {
-            message: b"hello local\0".to_vec(),
-        });
-    }
-
-    advance_tick(&mut app);
-
-    let alice_chat = first_local_chat(&drain_player_events(&mut rx_alice));
-    let bob_chat = first_local_chat(&drain_player_events(&mut rx_bob));
-    let cara_chat = first_local_chat(&drain_player_events(&mut rx_cara));
-
-    assert_eq!(
-        alice_chat,
-        Some((Some(EntityId(5_401)), b"alice : hello local\0".to_vec()))
-    );
-    assert_eq!(
-        bob_chat,
-        Some((Some(EntityId(5_401)), b"alice : hello local\0".to_vec()))
-    );
-    assert_eq!(
-        cara_chat, None,
-        "distant players must not receive local talk"
-    );
-}
-
-#[test]
-fn global_shout_remains_senderless_and_empire_scoped() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (tx_red_a, mut rx_red_a) = tokio::sync::mpsc::channel(32);
-    let (tx_red_b, mut rx_red_b) = tokio::sync::mpsc::channel(32);
-    let (tx_blue, mut rx_blue) = tokio::sync::mpsc::channel(32);
-
-    let mut red_a = PlayerAppearance::default();
-    red_a.name = "alice".to_string();
-    red_a.empire = zohar_domain::Empire::Red;
-
-    let mut red_b = PlayerAppearance::default();
-    red_b.name = "eve".to_string();
-    red_b.empire = zohar_domain::Empire::Red;
-
-    let mut blue = PlayerAppearance::default();
-    blue.name = "bob".to_string();
-    blue.empire = zohar_domain::Empire::Blue;
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(1),
-                player_net_id: EntityId(6_101),
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: red_a,
-                outbox: PlayerOutbox::new(tx_red_a),
-            },
-        })
-        .expect("red a enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(2),
-                player_net_id: EntityId(6_102),
-                initial_pos: LocalPos::new(6401.0, 6400.0),
-                appearance: red_b,
-                outbox: PlayerOutbox::new(tx_red_b),
-            },
-        })
-        .expect("red b enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(3),
-                player_net_id: EntityId(6_103),
-                initial_pos: LocalPos::new(6402.0, 6400.0),
-                appearance: blue,
-                outbox: PlayerOutbox::new(tx_blue),
-            },
-        })
-        .expect("blue enter");
-
-    advance_tick(&mut app);
-    let _ = drain_player_events(&mut rx_red_a);
-    let _ = drain_player_events(&mut rx_red_b);
-    let _ = drain_player_events(&mut rx_blue);
-
-    inbound_tx
-        .send(InboundEvent::GlobalShout {
-            msg: crate::bridge::GlobalShoutMsg {
-                from_player_name: "ann".to_string(),
-                from_empire: zohar_domain::Empire::Red,
-                message_bytes: b"wave\0".to_vec(),
-            },
-        })
-        .expect("queue shout");
-    advance_tick(&mut app);
-
-    let events_red_a = drain_player_events(&mut rx_red_a);
-    let events_red_b = drain_player_events(&mut rx_red_b);
-    let events_blue = drain_player_events(&mut rx_blue);
-
-    let Some((sender_a, empire_a, message_a)) =
-        events_red_a.into_iter().find_map(|event| match event {
-            PlayerEvent::Chat {
-                kind,
-                sender_entity_id,
-                empire,
-                message,
-            } if kind == 6 => Some((sender_entity_id, empire, message)),
-            _ => None,
-        })
-    else {
-        panic!("missing shout for red recipient a");
-    };
-    let Some((sender_b, empire_b, message_b)) =
-        events_red_b.into_iter().find_map(|event| match event {
-            PlayerEvent::Chat {
-                kind,
-                sender_entity_id,
-                empire,
-                message,
-            } if kind == 6 => Some((sender_entity_id, empire, message)),
-            _ => None,
-        })
-    else {
-        panic!("missing shout for red recipient b");
-    };
-
-    assert_eq!(sender_a, None);
-    assert_eq!(sender_b, None);
-    assert_eq!(empire_a, Some(zohar_domain::Empire::Red));
-    assert_eq!(empire_b, Some(zohar_domain::Empire::Red));
-    assert_eq!(message_a, b"ann : wave\0");
-    assert_eq!(message_b, b"ann : wave\0");
-    assert!(
-        !events_blue.into_iter().any(|event| matches!(
-            event,
-            PlayerEvent::Chat { kind, .. } if kind == 6
-        )),
-        "blue recipient should not receive red shout"
-    );
-}
-
-#[test]
-fn monster_idle_chat_uses_strategy_and_sender_identity() {
-    let map_id = MapId::new(41);
-    let mob_id = MobId::new(101);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (mut shared, mut map) = test_configs(map_key);
-    map.spawn_rules.push(Arc::new(SpawnRuleDef {
-        template: SpawnTemplate::Mob(mob_id),
-        area: SpawnArea::new(LocalPos::new(6400.0, 6400.0), LocalSize::new(0.0, 0.0)),
-        facing: FacingStrategy::Random,
-        max_count: 1,
-        regen_time: Duration::from_secs(60),
-    }));
-    Arc::make_mut(&mut shared.mobs).insert(
-        mob_id,
-        Arc::new(MobPrototypeDef {
-            mob_id,
-            mob_kind: MobKind::Monster,
-            name: "test_mob".to_string(),
-            rank: MobRank::Pawn,
-            level: 1,
-            move_speed: 100,
-            attack_speed: 100,
-            bhv_flags: BehaviorFlags::empty(),
-            empire: None,
-        }),
-    );
-    Arc::make_mut(&mut shared.mob_chat)
-        .strategy_type_defaults
-        .insert(
-            ("idle".to_string(), MobKind::Monster),
-            crate::MobChatStrategyInterval {
-                interval_min_sec: 1,
-                interval_max_sec: 1,
-            },
-        );
-    Arc::make_mut(&mut shared.mob_chat)
-        .lines_by_mob
-        .entry(("idle".to_string(), mob_id))
-        .or_default()
-        .push(crate::MobChatLine {
-            source_key: "idle.monster_chat_501_1".to_string(),
-            text: "growl".to_string(),
-        });
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let mob_net_id = {
-        let world = app.world_mut();
-        let mut q = world.query::<(&MobMarker, &NetEntityId)>();
-        q.iter(world)
-            .next()
-            .map(|(_, net)| net.net_id)
-            .expect("preloaded mob")
-    };
-
-    let (map_tx, mut map_rx) = tokio::sync::mpsc::channel(64);
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(1),
-                player_net_id: EntityId(5_101),
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(map_tx),
-            },
-        })
-        .expect("player enter");
-    advance_tick(&mut app);
-
-    let mut seen_idle_chat = None;
-    for _ in 0..5 {
-        app.world_mut()
-            .resource_mut::<RuntimeState>()
-            .packet_time_start = Instant::now() - Duration::from_secs(2);
-        advance_tick(&mut app);
-        for event in drain_player_events(&mut map_rx) {
-            if let PlayerEvent::Chat {
-                kind,
-                sender_entity_id,
-                message,
-                ..
-            } = event
-            {
-                if kind == 0 {
-                    seen_idle_chat = Some((sender_entity_id, message));
-                    break;
-                }
-            }
-        }
-        if seen_idle_chat.is_some() {
-            break;
-        }
-    }
-
-    let Some((sender_entity_id, message)) = seen_idle_chat else {
-        panic!("expected idle monster chat event");
-    };
-    assert_eq!(sender_entity_id, Some(mob_net_id));
-    assert_eq!(message, b"growl\0");
-}
-
-#[test]
-fn player_enter_same_tick_does_not_duplicate_spawn_events() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (tx1, mut rx1) = tokio::sync::mpsc::channel(32);
-    let (tx2, mut rx2) = tokio::sync::mpsc::channel(32);
-    let player_1 = PlayerId::from(1);
-    let player_2 = PlayerId::from(2);
-    let net_1 = EntityId(7_001);
-    let net_2 = EntityId(7_002);
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: player_1,
-                player_net_id: net_1,
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx1),
-            },
-        })
-        .expect("queue first enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: player_2,
-                player_net_id: net_2,
-                initial_pos: LocalPos::new(6410.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx2),
-            },
-        })
-        .expect("queue second enter");
-
-    advance_tick(&mut app);
-
-    let events_1 = drain_player_events(&mut rx1);
-    let events_2 = drain_player_events(&mut rx2);
-
-    let spawns_1: Vec<EntityId> = events_1
-        .iter()
-        .filter_map(|event| match event {
-            PlayerEvent::EntitySpawn { show, .. } => Some(show.entity_id),
-            _ => None,
-        })
-        .collect();
-    let spawns_2: Vec<EntityId> = events_2
-        .iter()
-        .filter_map(|event| match event {
-            PlayerEvent::EntitySpawn { show, .. } => Some(show.entity_id),
-            _ => None,
-        })
-        .collect();
-
-    assert_eq!(
-        spawns_1,
-        vec![net_2],
-        "player one should receive a single spawn for player two"
-    );
-    assert_eq!(
-        spawns_2,
-        vec![net_1],
-        "player two should receive a single spawn for player one"
-    );
-}
-
-#[test]
-fn far_apart_players_do_not_spawn_each_other() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (tx1, mut rx1) = tokio::sync::mpsc::channel(32);
-    let (tx2, mut rx2) = tokio::sync::mpsc::channel(32);
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(1),
-                player_net_id: EntityId(7_101),
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx1),
-            },
-        })
-        .expect("queue first enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(2),
-                player_net_id: EntityId(7_102),
-                initial_pos: LocalPos::new(6600.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx2),
-            },
-        })
-        .expect("queue second enter");
-
-    advance_tick(&mut app);
-
-    assert!(
-        first_spawn(&drain_player_events(&mut rx1)).is_none(),
-        "player one should not receive a spawn for a distant player"
-    );
-    assert!(
-        first_spawn(&drain_player_events(&mut rx2)).is_none(),
-        "player two should not receive a spawn for a distant player"
-    );
-}
-
-#[test]
-fn player_movement_only_reaches_visible_observers() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (tx_alice, mut rx_alice) = tokio::sync::mpsc::channel(32);
-    let (tx_bob, mut rx_bob) = tokio::sync::mpsc::channel(32);
-    let (tx_cara, mut rx_cara) = tokio::sync::mpsc::channel(32);
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(1),
-                player_net_id: EntityId(7_201),
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx_alice),
-            },
-        })
-        .expect("alice enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(2),
-                player_net_id: EntityId(7_202),
-                initial_pos: LocalPos::new(6401.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx_bob),
-            },
-        })
-        .expect("bob enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(3),
-                player_net_id: EntityId(7_203),
-                initial_pos: LocalPos::new(6600.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx_cara),
-            },
-        })
-        .expect("cara enter");
-
-    advance_tick(&mut app);
-    let _ = drain_player_events(&mut rx_alice);
-    let _ = drain_player_events(&mut rx_bob);
-    let _ = drain_player_events(&mut rx_cara);
-
-    let alice_entity = app.world().resource::<PlayerIndex>().0[&PlayerId::from(1)];
-    {
-        let mut ent = app.world_mut().entity_mut(alice_entity);
-        let mut queue = ent.get_mut::<MoveIntentQueue>().expect("move queue exists");
-        queue.0.push(MoveIntent {
-            kind: MovementKind::Move,
-            arg: 0,
-            rot: 0,
-            target: LocalPos::new(6405.0, 6400.0),
-            ts: 1_000,
-        });
-    }
-
-    advance_tick(&mut app);
-
-    assert!(
-        movement_events(&drain_player_events(&mut rx_alice)).is_empty(),
-        "mover must not receive its own movement echo"
-    );
-    assert_eq!(
-        movement_events(&drain_player_events(&mut rx_bob)),
-        vec![(EntityId(7_201), MovementKind::Move)]
-    );
-    assert!(
-        movement_events(&drain_player_events(&mut rx_cara)).is_empty(),
-        "distant players must not receive movement updates"
-    );
-}
-
-#[test]
-fn same_tick_spawn_precedes_local_chat_for_new_observer() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (tx_alice, mut rx_alice) = tokio::sync::mpsc::channel(32);
-    let (tx_bob, mut rx_bob) = tokio::sync::mpsc::channel(32);
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(2),
-                player_net_id: EntityId(7_301),
-                initial_pos: LocalPos::new(6505.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx_bob),
-            },
-        })
-        .expect("bob enter");
-    advance_tick(&mut app);
-    let _ = drain_player_events(&mut rx_bob);
-
-    let mut alice = PlayerAppearance::default();
-    alice.name = "alice".to_string();
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(1),
-                player_net_id: EntityId(7_302),
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: alice,
-                outbox: PlayerOutbox::new(tx_alice),
-            },
-        })
-        .expect("alice enter");
-    inbound_tx
-        .send(InboundEvent::ClientIntent {
-            msg: ClientIntentMsg {
-                player_id: PlayerId::from(1),
-                intent: ClientIntent::Chat {
-                    message: b"hello same tick\0".to_vec(),
-                },
-            },
-        })
-        .expect("queue chat");
-
-    advance_tick(&mut app);
-
-    let events_bob = drain_player_events(&mut rx_bob);
-    assert!(
-        matches!(events_bob.first(), Some(PlayerEvent::EntitySpawn { show, .. }) if show.entity_id == EntityId(7_302)),
-        "spawn must be queued before local chat when visibility is created in the same tick"
-    );
-    assert!(
-        matches!(events_bob.get(1), Some(PlayerEvent::Chat { kind, sender_entity_id, message, .. })
-            if *kind == 0 && *sender_entity_id == Some(EntityId(7_302)) && message == b"alice : hello same tick\0"),
-        "new observers should receive the same-tick local chat after the spawn"
-    );
-    assert_eq!(
-        first_local_chat(&drain_player_events(&mut rx_alice)),
-        Some((Some(EntityId(7_302)), b"alice : hello same tick\0".to_vec()))
-    );
-}
-
-#[test]
-fn same_tick_aoi_exit_sends_despawn_without_trailing_chat_or_movement() {
-    let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
-    app.update();
-
-    let (tx_alice, mut rx_alice) = tokio::sync::mpsc::channel(32);
-    let (tx_bob, mut rx_bob) = tokio::sync::mpsc::channel(32);
-
-    let mut alice = PlayerAppearance::default();
-    alice.name = "alice".to_string();
-
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(1),
-                player_net_id: EntityId(7_401),
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: alice,
-                outbox: PlayerOutbox::new(tx_alice),
-            },
-        })
-        .expect("alice enter");
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(2),
-                player_net_id: EntityId(7_402),
-                initial_pos: LocalPos::new(6505.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(tx_bob),
-            },
-        })
-        .expect("bob enter");
-
-    advance_tick(&mut app);
-    let _ = drain_player_events(&mut rx_alice);
-    let _ = drain_player_events(&mut rx_bob);
-
-    let alice_entity = app.world().resource::<PlayerIndex>().0[&PlayerId::from(1)];
-    {
-        let mut ent = app.world_mut().entity_mut(alice_entity);
-        {
-            let mut move_queue = ent.get_mut::<MoveIntentQueue>().expect("move queue exists");
-            move_queue.0.push(MoveIntent {
+        ent.get_mut::<MoveIntentQueue>()
+            .expect("move queue")
+            .0
+            .push(MoveIntent {
                 kind: MovementKind::Move,
                 arg: 0,
                 rot: 0,
-                target: LocalPos::new(6380.0, 6400.0),
+                target: LocalPos::new(5.0, 0.0),
                 ts: 1_000,
             });
-        }
-        {
-            let mut chat_queue = ent.get_mut::<ChatIntentQueue>().expect("chat queue exists");
-            chat_queue.0.push(ChatIntent {
-                message: b"bye\0".to_vec(),
-            });
-        }
     }
 
     advance_tick(&mut app);
 
-    let events_bob = drain_player_events(&mut rx_bob);
-    assert!(
-        matches!(events_bob.as_slice(), [PlayerEvent::EntityDespawn { entity_id }] if *entity_id == EntityId(7_401)),
-        "former observers should only receive the despawn when the subject exits AOI in the same tick"
+    let transform = app
+        .world()
+        .entity(player_entity)
+        .get::<LocalTransform>()
+        .expect("transform");
+    assert_eq!(transform.pos, LocalPos::new(5.0, 0.0));
+}
+
+#[test]
+fn player_move_clamps_to_map_bounds_in_pre_alpha_policy() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_105);
+    let _rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(1.5, 1.5),
     );
-    let events_alice = drain_player_events(&mut rx_alice);
-    assert_eq!(
-        first_local_chat(&events_alice),
-        Some((Some(EntityId(7_401)), b"alice : bye\0".to_vec()))
-    );
-    assert!(
-        movement_events(&events_alice).is_empty(),
-        "mover must not receive its own movement echo while leaving AOI"
-    );
+    advance_tick(&mut app);
+
+    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
+    {
+        let mut ent = app.world_mut().entity_mut(player_entity);
+        ent.get_mut::<MoveIntentQueue>()
+            .expect("move queue")
+            .0
+            .push(MoveIntent {
+                kind: MovementKind::Move,
+                arg: 0,
+                rot: 0,
+                target: LocalPos::new(12.5, 9.5),
+                ts: 1_000,
+            });
+    }
+
+    advance_tick(&mut app);
+
+    let transform = app
+        .world()
+        .entity(player_entity)
+        .get::<LocalTransform>()
+        .expect("transform");
+    assert!(transform.pos.x > 7.99 && transform.pos.x < 8.0);
+    assert!(transform.pos.y > 7.99 && transform.pos.y < 8.0);
 }
 
 #[test]
 fn fixed_timestep_switches_to_idle_rate_without_players() {
     let map_id = MapId::new(41);
-    let (_runtime, inbound_rx) = MapEventSender::channel_pair(16);
     let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
-
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
+    let (app, _inbound_tx) = build_runtime_app(shared, map, false);
 
     assert_eq!(
         app.world()
@@ -2660,20 +659,9 @@ fn fixed_timestep_switches_to_idle_rate_without_players() {
 #[test]
 fn fixed_timestep_switches_back_to_active_rate_on_player_enter() {
     let map_id = MapId::new(41);
-    let map_key = MapInstanceKey::shared(1, map_id);
-    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
-    let (shared, map) = test_configs(map_key);
+    let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
 
-    let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy::prelude::MinimalPlugins);
-    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
-    app.add_plugins((
-        ContentPlugin::new(shared, map),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-    ));
-    app.update();
     assert_eq!(
         app.world()
             .resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
@@ -2681,24 +669,1043 @@ fn fixed_timestep_switches_back_to_active_rate_on_player_enter() {
         Duration::from_secs(1)
     );
 
-    let (map_tx, _map_rx) = tokio::sync::mpsc::channel(8);
-    inbound_tx
-        .send(InboundEvent::PlayerEnter {
-            msg: EnterMsg {
-                player_id: PlayerId::from(1),
-                player_net_id: EntityId(5001),
-                initial_pos: LocalPos::new(6400.0, 6400.0),
-                appearance: PlayerAppearance::default(),
-                outbox: PlayerOutbox::new(map_tx),
-            },
-        })
-        .expect("send enter event");
-
+    let _rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        EntityId(5_601),
+        LocalPos::new(6_400.0, 6_400.0),
+    );
     advance_tick(&mut app);
+
     assert_eq!(
         app.world()
             .resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
             .timestep(),
         Duration::from_millis(40)
     );
+}
+
+#[test]
+fn player_attack_intent_causes_non_aggressive_mob_to_retaliate() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(6_400.0, 6_400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "calm_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_net_id = first_mob_net_id(&mut app);
+    let mob_entity = first_mob_entity(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_602);
+    let mut map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(6_401.0, 6_400.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    attack_target(&inbound_tx, player_id, mob_net_id, 7);
+    app.world_mut()
+        .resource_mut::<RuntimeState>()
+        .packet_time_start = Instant::now() - Duration::from_secs(1);
+
+    let mut events = Vec::new();
+    for _ in 0..10 {
+        advance_tick(&mut app);
+        events.extend(drain_player_events(&mut map_rx));
+    }
+
+    assert!(
+        movement_events(&events)
+            .into_iter()
+            .any(|(entity_id, kind)| entity_id == mob_net_id && kind == MovementKind::Attack),
+        "retaliating mob should emit attack movement"
+    );
+
+    let brain = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobBrainState>()
+        .copied()
+        .expect("mob brain");
+    assert_eq!(brain.target, Some(player_net_id));
+    assert!(matches!(
+        brain.mode,
+        MobBrainMode::Attacking | MobBrainMode::Chasing
+    ));
+}
+
+#[test]
+fn mob_chase_routes_around_navigation_blockers_and_emits_wait() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.navigator = Some(test_navigator(8, 8, &[(2, 1), (3, 1)]));
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "legacy_wait_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let navigator = map.navigator.clone().expect("navigator");
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_604);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(8.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("legacy chase packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert_eq!(movement.rot, east_rot());
+    assert!(
+        navigator.segment_clear(LocalPos::new(1.0, 1.0), movement.new_pos),
+        "terrain-aware chase should only emit a clear first segment"
+    );
+    assert!(
+        (movement.new_pos.y - 1.0).abs() > 0.01,
+        "routed chase should deviate off the blocked straight line"
+    );
+}
+
+#[test]
+fn idle_wander_retries_blocked_segments_instead_of_walking_through_walls() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(12.0, 12.0);
+    map.navigator = Some(test_navigator(
+        12,
+        12,
+        &[
+            (5, 2),
+            (5, 3),
+            (5, 4),
+            (5, 5),
+            (5, 6),
+            (5, 7),
+            (5, 8),
+            (5, 9),
+        ],
+    ));
+    shared.wander = WanderConfig {
+        decision_pause_idle_min: Duration::ZERO,
+        decision_pause_idle_max: Duration::ZERO,
+        post_move_pause_min: Duration::ZERO,
+        post_move_pause_max: Duration::ZERO,
+        wander_chance_denominator: 1,
+        step_min_m: 4.0,
+        step_max_m: 4.0,
+    };
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(4.0, 6.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto(
+            mob_id,
+            MobKind::Monster,
+            "stable_wander_npc",
+            MobRank::Pawn,
+            1,
+            100,
+            100,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let navigator = map.navigator.clone().expect("navigator");
+    let current_pos = LocalPos::new(4.0, 6.0);
+    let (seed, blocked_candidate) = find_seed_with_blocked_first_wander_candidate(
+        map.local_size,
+        navigator.as_ref(),
+        current_pos,
+        4.0,
+    );
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    app.world_mut().resource_mut::<RuntimeState>().rng = SmallRng::seed_from_u64(seed);
+    clear_pending_movements(&mut app);
+    set_stationary_mob(&mut app, mob_entity, current_pos, east_rot(), now_ms);
+    set_mob_idle(&mut app, mob_entity, now_ms);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("idle wander packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert!(
+        !navigator.segment_clear(current_pos, blocked_candidate),
+        "test seed must begin with a blocked wander sample"
+    );
+    assert!(
+        navigator.segment_clear(current_pos, movement.new_pos),
+        "idle wander should only emit a clear straight segment"
+    );
+    assert_ne!(
+        movement.new_pos, blocked_candidate,
+        "blocked first wander sample must be retried instead of emitted"
+    );
+}
+
+#[test]
+fn mob_chase_wait_targets_full_follow_distance_and_duration_matches_motion_speed() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(24.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "follow_goal_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_615);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(20.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("legacy chase packet");
+    let follow_distance = super::mob_chase::mob_follow_distance_m(1.5);
+    let expected_end = LocalPos::new(20.0 - follow_distance, 1.0);
+    let expected_duration = super::util::duration_from_motion_speed(
+        super::state::DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC,
+        100,
+        LocalPos::new(1.0, 1.0),
+        expected_end,
+    );
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert_eq!(movement.new_pos, expected_end);
+    assert_eq!(movement.rot, east_rot());
+    assert_eq!(movement.duration, expected_duration);
+}
+
+#[test]
+fn mob_close_chase_stops_at_follow_distance() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(16.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "follow_distance_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_616);
+    let target_pos = LocalPos::new(4.0, 1.0);
+    let _map_rx = enter_player(&inbound_tx, PlayerId::from(1), player_net_id, target_pos);
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("legacy chase packet");
+    let follow_distance = super::mob_chase::mob_follow_distance_m(2.5);
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert!((target_pos.x - movement.new_pos.x - follow_distance).abs() <= 0.01);
+    assert!((target_pos.y - movement.new_pos.y).abs() <= 0.01);
+}
+
+#[test]
+fn mob_attacks_from_current_position_within_threshold() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "attack_from_current_pos_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_617);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(2.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        north_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("attack packet");
+    assert_eq!(movement.kind, MovementKind::Attack);
+    assert_eq!(movement.new_pos, LocalPos::new(1.0, 1.0));
+    assert_eq!(movement.rot, east_rot());
+    assert_eq!(movement.duration, 600);
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.mode),
+        Some(MobBrainMode::Attacking)
+    );
+}
+
+#[test]
+fn mob_close_wait_chase_attacks_after_settling() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "close_wait_before_attack_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_618);
+    let target_pos = LocalPos::new(4.5, 1.0);
+    let _map_rx = enter_player(&inbound_tx, PlayerId::from(1), player_net_id, target_pos);
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("close chase packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert!(movement.new_pos.x > 1.0);
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms.saturating_add(2_000);
+    super::mob_motion::sample_mob_motion(app.world_mut());
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("attack after close wait");
+    assert_eq!(movement.kind, MovementKind::Attack);
+    assert!(movement.new_pos.x > 1.0);
+    assert_eq!(movement.rot, east_rot());
+}
+
+#[test]
+fn melee_attack_windup_suppresses_follow_up_packets() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "windup_lock_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_net_id = EntityId(5_618);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(2.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+    clear_pending_movements(&mut app);
+
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms.saturating_add(100);
+    run_mob_ai(&mut app);
+
+    assert!(pending_movements(&app).is_empty());
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.mode),
+        Some(MobBrainMode::Attacking)
+    );
+}
+
+#[test]
+fn mob_resumes_wait_chase_after_attack_windup_expires() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "resume_chase_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_619);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(2.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+    run_mob_ai(&mut app);
+
+    let windup_until_ms = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobBrainState>()
+        .map(|brain| brain.attack_windup_until_ms)
+        .expect("brain windup");
+    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
+    app.world_mut()
+        .entity_mut(player_entity)
+        .get_mut::<LocalTransform>()
+        .expect("player transform")
+        .pos = LocalPos::new(12.0, 1.0);
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = windup_until_ms.saturating_add(1);
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("resumed chase packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert!(movement.new_pos.x > 1.0);
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.mode),
+        Some(MobBrainMode::Chasing)
+    );
+}
+
+#[test]
+fn mid_walk_chase_rethink_issues_wait_from_sampled_current_position_to_full_goal() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(24.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "mid_walk_rethink_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_net_id = EntityId(5_620);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(8.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    {
+        let mut entity = app.world_mut().entity_mut(mob_entity);
+        entity.get_mut::<LocalTransform>().expect("transform").pos = LocalPos::new(1.0, 1.0);
+        entity.get_mut::<LocalTransform>().expect("transform").rot = east_rot();
+        entity.get_mut::<MobMotion>().expect("mob motion").0 = MobMotionState {
+            segment_start_pos: LocalPos::new(1.0, 1.0),
+            segment_end_pos: LocalPos::new(5.0, 1.0),
+            segment_start_at_ms: 800,
+            segment_end_at_ms: 1_600,
+        };
+    }
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("mid-walk rethink packet");
+    let motion = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobMotion>()
+        .map(|motion| motion.0)
+        .expect("mob motion");
+    assert!((motion.segment_start_pos.x - 2.0).abs() <= 0.01);
+    let follow_distance = super::mob_chase::mob_follow_distance_m(1.5);
+    assert!((movement.new_pos.x - (8.0 - follow_distance)).abs() <= 0.01);
+    assert!(
+        (app.world()
+            .entity(mob_entity)
+            .get::<LocalTransform>()
+            .expect("transform")
+            .pos
+            .x
+            - 2.0)
+            .abs()
+            <= 0.01
+    );
+}
+
+#[test]
+fn issue_mob_action_snaps_endpoints_to_wire_centimeters() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "wire_cm_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let now_ms = 1_000;
+    let now_ts = 77;
+    let current_pos = LocalPos::new(1.009, 1.004);
+    let target_pos = LocalPos::new(3.019, 1.116);
+    let current_rot = east_rot();
+    let expected_start = LocalPos::new(1.00, 1.00);
+    let expected_end = LocalPos::new(3.01, 1.11);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(&mut app, mob_entity, current_pos, current_rot, now_ms);
+    let shared = app.world().resource::<SharedConfig>().clone();
+    let map_entity = map_entity(&app);
+
+    let duration = super::mob_motion::issue_mob_action(
+        app.world_mut(),
+        map_entity,
+        mob_entity,
+        mob_net_id,
+        MovementKind::Wait,
+        current_pos,
+        target_pos,
+        super::util::rotation_from_delta(expected_start, expected_end, current_rot),
+        mob_id,
+        100,
+        &shared,
+        now_ms,
+        now_ts,
+        None,
+    )
+    .expect("issued wait movement");
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("wait packet");
+    let expected_duration = super::util::calculate_mob_move_duration_ms(
+        shared.motion_speeds.as_ref(),
+        mob_id,
+        crate::motion::MotionMoveMode::Run,
+        100,
+        expected_start,
+        expected_end,
+    );
+    let motion = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobMotion>()
+        .map(|motion| motion.0)
+        .expect("mob motion");
+    assert_eq!(movement.new_pos, expected_end);
+    assert_eq!(motion.segment_start_pos, expected_start);
+    assert_eq!(motion.segment_end_pos, expected_end);
+    assert_eq!(duration, expected_duration);
+    assert_eq!(movement.duration, expected_duration);
+}
+
+#[test]
+fn returning_mob_issues_wait_home_segment() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(16.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "return_home_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(6.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_returning(&mut app, mob_entity, now_ms);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("return-home packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert_eq!(movement.new_pos, LocalPos::new(1.0, 1.0));
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.mode),
+        Some(MobBrainMode::Returning)
+    );
+}
+
+#[test]
+fn attacking_one_group_member_causes_the_whole_pack_to_retaliate() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Group(Arc::from([mob_id, mob_id, mob_id])),
+        area: SpawnArea::new(LocalPos::new(6_400.0, 6_400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "pack_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let (mob_net_ids, mob_entities) = {
+        let world = app.world_mut();
+        let mut q = world.query::<(
+            Entity,
+            &MobMarker,
+            &NetEntityId,
+            Option<&super::state::MobPackId>,
+        )>();
+        let rows = q
+            .iter(world)
+            .map(|(entity, _, net_id, pack_id)| {
+                (entity, net_id.net_id, pack_id.map(|id| id.pack_id))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        let first_pack = rows[0].2.expect("pack id");
+        assert!(
+            rows.iter()
+                .all(|(_, _, pack_id)| pack_id == &Some(first_pack))
+        );
+        (
+            rows.iter()
+                .map(|(_, net_id, _)| *net_id)
+                .collect::<Vec<_>>(),
+            rows.iter()
+                .map(|(entity, _, _)| *entity)
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_605);
+    let mut map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(6_401.0, 6_400.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    attack_target(&inbound_tx, player_id, mob_net_ids[0], 1);
+
+    let mut events = Vec::new();
+    for _ in 0..4 {
+        advance_tick(&mut app);
+        events.extend(drain_player_events(&mut map_rx));
+    }
+
+    let attack_emitters = movement_events(&events)
+        .into_iter()
+        .filter_map(|(entity_id, kind)| (kind == MovementKind::Attack).then_some(entity_id))
+        .collect::<Vec<_>>();
+    assert!(
+        mob_net_ids
+            .iter()
+            .all(|mob_net_id| attack_emitters.contains(mob_net_id))
+    );
+
+    for mob_entity in mob_entities {
+        let brain = app
+            .world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .copied()
+            .expect("pack member brain");
+        assert_eq!(brain.target, Some(player_net_id));
+    }
 }
