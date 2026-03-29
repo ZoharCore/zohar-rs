@@ -1,25 +1,25 @@
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
-use std::time::Duration;
 
 use crate::bridge::InboundEvent;
 
-use super::combat::process_attack_intents;
+use super::action_pipeline::{ActionBuffer, process_actions};
+use super::aggro::{MobAggroDispatchBuffer, route_mob_aggro};
+use super::chat::process_chat_intents;
 use super::idle_chat::emit_idle_chat;
 use super::ingress::drain_inbound;
-use super::mob_brain::mob_brain_tick;
-use super::mob_chase::mob_chase_tick;
+use super::mob_ai::process_mob_ai;
 use super::mob_motion::sample_mob_motion;
-use super::movement::process_intents;
 use super::outbox::outbox_flush;
+use super::player_actions::process_player_actions;
 use super::players::{on_player_added, on_player_removed};
 use super::replication::{aoi_reconcile, replication_flush};
+use super::schedule::{advance_sim_time, has_active_players, sync_fixed_tick_rate};
 use super::spawn::{bootstrap_map_runtime, signal_startup_ready, spawn_rules};
 use super::state::{
     MapConfig, NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, RuntimeState,
     SharedConfig, SimSet,
 };
-use super::util::packet_time_ms;
 
 pub struct ContentPlugin {
     shared: SharedConfig,
@@ -75,14 +75,13 @@ impl Plugin for MapPlugin {
         app.init_resource::<RuntimeState>()
             .init_resource::<PlayerIndex>()
             .init_resource::<NetEntityIndex>()
-            .init_resource::<PlayerCount>();
+            .init_resource::<PlayerCount>()
+            .init_resource::<ActionBuffer>()
+            .init_resource::<MobAggroDispatchBuffer>();
     }
 }
 
 pub struct SimulationPlugin;
-
-const ACTIVE_SIM_TIMESTEP: Duration = Duration::from_millis(40);
-const IDLE_SIM_TIMESTEP: Duration = Duration::from_secs(1);
 
 impl Plugin for SimulationPlugin {
     fn build(&self, app: &mut App) {
@@ -96,13 +95,10 @@ impl Plugin for SimulationPlugin {
         app.configure_sets(
             FixedUpdate,
             (
-                SimSet::ProcessIntents,
-                SimSet::SampleMobMotion,
-                SimSet::SpawnRules,
-                SimSet::AttackIntents,
-                SimSet::MobBrain,
-                SimSet::MobChase,
-                SimSet::IdleChat,
+                SimSet::Sense,
+                SimSet::Think,
+                SimSet::Act,
+                SimSet::Ambient,
                 SimSet::AoiReconcile,
             )
                 .chain(),
@@ -114,19 +110,25 @@ impl Plugin for SimulationPlugin {
         .add_systems(Startup, bootstrap_map_runtime)
         .add_systems(PostStartup, signal_startup_ready)
         .add_systems(FixedFirst, advance_sim_time)
-        .add_systems(FixedUpdate, process_intents.in_set(SimSet::ProcessIntents))
         .add_systems(
             FixedUpdate,
-            sample_mob_motion.in_set(SimSet::SampleMobMotion),
+            (
+                sample_mob_motion,
+                spawn_rules,
+                process_player_actions,
+                route_mob_aggro,
+            )
+                .chain()
+                .in_set(SimSet::Sense),
         )
-        .add_systems(FixedUpdate, spawn_rules.in_set(SimSet::SpawnRules))
+        .add_systems(FixedUpdate, process_mob_ai.in_set(SimSet::Think))
+        .add_systems(FixedUpdate, process_actions.in_set(SimSet::Act))
         .add_systems(
             FixedUpdate,
-            process_attack_intents.in_set(SimSet::AttackIntents),
+            (process_chat_intents, emit_idle_chat)
+                .chain()
+                .in_set(SimSet::Ambient),
         )
-        .add_systems(FixedUpdate, mob_brain_tick.in_set(SimSet::MobBrain))
-        .add_systems(FixedUpdate, mob_chase_tick.in_set(SimSet::MobChase))
-        .add_systems(FixedUpdate, emit_idle_chat.in_set(SimSet::IdleChat))
         .add_systems(
             FixedUpdate,
             aoi_reconcile
@@ -148,32 +150,4 @@ impl Plugin for OutboxPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(FixedPostUpdate, outbox_flush.in_set(SimSet::OutboxFlush));
     }
-}
-
-fn advance_sim_time(mut state: ResMut<RuntimeState>) {
-    state.sim_time_ms = u64::from(packet_time_ms(state.packet_time_start));
-}
-
-fn sync_fixed_tick_rate(player_count: Res<PlayerCount>, mut fixed_time: ResMut<Time<Fixed>>) {
-    let previous = fixed_time.timestep();
-    let target = if player_count.0 > 0 {
-        ACTIVE_SIM_TIMESTEP
-    } else {
-        IDLE_SIM_TIMESTEP
-    };
-
-    if previous == target {
-        return;
-    }
-
-    // Avoid a large one-frame catch-up burst when a player joins while idle.
-    if previous == IDLE_SIM_TIMESTEP && target == ACTIVE_SIM_TIMESTEP {
-        let overstep = fixed_time.overstep();
-        fixed_time.discard_overstep(overstep);
-    }
-    fixed_time.set_timestep(target);
-}
-
-fn has_active_players(player_count: Res<PlayerCount>) -> bool {
-    player_count.0 > 0
 }

@@ -13,9 +13,8 @@ use zohar_domain::coords::LocalPos;
 pub use grid::{GridCell, TerrainFlagsGrid};
 pub use planner::NavPath;
 
-use planner::{LocalPlanScope, find_local_cell_path, prune_cells_to_path};
+use planner::LocalPlanScope;
 use reachability::{ReachabilityGrid, WalkabilityView};
-use segment::{can_stand, clip_segment, segment_clear};
 
 #[derive(Debug)]
 pub struct MapNavigator {
@@ -34,15 +33,15 @@ impl MapNavigator {
     }
 
     pub fn can_stand(&self, pos: LocalPos) -> bool {
-        can_stand(&self.walkability, pos)
+        segment::can_stand(&self.walkability, pos)
     }
 
     pub fn segment_clear(&self, start: LocalPos, goal: LocalPos) -> bool {
-        segment_clear(&self.walkability, start, goal)
+        segment::segment_clear(&self.walkability, start, goal)
     }
 
     pub fn clip_segment(&self, start: LocalPos, goal: LocalPos) -> LocalPos {
-        clip_segment(&self.walkability, start, goal)
+        segment::clip_segment(&self.walkability, start, goal)
     }
 
     pub fn same_component(&self, start: LocalPos, goal: LocalPos) -> bool {
@@ -113,7 +112,7 @@ impl MapNavigator {
             return RouteResolution::Unreachable;
         }
 
-        let Some(cells) = find_local_cell_path(
+        let Some(cells) = planner::find_local_cell_path(
             &self.walkability,
             &self.reachability,
             route_cells.start_cell,
@@ -152,7 +151,7 @@ impl MapNavigator {
     }
 
     fn build_path(&self, cells: &[GridCell], start: LocalPos, goal: LocalPos) -> NavPath {
-        prune_cells_to_path(self.terrain(), cells, start, goal, |from, to| {
+        planner::prune_cells_to_path(self.terrain(), cells, start, goal, |from, to| {
             self.segment_clear(from, to)
         })
     }

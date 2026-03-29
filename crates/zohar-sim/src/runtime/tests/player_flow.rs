@@ -1,0 +1,3024 @@
+use super::*;
+use crate::chat::MobChatContent;
+use crate::navigation::{MapNavigator, TerrainFlagsGrid};
+use bevy::prelude::{App, Entity};
+use crossbeam_channel::Sender as InboundSender;
+use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
+use std::collections::HashMap;
+use std::f32::consts::TAU;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::Receiver;
+
+use super::aggro::MobAggroDispatchBuffer;
+use super::players::map_has_players;
+use super::state::{
+    LocalTransform, MapPendingMovements, MapSpawnRules, MobAggro, MobAggroQueue, MobBrainMode,
+    MobBrainState, MobMarker, MobMotion, MobMotionState, NetEntityId, PendingMovement,
+    PlayerCommandQueue, PlayerIndex, PlayerMotion, PlayerMotionState, RuntimeState,
+};
+use super::util::sample_player_motion_at;
+use crate::api::{ClientIntent, PlayerEvent};
+use crate::bridge::{ClientIntentMsg, EnterMsg, InboundEvent, LeaveMsg};
+use crate::motion::EntityMotionSpeedTable;
+use crate::outbox::PlayerOutbox;
+use crate::types::MapInstanceKey;
+use zohar_domain::appearance::PlayerAppearance;
+use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize};
+use zohar_domain::entity::mob::spawn::{
+    Direction, FacingStrategy, SpawnArea, SpawnRuleDef, SpawnTemplate,
+};
+use zohar_domain::entity::mob::{MobBattleType, MobId, MobKind, MobPrototypeDef, MobRank};
+use zohar_domain::entity::player::PlayerId;
+use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_domain::{BehaviorFlags, MapId, TerrainFlags};
+
+fn test_configs(map_key: MapInstanceKey) -> (SharedConfig, MapConfig) {
+    (
+        SharedConfig {
+            motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
+            mobs: Arc::new(HashMap::new()),
+            wander: WanderConfig::default(),
+            mob_chat: Arc::new(MobChatContent::default()),
+        },
+        MapConfig {
+            map_key,
+            empire: None,
+            local_size: LocalSize::new(16_384.0, 16_384.0),
+            navigator: None,
+            spawn_rules: Vec::new(),
+        },
+    )
+}
+
+fn test_navigator(
+    width: usize,
+    height: usize,
+    blocked_cells: &[(usize, usize)],
+) -> Arc<MapNavigator> {
+    let mut data = vec![TerrainFlags::empty(); width * height];
+    for (x, y) in blocked_cells.iter().copied() {
+        data[y * width + x] = TerrainFlags::BLOCK;
+    }
+    Arc::new(MapNavigator::new(
+        TerrainFlagsGrid::new(1.0, width, height, data).expect("terrain flags grid"),
+    ))
+}
+
+fn test_mob_proto(
+    mob_id: MobId,
+    mob_kind: MobKind,
+    name: impl Into<String>,
+    rank: MobRank,
+    level: u32,
+    move_speed: u8,
+    attack_speed: u8,
+    bhv_flags: BehaviorFlags,
+) -> Arc<MobPrototypeDef> {
+    Arc::new(MobPrototypeDef {
+        mob_id,
+        mob_kind,
+        name: name.into(),
+        rank,
+        battle_type: MobBattleType::Melee,
+        level,
+        move_speed,
+        attack_speed,
+        aggressive_sight: 0,
+        attack_range: 150,
+        combat_extent_m: 1.0,
+        bhv_flags,
+        empire: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn test_mob_proto_with_combat(
+    mob_id: MobId,
+    mob_kind: MobKind,
+    name: impl Into<String>,
+    rank: MobRank,
+    battle_type: MobBattleType,
+    level: u32,
+    move_speed: u8,
+    attack_speed: u8,
+    aggressive_sight: u16,
+    attack_range: u16,
+    bhv_flags: BehaviorFlags,
+) -> Arc<MobPrototypeDef> {
+    Arc::new(MobPrototypeDef {
+        mob_id,
+        mob_kind,
+        name: name.into(),
+        rank,
+        battle_type,
+        level,
+        move_speed,
+        attack_speed,
+        aggressive_sight,
+        attack_range,
+        combat_extent_m: 1.0,
+        bhv_flags,
+        empire: None,
+    })
+}
+
+fn build_runtime_app(
+    shared: SharedConfig,
+    map: MapConfig,
+    with_outbox: bool,
+) -> (App, InboundSender<InboundEvent>) {
+    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(64);
+    let mut app = App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    if with_outbox {
+        app.add_plugins((
+            ContentPlugin::new(shared, map),
+            NetworkPlugin::new(inbound_rx),
+            MapPlugin,
+            SimulationPlugin,
+            OutboxPlugin,
+        ));
+    } else {
+        app.add_plugins((
+            ContentPlugin::new(shared, map),
+            NetworkPlugin::new(inbound_rx),
+            MapPlugin,
+            SimulationPlugin,
+        ));
+    }
+    app.update();
+    (app, inbound_tx)
+}
+
+fn advance_tick(app: &mut App) {
+    run_pre_update(app);
+    run_fixed_first(app);
+    run_fixed_update(app);
+    run_fixed_post_update(app);
+}
+
+fn run_pre_update(app: &mut App) {
+    let _ = app.world_mut().try_run_schedule(bevy::prelude::PreUpdate);
+}
+
+fn run_fixed_first(app: &mut App) {
+    app.world_mut().run_schedule(bevy::prelude::FixedFirst);
+}
+
+fn run_fixed_update(app: &mut App) {
+    app.world_mut().run_schedule(bevy::prelude::FixedUpdate);
+}
+
+fn run_fixed_post_update(app: &mut App) {
+    app.world_mut().run_schedule(bevy::prelude::FixedPostUpdate);
+}
+
+fn enter_player(
+    inbound_tx: &InboundSender<InboundEvent>,
+    player_id: PlayerId,
+    player_net_id: EntityId,
+    initial_pos: LocalPos,
+) -> Receiver<PlayerEvent> {
+    enter_player_with_appearance(
+        inbound_tx,
+        player_id,
+        player_net_id,
+        initial_pos,
+        PlayerAppearance::default(),
+    )
+}
+
+fn enter_player_with_appearance(
+    inbound_tx: &InboundSender<InboundEvent>,
+    player_id: PlayerId,
+    player_net_id: EntityId,
+    initial_pos: LocalPos,
+    appearance: PlayerAppearance,
+) -> Receiver<PlayerEvent> {
+    let (map_tx, map_rx) = tokio::sync::mpsc::channel(64);
+    inbound_tx
+        .send(InboundEvent::PlayerEnter {
+            msg: EnterMsg {
+                player_id,
+                player_net_id,
+                initial_pos,
+                appearance,
+                outbox: PlayerOutbox::new(map_tx),
+            },
+        })
+        .expect("player enter");
+    map_rx
+}
+
+fn attack_target(
+    inbound_tx: &InboundSender<InboundEvent>,
+    player_id: PlayerId,
+    target: EntityId,
+    attack_type: u8,
+) {
+    inbound_tx
+        .send(InboundEvent::ClientIntent {
+            msg: ClientIntentMsg {
+                player_id,
+                intent: ClientIntent::Attack {
+                    target,
+                    attack_type,
+                },
+            },
+        })
+        .expect("attack intent");
+}
+
+fn move_player(
+    inbound_tx: &InboundSender<InboundEvent>,
+    player_id: PlayerId,
+    entity_id: EntityId,
+    target: LocalPos,
+    ts: u32,
+) {
+    inbound_tx
+        .send(InboundEvent::ClientIntent {
+            msg: ClientIntentMsg {
+                player_id,
+                intent: ClientIntent::Move {
+                    entity_id,
+                    kind: MovementKind::Move,
+                    arg: 0,
+                    rot: 0,
+                    x: target.x,
+                    y: target.y,
+                    ts,
+                },
+            },
+        })
+        .expect("move intent");
+}
+
+fn send_chat(inbound_tx: &InboundSender<InboundEvent>, player_id: PlayerId, message: &[u8]) {
+    inbound_tx
+        .send(InboundEvent::ClientIntent {
+            msg: ClientIntentMsg {
+                player_id,
+                intent: ClientIntent::Chat {
+                    message: message.to_vec(),
+                },
+            },
+        })
+        .expect("chat intent");
+}
+
+fn drain_player_events(rx: &mut Receiver<PlayerEvent>) -> Vec<PlayerEvent> {
+    let mut events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+    events
+}
+
+fn movement_events(events: &[PlayerEvent]) -> Vec<(EntityId, MovementKind)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::EntityMove {
+                entity_id, kind, ..
+            } => Some((*entity_id, *kind)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn first_mob_entity(app: &mut App) -> Entity {
+    let world = app.world_mut();
+    let mut q = world.query::<(Entity, &MobMarker)>();
+    q.iter(world)
+        .next()
+        .map(|(entity, _)| entity)
+        .expect("mob entity")
+}
+
+fn first_mob_net_id(app: &mut App) -> EntityId {
+    let world = app.world_mut();
+    let mut q = world.query::<(&MobMarker, &NetEntityId)>();
+    q.iter(world)
+        .next()
+        .map(|(_, net_id)| net_id.net_id)
+        .expect("mob net id")
+}
+
+fn map_entity(app: &App) -> Entity {
+    app.world()
+        .resource::<RuntimeState>()
+        .map_entity
+        .expect("map entity")
+}
+
+fn pending_movements(app: &App) -> Vec<PendingMovement> {
+    app.world()
+        .entity(map_entity(app))
+        .get::<MapPendingMovements>()
+        .map(|pending| pending.0.clone())
+        .unwrap_or_default()
+}
+
+fn clear_pending_movements(app: &mut App) {
+    let map_entity = map_entity(app);
+    app.world_mut()
+        .entity_mut(map_entity)
+        .get_mut::<MapPendingMovements>()
+        .expect("map pending movements")
+        .0
+        .clear();
+}
+
+fn run_mob_ai(app: &mut App) {
+    super::mob_motion::sample_mob_motion(app.world_mut());
+    super::mob_ai::process_mob_ai(app.world_mut());
+    super::action_pipeline::process_actions(app.world_mut());
+}
+
+fn east_rot() -> u8 {
+    super::util::rotation_from_delta(LocalPos::new(1.0, 1.0), LocalPos::new(2.0, 1.0), 0)
+}
+
+fn north_rot() -> u8 {
+    super::util::rotation_from_delta(LocalPos::new(1.0, 1.0), LocalPos::new(1.0, 2.0), 0)
+}
+
+fn set_stationary_mob(app: &mut App, mob_entity: Entity, pos: LocalPos, rot: u8, now_ms: u64) {
+    let mut entity = app.world_mut().entity_mut(mob_entity);
+    entity.get_mut::<LocalTransform>().expect("transform").pos = pos;
+    entity.get_mut::<LocalTransform>().expect("transform").rot = rot;
+    entity.get_mut::<MobMotion>().expect("mob motion").0 = MobMotionState {
+        segment_start_pos: pos,
+        segment_end_pos: pos,
+        segment_start_at_ms: now_ms,
+        segment_end_at_ms: now_ms,
+    };
+}
+
+fn set_mob_chasing(
+    app: &mut App,
+    mob_entity: Entity,
+    target: EntityId,
+    now_ms: u64,
+    next_attack_at_ms: u64,
+) {
+    let mut entity = app.world_mut().entity_mut(mob_entity);
+    *entity.get_mut::<MobBrainState>().expect("brain") = MobBrainState {
+        mode: MobBrainMode::Pursuit,
+        target: Some(target),
+        next_attack_at_ms,
+        attack_windup_until_ms: 0,
+        next_rethink_at_ms: now_ms,
+        ..MobBrainState::default()
+    };
+}
+
+fn set_mob_returning(app: &mut App, mob_entity: Entity, now_ms: u64) {
+    let mut entity = app.world_mut().entity_mut(mob_entity);
+    *entity.get_mut::<MobBrainState>().expect("brain") = MobBrainState {
+        mode: MobBrainMode::Return,
+        target: None,
+        next_rethink_at_ms: now_ms,
+        ..MobBrainState::default()
+    };
+}
+
+fn set_mob_idle(app: &mut App, mob_entity: Entity, now_ms: u64) {
+    let mut entity = app.world_mut().entity_mut(mob_entity);
+    *entity.get_mut::<MobBrainState>().expect("brain") = MobBrainState {
+        mode: MobBrainMode::Idle,
+        target: None,
+        wander_next_decision_at_ms: now_ms,
+        wander_wait_until_ms: None,
+        ..MobBrainState::default()
+    };
+}
+
+fn sample_test_wander_candidate(
+    rng: &mut SmallRng,
+    current_pos: LocalPos,
+    step_m: f32,
+) -> LocalPos {
+    let heading = LocalRotation::radians(rng.random_range(0.0..TAU));
+    current_pos.shifted(heading, LocalDistMeters::new(step_m))
+}
+
+fn test_pos_inside_map(map_size: LocalSize, candidate: LocalPos) -> bool {
+    candidate.x.is_finite()
+        && candidate.y.is_finite()
+        && candidate.x >= 0.0
+        && candidate.y >= 0.0
+        && candidate.x < map_size.width
+        && candidate.y < map_size.height
+}
+
+fn find_seed_with_blocked_first_wander_candidate(
+    map_size: LocalSize,
+    navigator: &MapNavigator,
+    current_pos: LocalPos,
+    step_m: f32,
+) -> (u64, LocalPos) {
+    for seed in 0..100_000 {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let _ = rng.random_range(0..1);
+        let first_candidate = sample_test_wander_candidate(&mut rng, current_pos, step_m);
+        if !test_pos_inside_map(map_size, first_candidate)
+            || navigator.segment_clear(current_pos, first_candidate)
+        {
+            continue;
+        }
+
+        let has_clear_retry = (0..7).any(|_| {
+            let retry_candidate = sample_test_wander_candidate(&mut rng, current_pos, step_m);
+            test_pos_inside_map(map_size, retry_candidate)
+                && navigator.can_stand(retry_candidate)
+                && navigator.segment_clear(current_pos, retry_candidate)
+        });
+        if has_clear_retry {
+            return (seed, first_candidate);
+        }
+    }
+
+    panic!("expected a deterministic wander seed with a blocked first candidate");
+}
+
+#[test]
+fn sample_player_motion_at_interpolates_within_segment() {
+    let mut motion = super::state::PlayerMotionState {
+        segment_start_pos: LocalPos::new(0.0, 0.0),
+        segment_end_pos: LocalPos::new(10.0, 0.0),
+        segment_start_ts: 100,
+        segment_end_ts: 200,
+        last_client_ts: 101,
+    };
+
+    let pos = sample_player_motion_at(LocalPos::new(0.0, 0.0), &mut motion, 150);
+    assert!((pos.x - 5.0).abs() < 0.01);
+    assert!((pos.y - 0.0).abs() < 0.01);
+}
+
+#[test]
+fn sample_player_motion_at_clamps_to_segment_end_after_overshoot() {
+    let mut motion = super::state::PlayerMotionState {
+        segment_start_pos: LocalPos::new(0.0, 0.0),
+        segment_end_pos: LocalPos::new(10.0, 0.0),
+        segment_start_ts: 100,
+        segment_end_ts: 200,
+        last_client_ts: 101,
+    };
+
+    assert_eq!(
+        sample_player_motion_at(LocalPos::new(0.0, 0.0), &mut motion, 250),
+        LocalPos::new(10.0, 0.0)
+    );
+}
+
+#[test]
+fn sample_player_motion_at_keeps_current_pos_for_stale_ts() {
+    let mut motion = super::state::PlayerMotionState {
+        segment_start_pos: LocalPos::new(0.0, 0.0),
+        segment_end_pos: LocalPos::new(10.0, 0.0),
+        segment_start_ts: 100,
+        segment_end_ts: 200,
+        last_client_ts: 175,
+    };
+
+    let pos = sample_player_motion_at(LocalPos::new(7.5, 0.0), &mut motion, 150);
+    assert!((pos.x - 7.5).abs() < 0.01);
+    assert!((pos.y - 0.0).abs() < 0.01);
+}
+
+#[test]
+fn sample_player_visual_position_at_uses_segment_progress_not_latest_endpoint() {
+    let motion = super::state::PlayerMotionState {
+        segment_start_pos: LocalPos::new(0.0, 0.0),
+        segment_end_pos: LocalPos::new(10.0, 0.0),
+        segment_start_ts: 100,
+        segment_end_ts: 200,
+        last_client_ts: 200,
+    };
+
+    let pos = super::util::sample_player_visual_position_at(motion, 150);
+    assert!((pos.x - 5.0).abs() < 0.01);
+    assert!((pos.y - 0.0).abs() < 0.01);
+}
+
+#[test]
+fn simulation_plugin_preloads_map_spawns() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(6_400.0, 6_400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Random,
+        max_count: 3,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto(
+            mob_id,
+            MobKind::Monster,
+            "test_mob",
+            MobRank::Pawn,
+            1,
+            100,
+            100,
+            BehaviorFlags::empty(),
+        ),
+    );
+
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+    let map_entity = app
+        .world()
+        .resource::<RuntimeState>()
+        .map_entity
+        .expect("map entity initialized");
+    let spawn_rules = app
+        .world()
+        .entity(map_entity)
+        .get::<MapSpawnRules>()
+        .expect("spawn rules attached");
+    assert_eq!(spawn_rules.rules.len(), 1);
+    assert_eq!(spawn_rules.rules[0].active_instances, 3);
+    assert_eq!(spawn_rules.rules[0].entities.len(), 3);
+
+    let world = app.world_mut();
+    let mut mob_query = world.query::<&MobMarker>();
+    assert_eq!(mob_query.iter(world).count(), 3);
+}
+
+#[test]
+fn player_count_follows_enter_leave() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_001);
+    let _rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(6_400.0, 6_400.0),
+    );
+    advance_tick(&mut app);
+    assert_eq!(app.world().resource::<PlayerCount>().0, 1);
+    assert!(map_has_players(app.world_mut()));
+
+    inbound_tx
+        .send(InboundEvent::PlayerLeave {
+            msg: LeaveMsg {
+                player_id,
+                player_net_id,
+            },
+        })
+        .expect("player leave");
+    advance_tick(&mut app);
+    assert_eq!(app.world().resource::<PlayerCount>().0, 0);
+    assert!(!map_has_players(app.world_mut()));
+}
+
+#[test]
+fn startup_ready_signal_fires_after_map_bootstrap() {
+    let map_id = MapId::new(41);
+    let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
+    let (_inbound_tx, inbound_rx) = crossbeam_channel::bounded(16);
+    let (startup_tx, startup_rx) = tokio::sync::oneshot::channel();
+
+    let mut app = App::new();
+    app.add_plugins(bevy::prelude::MinimalPlugins);
+    app.insert_resource(bevy::prelude::Time::<bevy::prelude::Fixed>::from_hz(25.0));
+    app.insert_resource(StartupReadySignal::new(startup_tx));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    app.update();
+
+    assert!(startup_rx.blocking_recv().is_ok());
+}
+
+#[test]
+fn player_move_ignores_navigation_blockers_in_pre_alpha_policy() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, mut map) = test_configs(map_key);
+    map.navigator = Some(test_navigator(16, 16, &[(5, 0)]));
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_101);
+    let _rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(0.0, 0.0),
+    );
+    advance_tick(&mut app);
+
+    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
+    move_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(5.0, 0.0),
+        1_000,
+    );
+
+    advance_tick(&mut app);
+
+    let transform = app
+        .world()
+        .entity(player_entity)
+        .get::<LocalTransform>()
+        .expect("transform");
+    assert_eq!(transform.pos, LocalPos::new(5.0, 0.0));
+}
+
+#[test]
+fn player_move_clamps_to_map_bounds_in_pre_alpha_policy() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_105);
+    let _rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(1.5, 1.5),
+    );
+    advance_tick(&mut app);
+
+    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
+    move_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(12.5, 9.5),
+        1_000,
+    );
+
+    advance_tick(&mut app);
+
+    let transform = app
+        .world()
+        .entity(player_entity)
+        .get::<LocalTransform>()
+        .expect("transform");
+    assert!(transform.pos.x > 7.99 && transform.pos.x < 8.0);
+    assert!(transform.pos.y > 7.99 && transform.pos.y < 8.0);
+}
+
+#[test]
+fn player_chat_is_still_replicated_after_action_pipeline_refactor() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mut alice = PlayerAppearance::default();
+    alice.name = "Alice".to_string();
+    let mut bob = PlayerAppearance::default();
+    bob.name = "Bob".to_string();
+
+    let alice_id = PlayerId::from(1);
+    let alice_net_id = EntityId(5_106);
+    let bob_id = PlayerId::from(2);
+    let bob_net_id = EntityId(5_107);
+
+    let mut alice_rx = enter_player_with_appearance(
+        &inbound_tx,
+        alice_id,
+        alice_net_id,
+        LocalPos::new(10.0, 10.0),
+        alice,
+    );
+    let mut bob_rx = enter_player_with_appearance(
+        &inbound_tx,
+        bob_id,
+        bob_net_id,
+        LocalPos::new(10.5, 10.0),
+        bob,
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    send_chat(&inbound_tx, alice_id, b"hello there\0");
+    advance_tick(&mut app);
+
+    let bob_events = drain_player_events(&mut bob_rx);
+    assert!(
+        bob_events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerEvent::Chat {
+                    kind: 0,
+                    sender_entity_id: Some(sender_entity_id),
+                    message,
+                    ..
+                } if *sender_entity_id == alice_net_id && message == b"Alice : hello there\0"
+            )
+        }),
+        "nearby players should still receive local chat after the movement refactor"
+    );
+}
+
+#[test]
+fn noisy_player_move_backlog_does_not_evict_other_players_move_backlog() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let player_one = PlayerId::from(1);
+    let player_one_net = EntityId(5_200);
+    let player_two = PlayerId::from(2);
+    let player_two_net = EntityId(5_201);
+
+    let _ = enter_player(
+        &inbound_tx,
+        player_one,
+        player_one_net,
+        LocalPos::new(10.0, 10.0),
+    );
+    let _ = enter_player(
+        &inbound_tx,
+        player_two,
+        player_two_net,
+        LocalPos::new(12.0, 10.0),
+    );
+    advance_tick(&mut app);
+
+    for idx in 0..40 {
+        move_player(
+            &inbound_tx,
+            player_one,
+            player_one_net,
+            LocalPos::new(10.0 + idx as f32, 10.0),
+            1_000 + idx,
+        );
+    }
+    run_pre_update(&mut app);
+    for idx in 40..(super::state::MAX_MOVE_INTENTS_PER_TICK as u32 + 2) {
+        move_player(
+            &inbound_tx,
+            player_one,
+            player_one_net,
+            LocalPos::new(10.0 + idx as f32, 10.0),
+            1_000 + idx,
+        );
+    }
+    move_player(
+        &inbound_tx,
+        player_two,
+        player_two_net,
+        LocalPos::new(14.0, 10.0),
+        2_000,
+    );
+
+    run_pre_update(&mut app);
+
+    let player_one_entity = app.world().resource::<PlayerIndex>().0[&player_one];
+    let player_two_entity = app.world().resource::<PlayerIndex>().0[&player_two];
+    let player_one_queue = app
+        .world()
+        .entity(player_one_entity)
+        .get::<PlayerCommandQueue>()
+        .expect("player one command queue");
+    let player_two_queue = app
+        .world()
+        .entity(player_two_entity)
+        .get::<PlayerCommandQueue>()
+        .expect("player two command queue");
+
+    assert_eq!(
+        player_one_queue
+            .0
+            .iter()
+            .filter(|command| matches!(command, super::state::PlayerCommand::Move { .. }))
+            .count(),
+        super::state::MAX_MOVE_INTENTS_PER_TICK
+    );
+    assert!(matches!(
+        player_two_queue.0.as_slice(),
+        [super::state::PlayerCommand::Move { ts: 2_000, target, .. }]
+            if *target == LocalPos::new(14.0, 10.0)
+    ));
+}
+
+#[test]
+fn noisy_player_attack_backlog_does_not_evict_other_players_attack_backlog() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.0, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "attack_queue_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_one = PlayerId::from(1);
+    let player_one_net = EntityId(5_202);
+    let player_two = PlayerId::from(2);
+    let player_two_net = EntityId(5_203);
+
+    let _ = enter_player(
+        &inbound_tx,
+        player_one,
+        player_one_net,
+        LocalPos::new(10.5, 10.0),
+    );
+    let _ = enter_player(
+        &inbound_tx,
+        player_two,
+        player_two_net,
+        LocalPos::new(11.0, 10.0),
+    );
+    advance_tick(&mut app);
+
+    for _ in 0..(super::state::MAX_ATTACK_INTENTS_PER_TICK + 2) {
+        attack_target(&inbound_tx, player_one, mob_net_id, 1);
+    }
+    attack_target(&inbound_tx, player_two, mob_net_id, 1);
+
+    run_pre_update(&mut app);
+
+    let player_one_entity = app.world().resource::<PlayerIndex>().0[&player_one];
+    let player_two_entity = app.world().resource::<PlayerIndex>().0[&player_two];
+    let player_one_queue = app
+        .world()
+        .entity(player_one_entity)
+        .get::<PlayerCommandQueue>()
+        .expect("player one command queue");
+    let player_two_queue = app
+        .world()
+        .entity(player_two_entity)
+        .get::<PlayerCommandQueue>()
+        .expect("player two command queue");
+
+    assert_eq!(
+        player_one_queue
+            .0
+            .iter()
+            .filter(|command| matches!(command, super::state::PlayerCommand::Attack { .. }))
+            .count(),
+        super::state::MAX_ATTACK_INTENTS_PER_TICK
+    );
+    assert!(matches!(
+        player_two_queue.0.as_slice(),
+        [super::state::PlayerCommand::Attack { target, attack_type }]
+            if *target == mob_net_id && *attack_type == 1
+    ));
+}
+
+#[test]
+fn same_tick_move_then_attack_uses_updated_player_position() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(13.0, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "same_tick_attack_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_208);
+    let _ = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    advance_tick(&mut app);
+
+    clear_pending_movements(&mut app);
+    move_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(12.0, 10.0),
+        1_000,
+    );
+    attack_target(&inbound_tx, player_id, mob_net_id, 1);
+    run_pre_update(&mut app);
+    run_fixed_first(&mut app);
+    run_fixed_update(&mut app);
+
+    let movements = pending_movements(&app);
+    assert!(movements.iter().any(|movement| {
+        movement.entity_id == player_net_id
+            && movement.kind == MovementKind::Move
+            && movement.new_pos == LocalPos::new(12.0, 10.0)
+    }));
+    assert!(
+        movements.iter().any(|movement| {
+            movement.entity_id == player_net_id && movement.kind == MovementKind::Attack
+        }),
+        "same-tick attack should be validated from the post-move player position"
+    );
+}
+
+#[test]
+fn same_tick_player_move_is_visible_to_mob_ai() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.0, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "same_tick_aggro_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            250,
+            150,
+            BehaviorFlags::AGGRESSIVE,
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_209);
+    let _ = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(13.1, 10.0),
+    );
+    advance_tick(&mut app);
+
+    move_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(12.0, 10.0),
+        1_000,
+    );
+    run_pre_update(&mut app);
+    run_fixed_first(&mut app);
+    run_fixed_update(&mut app);
+
+    let brain = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobBrainState>()
+        .copied()
+        .expect("mob brain");
+    assert_eq!(
+        brain.target(),
+        Some(player_net_id),
+        "mob AI should acquire a player that moved into aggro range during this tick"
+    );
+}
+
+#[test]
+fn player_attack_emits_stimulus_dispatch_without_mutating_mob_queue() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.0, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "stimulus_dispatch_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_204);
+    let _ = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(10.5, 10.0),
+    );
+    advance_tick(&mut app);
+
+    attack_target(&inbound_tx, player_id, mob_net_id, 1);
+    run_pre_update(&mut app);
+    run_fixed_first(&mut app);
+    super::player_actions::process_player_actions(app.world_mut());
+
+    let dispatches = &app.world().resource::<MobAggroDispatchBuffer>().0;
+    assert!(dispatches.iter().any(|dispatch| {
+        dispatch.attacked_mob_entity == mob_entity
+            && matches!(
+                dispatch.aggro,
+                MobAggro::ProvokedBy { attacker } if attacker == player_net_id
+            )
+    }));
+    assert!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobAggroQueue>()
+            .expect("mob aggro queue")
+            .0
+            .is_empty(),
+        "player intake should emit dispatches, not mutate mob queues directly"
+    );
+}
+
+#[test]
+fn stimulus_routing_fans_out_pack_before_mob_think_order_matters() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Group(Arc::from([mob_id, mob_id, mob_id])),
+        area: SpawnArea::new(LocalPos::new(6_400.0, 6_400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "stimulus_pack_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let (mob_net_ids, mob_entities) = {
+        let world = app.world_mut();
+        let mut q = world.query::<(Entity, &MobMarker, &NetEntityId)>();
+        let rows = q
+            .iter(world)
+            .map(|(entity, _, net_id)| (entity, net_id.net_id))
+            .collect::<Vec<_>>();
+        (
+            rows.iter().map(|(_, net_id)| *net_id).collect::<Vec<_>>(),
+            rows.iter().map(|(entity, _)| *entity).collect::<Vec<_>>(),
+        )
+    };
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_204);
+    let _ = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(6_401.0, 6_400.0),
+    );
+    advance_tick(&mut app);
+
+    attack_target(&inbound_tx, player_id, mob_net_ids[0], 1);
+    run_pre_update(&mut app);
+    run_fixed_first(&mut app);
+    super::player_actions::process_player_actions(app.world_mut());
+    super::aggro::route_mob_aggro(app.world_mut());
+
+    for mob_entity in mob_entities {
+        let queue = app
+            .world()
+            .entity(mob_entity)
+            .get::<MobAggroQueue>()
+            .expect("mob aggro queue");
+        assert!(queue.0.iter().any(|aggro| {
+            matches!(
+                aggro,
+                MobAggro::ProvokedBy { attacker } if *attacker == player_net_id
+            )
+        }));
+    }
+}
+
+#[test]
+fn fixed_update_orders_player_intake_before_stimulus_routing_before_mob_ai() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Group(Arc::from([mob_id, mob_id])),
+        area: SpawnArea::new(LocalPos::new(6_500.0, 6_500.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "scheduler_order_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_206);
+    let _ = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(6_501.0, 6_500.0),
+    );
+    advance_tick(&mut app);
+
+    attack_target(&inbound_tx, player_id, mob_net_id, 1);
+    run_pre_update(&mut app);
+    run_fixed_first(&mut app);
+    run_fixed_update(&mut app);
+
+    let targeted = {
+        let world = app.world_mut();
+        let mut query = world.query::<(&MobMarker, &MobBrainState)>();
+        query
+            .iter(world)
+            .filter(|(_, brain)| brain.target() == Some(player_net_id))
+            .count()
+    };
+    assert_eq!(
+        targeted, 2,
+        "full fixed-update should drain player intake, route pack stimuli, and let mob think consume them in the same tick"
+    );
+}
+
+#[test]
+fn timer_only_mob_state_updates_do_not_mark_runtime_dirty() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "timer_only_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+    let _ = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        EntityId(5_205),
+        LocalPos::new(20.0, 20.0),
+    );
+    advance_tick(&mut app);
+
+    let mob_entity = first_mob_entity(&mut app);
+    {
+        let mut entity = app.world_mut().entity_mut(mob_entity);
+        *entity.get_mut::<MobBrainState>().expect("brain") = MobBrainState {
+            mode: MobBrainMode::AttackWindup,
+            attack_windup_until_ms: 900,
+            next_rethink_at_ms: 900,
+            ..MobBrainState::default()
+        };
+    }
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().is_dirty = false;
+
+    run_mob_ai(&mut app);
+
+    assert!(
+        pending_movements(&app).is_empty(),
+        "timer-only state updates should not emit movement packets"
+    );
+    assert!(
+        !app.world().resource::<RuntimeState>().is_dirty,
+        "timer-only state updates should not trigger AOI reconciliation"
+    );
+}
+
+#[test]
+fn query_helpers_preserve_aggressive_acquisition_and_chase_prediction() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "query_boundary_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            600,
+            150,
+            BehaviorFlags::AGGRESSIVE,
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let near_player_id = PlayerId::from(1);
+    let near_player_net_id = EntityId(5_207);
+    let far_player_id = PlayerId::from(2);
+    let far_player_net_id = EntityId(5_208);
+    let _ = enter_player(
+        &inbound_tx,
+        near_player_id,
+        near_player_net_id,
+        LocalPos::new(4.0, 1.0),
+    );
+    let _ = enter_player(
+        &inbound_tx,
+        far_player_id,
+        far_player_net_id,
+        LocalPos::new(6.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let map_entity = app
+        .world()
+        .resource::<RuntimeState>()
+        .map_entity
+        .expect("map entity");
+    let current_pos = app
+        .world()
+        .entity(mob_entity)
+        .get::<LocalTransform>()
+        .expect("mob transform")
+        .pos;
+    let shared = app.world().resource::<SharedConfig>().clone();
+    let proto = shared.mobs.get(&mob_id).expect("mob prototype");
+    let acquired =
+        super::query::acquire_aggressive_target(app.world(), map_entity, current_pos, proto);
+    assert_eq!(acquired, Some(near_player_net_id));
+
+    let near_player_entity = app.world().resource::<PlayerIndex>().0[&near_player_id];
+    {
+        let mut player = app.world_mut().entity_mut(near_player_entity);
+        player
+            .get_mut::<LocalTransform>()
+            .expect("player transform")
+            .pos = LocalPos::new(4.0, 1.0);
+        player.get_mut::<PlayerMotion>().expect("player motion").0 = PlayerMotionState {
+            segment_start_pos: LocalPos::new(4.0, 1.0),
+            segment_end_pos: LocalPos::new(4.0, 3.0),
+            segment_start_ts: 1_000,
+            segment_end_ts: 1_400,
+            last_client_ts: 1_400,
+        };
+    }
+
+    let visual_pos =
+        super::query::player_position(app.world(), near_player_net_id, 1_100).expect("visual pos");
+    let predicted_pos = super::query::chase_target_position(
+        app.world(),
+        current_pos,
+        near_player_net_id,
+        1_100,
+        mob_id,
+        100,
+        MobBattleType::Melee,
+        &shared,
+    )
+    .expect("predicted chase pos");
+    let ranged_pos = super::query::chase_target_position(
+        app.world(),
+        current_pos,
+        near_player_net_id,
+        1_100,
+        mob_id,
+        100,
+        MobBattleType::Range,
+        &shared,
+    )
+    .expect("ranged chase pos");
+
+    assert!(predicted_pos.y > visual_pos.y);
+    assert_eq!(ranged_pos, visual_pos);
+}
+
+#[test]
+fn fixed_timestep_switches_to_idle_rate_without_players() {
+    let map_id = MapId::new(41);
+    let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
+    let (app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    assert_eq!(
+        app.world()
+            .resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+            .timestep(),
+        Duration::from_secs(1)
+    );
+}
+
+#[test]
+fn fixed_timestep_switches_back_to_active_rate_on_player_enter() {
+    let map_id = MapId::new(41);
+    let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    assert_eq!(
+        app.world()
+            .resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+            .timestep(),
+        Duration::from_secs(1)
+    );
+
+    let _rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        EntityId(5_601),
+        LocalPos::new(6_400.0, 6_400.0),
+    );
+    advance_tick(&mut app);
+
+    assert_eq!(
+        app.world()
+            .resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+            .timestep(),
+        Duration::from_millis(40)
+    );
+}
+
+#[test]
+fn player_attack_intent_causes_non_aggressive_mob_to_retaliate() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(6_400.0, 6_400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "calm_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_net_id = first_mob_net_id(&mut app);
+    let mob_entity = first_mob_entity(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_602);
+    let mut map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(6_401.0, 6_400.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    attack_target(&inbound_tx, player_id, mob_net_id, 7);
+    app.world_mut()
+        .resource_mut::<RuntimeState>()
+        .packet_time_start = Instant::now() - Duration::from_secs(1);
+
+    let mut events = Vec::new();
+    for _ in 0..10 {
+        advance_tick(&mut app);
+        events.extend(drain_player_events(&mut map_rx));
+    }
+
+    assert!(
+        movement_events(&events)
+            .into_iter()
+            .any(|(entity_id, kind)| entity_id == mob_net_id && kind == MovementKind::Attack),
+        "retaliating mob should emit attack movement"
+    );
+
+    let brain = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobBrainState>()
+        .copied()
+        .expect("mob brain");
+    assert_eq!(brain.target(), Some(player_net_id));
+    assert!(matches!(
+        brain.mode(),
+        MobBrainMode::AttackWindup | MobBrainMode::Pursuit
+    ));
+}
+
+#[test]
+fn mob_chase_ignores_navigation_blockers_with_legacy_straight_segments() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.navigator = Some(test_navigator(8, 8, &[(2, 1), (3, 1)]));
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "legacy_wait_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let navigator = map.navigator.clone().expect("navigator");
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_604);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(8.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("legacy chase packet");
+    let follow_distance = super::mob_ai::mob_follow_distance_m(1.5);
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert_eq!(movement.rot, east_rot());
+    assert_eq!(movement.new_pos, LocalPos::new(8.0 - follow_distance, 1.0));
+    assert!(
+        !navigator.segment_clear(LocalPos::new(1.0, 1.0), movement.new_pos),
+        "legacy straight-line chase should ignore terrain blockers on the chase hot path"
+    );
+    assert!(
+        (movement.new_pos.y - 1.0).abs() <= 0.01,
+        "legacy straight-line chase should stay on the blocked straight line"
+    );
+}
+
+#[test]
+fn idle_wander_retries_blocked_segments_instead_of_walking_through_walls() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(12.0, 12.0);
+    map.navigator = Some(test_navigator(
+        12,
+        12,
+        &[
+            (5, 2),
+            (5, 3),
+            (5, 4),
+            (5, 5),
+            (5, 6),
+            (5, 7),
+            (5, 8),
+            (5, 9),
+        ],
+    ));
+    shared.wander = WanderConfig {
+        decision_pause_idle_min: Duration::ZERO,
+        decision_pause_idle_max: Duration::ZERO,
+        post_move_pause_min: Duration::ZERO,
+        post_move_pause_max: Duration::ZERO,
+        wander_chance_denominator: 1,
+        step_min_m: 4.0,
+        step_max_m: 4.0,
+    };
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(4.0, 6.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto(
+            mob_id,
+            MobKind::Monster,
+            "stable_wander_npc",
+            MobRank::Pawn,
+            1,
+            100,
+            100,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let navigator = map.navigator.clone().expect("navigator");
+    let current_pos = LocalPos::new(4.0, 6.0);
+    let (seed, blocked_candidate) = find_seed_with_blocked_first_wander_candidate(
+        map.local_size,
+        navigator.as_ref(),
+        current_pos,
+        4.0,
+    );
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    app.world_mut().resource_mut::<RuntimeState>().rng = SmallRng::seed_from_u64(seed);
+    clear_pending_movements(&mut app);
+    set_stationary_mob(&mut app, mob_entity, current_pos, east_rot(), now_ms);
+    set_mob_idle(&mut app, mob_entity, now_ms);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("idle wander packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert!(
+        !navigator.segment_clear(current_pos, blocked_candidate),
+        "test seed must begin with a blocked wander sample"
+    );
+    assert!(
+        navigator.segment_clear(current_pos, movement.new_pos),
+        "idle wander should only emit a clear straight segment"
+    );
+    assert_ne!(
+        movement.new_pos, blocked_candidate,
+        "blocked first wander sample must be retried instead of emitted"
+    );
+}
+
+#[test]
+fn idle_wander_does_not_issue_a_second_move_while_first_move_is_in_flight() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(100.0, 100.0);
+    shared.wander = WanderConfig {
+        decision_pause_idle_min: Duration::ZERO,
+        decision_pause_idle_max: Duration::ZERO,
+        post_move_pause_min: Duration::from_millis(400),
+        post_move_pause_max: Duration::from_millis(400),
+        wander_chance_denominator: 1,
+        step_min_m: 4.0,
+        step_max_m: 4.0,
+    };
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(50.0, 50.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto(
+            mob_id,
+            MobKind::Monster,
+            "wander_in_flight_guard",
+            MobRank::Pawn,
+            1,
+            100,
+            100,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    app.world_mut().resource_mut::<RuntimeState>().rng = SmallRng::seed_from_u64(7);
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(50.0, 50.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_idle(&mut app, mob_entity, now_ms);
+
+    run_mob_ai(&mut app);
+
+    let first_move = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("first idle wander packet");
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms =
+        now_ms + u64::from(first_move.duration / 2);
+
+    run_mob_ai(&mut app);
+
+    assert!(
+        pending_movements(&app)
+            .into_iter()
+            .all(|movement| movement.entity_id != mob_net_id),
+        "mob should not emit a second idle wander packet before the first movement ends"
+    );
+}
+
+#[test]
+fn idle_wander_post_move_pause_delays_the_next_wander_decision() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(100.0, 100.0);
+    shared.wander = WanderConfig {
+        decision_pause_idle_min: Duration::ZERO,
+        decision_pause_idle_max: Duration::ZERO,
+        post_move_pause_min: Duration::from_millis(400),
+        post_move_pause_max: Duration::from_millis(400),
+        wander_chance_denominator: 1,
+        step_min_m: 4.0,
+        step_max_m: 4.0,
+    };
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(50.0, 50.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto(
+            mob_id,
+            MobKind::Monster,
+            "wander_pause_guard",
+            MobRank::Pawn,
+            1,
+            100,
+            100,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    app.world_mut().resource_mut::<RuntimeState>().rng = SmallRng::seed_from_u64(9);
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(50.0, 50.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_idle(&mut app, mob_entity, now_ms);
+
+    run_mob_ai(&mut app);
+
+    let first_move = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("first idle wander packet");
+    let movement_end_ms = now_ms + u64::from(first_move.duration);
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = movement_end_ms;
+    run_mob_ai(&mut app);
+    assert!(
+        pending_movements(&app)
+            .into_iter()
+            .all(|movement| movement.entity_id != mob_net_id),
+        "post-move pause should suppress the next idle wander exactly at movement end"
+    );
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = movement_end_ms + 400;
+    run_mob_ai(&mut app);
+    assert!(
+        pending_movements(&app)
+            .into_iter()
+            .any(|movement| movement.entity_id == mob_net_id),
+        "mob should wander again once the configured post-move pause has elapsed"
+    );
+}
+
+#[test]
+fn mob_chase_wait_targets_full_follow_distance_and_duration_matches_motion_speed() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(24.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "follow_goal_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_615);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(20.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("legacy chase packet");
+    let follow_distance = super::mob_ai::mob_follow_distance_m(1.5);
+    let expected_end = LocalPos::new(20.0 - follow_distance, 1.0);
+    let expected_duration = super::util::duration_from_motion_speed(
+        super::state::DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC,
+        100,
+        LocalPos::new(1.0, 1.0),
+        expected_end,
+    );
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert_eq!(movement.new_pos, expected_end);
+    assert_eq!(movement.rot, east_rot());
+    assert_eq!(movement.duration, expected_duration);
+}
+
+#[test]
+fn mob_close_chase_stops_at_follow_distance() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(16.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "follow_distance_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_616);
+    let target_pos = LocalPos::new(4.0, 1.0);
+    let _map_rx = enter_player(&inbound_tx, PlayerId::from(1), player_net_id, target_pos);
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("legacy chase packet");
+    let follow_distance = super::mob_ai::mob_follow_distance_m(2.5);
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert!((target_pos.x - movement.new_pos.x - follow_distance).abs() <= 0.01);
+    assert!((target_pos.y - movement.new_pos.y).abs() <= 0.01);
+}
+
+#[test]
+fn mob_attacks_from_current_position_within_threshold() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "attack_from_current_pos_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_617);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(2.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        north_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("attack packet");
+    assert_eq!(movement.kind, MovementKind::Attack);
+    assert_eq!(movement.new_pos, LocalPos::new(1.0, 1.0));
+    assert_eq!(movement.rot, east_rot());
+    assert_eq!(movement.duration, 600);
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.mode()),
+        Some(MobBrainMode::AttackWindup)
+    );
+}
+
+#[test]
+fn mob_close_wait_chase_attacks_after_settling() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "close_wait_before_attack_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_618);
+    let target_pos = LocalPos::new(4.5, 1.0);
+    let _map_rx = enter_player(&inbound_tx, PlayerId::from(1), player_net_id, target_pos);
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("close chase packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert!(movement.new_pos.x > 1.0);
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms.saturating_add(2_000);
+    super::mob_motion::sample_mob_motion(app.world_mut());
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("attack after close wait");
+    assert_eq!(movement.kind, MovementKind::Attack);
+    assert!(movement.new_pos.x > 1.0);
+    assert_eq!(movement.rot, east_rot());
+}
+
+#[test]
+fn short_close_chase_rethinks_again_when_the_segment_ends() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "short_rethink_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_619);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(3.1, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    let now_ts: u32 = 1_000;
+    {
+        let mut state = app.world_mut().resource_mut::<RuntimeState>();
+        state.sim_time_ms = now_ms;
+        state.packet_time_start = Instant::now() - Duration::from_millis(u64::from(now_ts));
+    }
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
+    {
+        let mut player = app.world_mut().entity_mut(player_entity);
+        player
+            .get_mut::<LocalTransform>()
+            .expect("player transform")
+            .pos = LocalPos::new(3.1, 1.0);
+        player.get_mut::<PlayerMotion>().expect("player motion").0 = PlayerMotionState {
+            segment_start_pos: LocalPos::new(3.1, 1.0),
+            segment_end_pos: LocalPos::new(4.1, 1.0),
+            segment_start_ts: now_ts,
+            segment_end_ts: now_ts + 400,
+            last_client_ts: now_ts + 400,
+        };
+    }
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+
+    let first_movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("first chase packet");
+    assert_eq!(first_movement.kind, MovementKind::Wait);
+    assert!(
+        first_movement.duration < 200,
+        "test needs a close chase segment shorter than the rethink window"
+    );
+
+    clear_pending_movements(&mut app);
+    {
+        let mut state = app.world_mut().resource_mut::<RuntimeState>();
+        state.sim_time_ms = now_ms + u64::from(first_movement.duration) + 1;
+        state.packet_time_start = Instant::now()
+            - Duration::from_millis(u64::from(now_ts) + u64::from(first_movement.duration) + 1);
+    }
+    super::mob_motion::sample_mob_motion(app.world_mut());
+    run_mob_ai(&mut app);
+
+    let second_movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("follow-up chase packet right after the short segment ends");
+    assert_eq!(second_movement.kind, MovementKind::Wait);
+    assert!(second_movement.new_pos.x > first_movement.new_pos.x);
+}
+
+#[test]
+fn melee_attack_windup_suppresses_follow_up_packets() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "windup_lock_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_net_id = EntityId(5_618);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(2.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+    clear_pending_movements(&mut app);
+
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms.saturating_add(100);
+    run_mob_ai(&mut app);
+
+    assert!(pending_movements(&app).is_empty());
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.mode()),
+        Some(MobBrainMode::AttackWindup)
+    );
+}
+
+#[test]
+fn aggro_received_during_attack_windup_is_processed_after_windup() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "windup_aggro_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let first_target_id = PlayerId::from(1);
+    let first_target_net_id = EntityId(5_620);
+    let _first_rx = enter_player(
+        &inbound_tx,
+        first_target_id,
+        first_target_net_id,
+        LocalPos::new(2.0, 1.0),
+    );
+    let retarget_player_id = PlayerId::from(2);
+    let retarget_player_net_id = EntityId(5_621);
+    let _second_rx = enter_player(
+        &inbound_tx,
+        retarget_player_id,
+        retarget_player_net_id,
+        LocalPos::new(4.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, first_target_net_id, now_ms, 0);
+    run_mob_ai(&mut app);
+
+    let windup_until_ms = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobBrainState>()
+        .map(|brain| brain.attack_windup_until_ms())
+        .expect("brain windup");
+
+    app.world_mut()
+        .entity_mut(mob_entity)
+        .get_mut::<MobAggroQueue>()
+        .expect("mob aggro queue")
+        .0
+        .push(MobAggro::ProvokedBy {
+            attacker: retarget_player_net_id,
+        });
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms.saturating_add(100);
+    run_mob_ai(&mut app);
+
+    let queued_aggro = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobAggroQueue>()
+        .expect("mob aggro queue")
+        .0
+        .clone();
+    assert_eq!(queued_aggro.len(), 1);
+    assert!(matches!(
+        queued_aggro[0],
+        MobAggro::ProvokedBy { attacker } if attacker == retarget_player_net_id
+    ));
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = windup_until_ms.saturating_add(1);
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("retargeted chase packet");
+    assert!(movement.new_pos.x > 1.0);
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.target()),
+        Some(Some(retarget_player_net_id))
+    );
+}
+
+#[test]
+fn mob_resumes_wait_chase_after_attack_windup_expires() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "resume_chase_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_619);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(2.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(1.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+    run_mob_ai(&mut app);
+
+    let windup_until_ms = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobBrainState>()
+        .map(|brain| brain.attack_windup_until_ms())
+        .expect("brain windup");
+    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
+    {
+        let mut player = app.world_mut().entity_mut(player_entity);
+        player
+            .get_mut::<LocalTransform>()
+            .expect("player transform")
+            .pos = LocalPos::new(12.0, 1.0);
+        player.get_mut::<PlayerMotion>().expect("player motion").0 = PlayerMotionState {
+            segment_start_pos: LocalPos::new(12.0, 1.0),
+            segment_end_pos: LocalPos::new(12.0, 1.0),
+            segment_start_ts: windup_until_ms as u32,
+            segment_end_ts: windup_until_ms as u32,
+            last_client_ts: windup_until_ms as u32,
+        };
+    }
+
+    clear_pending_movements(&mut app);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = windup_until_ms.saturating_add(1);
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("resumed chase packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert!(movement.new_pos.x > 1.0);
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.mode()),
+        Some(MobBrainMode::Pursuit)
+    );
+}
+
+#[test]
+fn mid_walk_chase_reissues_wait_from_sampled_current_position_to_full_goal() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(24.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "mid_walk_rethink_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_net_id = EntityId(5_620);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(8.0, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    {
+        let mut entity = app.world_mut().entity_mut(mob_entity);
+        entity.get_mut::<LocalTransform>().expect("transform").pos = LocalPos::new(1.0, 1.0);
+        entity.get_mut::<LocalTransform>().expect("transform").rot = east_rot();
+        entity.get_mut::<MobMotion>().expect("mob motion").0 = MobMotionState {
+            segment_start_pos: LocalPos::new(1.0, 1.0),
+            segment_end_pos: LocalPos::new(5.0, 1.0),
+            segment_start_at_ms: 800,
+            segment_end_at_ms: 1_600,
+        };
+    }
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("mid-walk rethink packet");
+    let motion = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobMotion>()
+        .map(|motion| motion.0)
+        .expect("mob motion");
+    assert!((motion.segment_start_pos.x - 2.0).abs() <= 0.01);
+    let follow_distance = super::mob_ai::mob_follow_distance_m(1.5);
+    assert!((movement.new_pos.x - (8.0 - follow_distance)).abs() <= 0.01);
+    assert!(
+        (app.world()
+            .entity(mob_entity)
+            .get::<LocalTransform>()
+            .expect("transform")
+            .pos
+            .x
+            - 2.0)
+            .abs()
+            <= 0.01
+    );
+}
+
+#[test]
+fn mid_walk_chase_interrupts_into_attack_once_sampled_position_is_in_range() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(12.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "interrupt_close_attack_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_net_id = EntityId(5_621);
+    let target_pos = LocalPos::new(3.5, 1.0);
+    let _map_rx = enter_player(&inbound_tx, PlayerId::from(1), player_net_id, target_pos);
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    {
+        let mut entity = app.world_mut().entity_mut(mob_entity);
+        entity.get_mut::<LocalTransform>().expect("transform").pos = LocalPos::new(1.0, 1.0);
+        entity.get_mut::<LocalTransform>().expect("transform").rot = east_rot();
+        entity.get_mut::<MobMotion>().expect("mob motion").0 = MobMotionState {
+            segment_start_pos: LocalPos::new(1.0, 1.0),
+            segment_end_pos: LocalPos::new(5.0, 1.0),
+            segment_start_at_ms: 800,
+            segment_end_at_ms: 1_600,
+        };
+    }
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("attack packet");
+    assert_eq!(movement.kind, MovementKind::Attack);
+    assert!((movement.new_pos.x - 2.0).abs() <= 0.01);
+    assert_eq!(movement.rot, east_rot());
+
+    let motion = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobMotion>()
+        .map(|motion| motion.0)
+        .expect("mob motion");
+    assert!((motion.segment_start_pos.x - 2.0).abs() <= 0.01);
+    assert!((motion.segment_end_pos.x - 2.0).abs() <= 0.01);
+}
+
+#[test]
+fn mid_walk_chase_keeps_current_segment_when_its_end_is_already_attackable() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(12.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "keep_attackable_segment_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_net_id = EntityId(5_622);
+    let target_pos = LocalPos::new(3.6, 1.0);
+    let _map_rx = enter_player(&inbound_tx, PlayerId::from(1), player_net_id, target_pos);
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    {
+        let mut entity = app.world_mut().entity_mut(mob_entity);
+        entity.get_mut::<LocalTransform>().expect("transform").pos = LocalPos::new(1.0, 1.0);
+        entity.get_mut::<LocalTransform>().expect("transform").rot = east_rot();
+        entity.get_mut::<MobMotion>().expect("mob motion").0 = MobMotionState {
+            segment_start_pos: LocalPos::new(1.0, 1.0),
+            segment_end_pos: LocalPos::new(2.2, 1.0),
+            segment_start_at_ms: 800,
+            segment_end_at_ms: 1_600,
+        };
+    }
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 10_000);
+
+    run_mob_ai(&mut app);
+
+    assert!(
+        pending_movements(&app)
+            .into_iter()
+            .all(|movement| movement.kind != MovementKind::Wait),
+        "a segment that already ends inside attack range should not be replaced mid-walk"
+    );
+}
+
+#[test]
+fn issue_mob_action_snaps_endpoints_to_wire_centimeters() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(8.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "wire_cm_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let now_ms = 1_000;
+    let now_ts = 77;
+    let current_pos = LocalPos::new(1.009, 1.004);
+    let target_pos = LocalPos::new(3.019, 1.116);
+    let current_rot = east_rot();
+    let expected_start = LocalPos::new(1.00, 1.00);
+    let expected_end = LocalPos::new(3.01, 1.11);
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(&mut app, mob_entity, current_pos, current_rot, now_ms);
+    let shared = app.world().resource::<SharedConfig>().clone();
+    let map_entity = map_entity(&app);
+
+    let duration = super::mob_motion::issue_mob_action(
+        app.world_mut(),
+        map_entity,
+        mob_entity,
+        mob_net_id,
+        MovementKind::Wait,
+        current_pos,
+        target_pos,
+        super::util::rotation_from_delta(expected_start, expected_end, current_rot),
+        mob_id,
+        100,
+        &shared,
+        now_ms,
+        now_ts,
+        None,
+    )
+    .expect("issued wait movement");
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("wait packet");
+    let expected_duration = super::util::calculate_mob_move_duration_ms(
+        shared.motion_speeds.as_ref(),
+        mob_id,
+        crate::motion::MotionMoveMode::Run,
+        100,
+        expected_start,
+        expected_end,
+    );
+    let motion = app
+        .world()
+        .entity(mob_entity)
+        .get::<MobMotion>()
+        .map(|motion| motion.0)
+        .expect("mob motion");
+    assert_eq!(movement.new_pos, expected_end);
+    assert_eq!(motion.segment_start_pos, expected_start);
+    assert_eq!(motion.segment_end_pos, expected_end);
+    assert_eq!(duration, expected_duration);
+    assert_eq!(movement.duration, expected_duration);
+}
+
+#[test]
+fn returning_mob_issues_wait_home_segment() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(16.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "return_home_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, _inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let now_ms = 1_000;
+    app.world_mut().resource_mut::<RuntimeState>().sim_time_ms = now_ms;
+    clear_pending_movements(&mut app);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(6.0, 1.0),
+        east_rot(),
+        now_ms,
+    );
+    set_mob_returning(&mut app, mob_entity, now_ms);
+
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == mob_net_id)
+        .expect("return-home packet");
+    assert_eq!(movement.kind, MovementKind::Wait);
+    assert_eq!(movement.new_pos, LocalPos::new(1.0, 1.0));
+    assert_eq!(
+        movement.rot,
+        super::util::rotation_from_delta(
+            LocalPos::new(6.0, 1.0),
+            LocalPos::new(1.0, 1.0),
+            east_rot()
+        )
+    );
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.mode()),
+        Some(MobBrainMode::Return)
+    );
+}
+
+#[test]
+fn attacking_one_group_member_causes_the_whole_pack_to_retaliate() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Group(Arc::from([mob_id, mob_id, mob_id])),
+        area: SpawnArea::new(LocalPos::new(6_400.0, 6_400.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "pack_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            250,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let (mob_net_ids, mob_entities) = {
+        let world = app.world_mut();
+        let mut q = world.query::<(
+            Entity,
+            &MobMarker,
+            &NetEntityId,
+            Option<&super::state::MobPackId>,
+        )>();
+        let rows = q
+            .iter(world)
+            .map(|(entity, _, net_id, pack_id)| {
+                (entity, net_id.net_id, pack_id.map(|id| id.pack_id))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        let first_pack = rows[0].2.expect("pack id");
+        assert!(
+            rows.iter()
+                .all(|(_, _, pack_id)| pack_id == &Some(first_pack))
+        );
+        (
+            rows.iter()
+                .map(|(_, net_id, _)| *net_id)
+                .collect::<Vec<_>>(),
+            rows.iter()
+                .map(|(entity, _, _)| *entity)
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_605);
+    let mut map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(6_401.0, 6_400.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    attack_target(&inbound_tx, player_id, mob_net_ids[0], 1);
+
+    let mut events = Vec::new();
+    for _ in 0..4 {
+        advance_tick(&mut app);
+        events.extend(drain_player_events(&mut map_rx));
+    }
+
+    let attack_emitters = movement_events(&events)
+        .into_iter()
+        .filter_map(|(entity_id, kind)| (kind == MovementKind::Attack).then_some(entity_id))
+        .collect::<Vec<_>>();
+    assert!(
+        mob_net_ids
+            .iter()
+            .all(|mob_net_id| attack_emitters.contains(mob_net_id))
+    );
+
+    for mob_entity in mob_entities {
+        let brain = app
+            .world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .copied()
+            .expect("pack member brain");
+        assert_eq!(brain.target(), Some(player_net_id));
+    }
+}

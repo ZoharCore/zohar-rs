@@ -64,7 +64,7 @@ impl PendingReplicationFlush {
     }
 }
 
-pub(super) fn aoi_reconcile(world: &mut World) {
+pub(crate) fn aoi_reconcile(world: &mut World) {
     if !world.resource::<RuntimeState>().is_dirty {
         return;
     }
@@ -272,7 +272,7 @@ fn observer_recipients(
         .collect()
 }
 
-pub(super) fn replication_flush(world: &mut World) {
+pub(crate) fn replication_flush(world: &mut World) {
     let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
         return;
     };
@@ -409,7 +409,7 @@ fn local_chat_message_for(
     message
 }
 
-pub(super) fn make_entity_spawn_payload(
+pub(crate) fn make_entity_spawn_payload(
     world: &World,
     shared: &SharedConfig,
     target_id: EntityId,

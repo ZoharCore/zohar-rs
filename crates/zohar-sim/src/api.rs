@@ -71,7 +71,7 @@ pub enum PlayerEvent {
         y: f32,
         /// Client timestamp
         ts: u32,
-        /// Movement duration in ms (only for FUNC_MOVE)
+        /// Movement duration in ms for server-driven movement segments (WAIT/MOVE).
         duration: u32,
     },
     EntityDespawn {

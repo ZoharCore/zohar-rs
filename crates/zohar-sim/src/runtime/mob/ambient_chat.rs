@@ -10,7 +10,7 @@ use super::state::{
 
 const CHAT_CONTEXT_IDLE: &str = "idle";
 
-pub(super) fn emit_idle_chat(world: &mut World) {
+pub(crate) fn emit_idle_chat(world: &mut World) {
     let recipients = player_entities_on_map(world);
     if recipients.is_empty() {
         return;

@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use super::players::player_entities_on_map;
 use super::state::PlayerOutboxComp;
 
-pub(super) fn outbox_flush(world: &mut World) {
+pub(crate) fn outbox_flush(world: &mut World) {
     let player_entities = player_entities_on_map(world);
 
     for entity in player_entities {

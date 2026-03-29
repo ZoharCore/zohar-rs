@@ -1,6 +1,6 @@
 use super::state::{
     LocalTransform, MapEmpire, MapMarker, MapPendingLocalChats, MapPendingMovements,
-    MapReplication, MapSpatial, MapSpawnRules, MobBrainMode, MobBrainState, MobHomeAnchor,
+    MapReplication, MapSpatial, MapSpawnRules, MobAggroQueue, MobBrainState, MobHomeAnchor,
     MobMarker, MobMotion, MobMotionState, MobPackId, MobRef, NetEntityId, NetEntityIndex,
     RuntimeState, SharedConfig, SpawnRuleState, StartupReadySignal,
 };
@@ -18,7 +18,7 @@ use zohar_domain::coords::{LocalBox, LocalBoxExt, LocalPos, LocalSize};
 use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::spawn::{FacingStrategy, SpawnRule};
 
-pub(super) fn bootstrap_map_runtime(world: &mut World) {
+pub(crate) fn bootstrap_map_runtime(world: &mut World) {
     let map_config = world.resource::<super::state::MapConfig>();
     let sim_time_ms = world.resource::<RuntimeState>().sim_time_ms;
 
@@ -54,7 +54,7 @@ pub(super) fn bootstrap_map_runtime(world: &mut World) {
     preload_map_to_spawn_cap_world(world);
 }
 
-pub(super) fn signal_startup_ready(ready_signal: Option<Res<StartupReadySignal>>) {
+pub(crate) fn signal_startup_ready(ready_signal: Option<Res<StartupReadySignal>>) {
     let Some(ready_signal) = ready_signal else {
         return;
     };
@@ -66,7 +66,7 @@ pub(super) fn signal_startup_ready(ready_signal: Option<Res<StartupReadySignal>>
     }
 }
 
-pub(super) fn spawn_rules(world: &mut World) {
+pub(crate) fn spawn_rules(world: &mut World) {
     let shared = world.resource::<SharedConfig>().clone();
     let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
         return;
@@ -178,7 +178,7 @@ pub(super) fn spawn_rules(world: &mut World) {
     }
 }
 
-pub(super) fn preload_map_to_spawn_cap_world(world: &mut World) {
+pub(crate) fn preload_map_to_spawn_cap_world(world: &mut World) {
     let shared = world.resource::<SharedConfig>().clone();
     let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
         return;
@@ -371,16 +371,11 @@ fn spawn_one_mob(
             segment_start_at_ms: 0,
             segment_end_at_ms: 0,
         }),
+        MobAggroQueue::default(),
         MobHomeAnchor { pos },
         MobBrainState {
-            mode: MobBrainMode::Idle,
-            target: None,
-            target_locked_at_ms: 0,
-            next_attack_at_ms: 0,
-            attack_windup_until_ms: 0,
-            next_chase_rethink_at_ms: 0,
-            next_wander_decision_at_ms,
-            wander_wait_until_ms: None,
+            wander_next_decision_at_ms: next_wander_decision_at_ms,
+            ..MobBrainState::default()
         },
     ));
     if let Some(pack_id) = pack_id {

@@ -5,14 +5,13 @@ use crate::api::PlayerEvent;
 use crate::bridge::{EnterMsg, LeaveMsg};
 
 use super::state::{
-    AttackIntentQueue, ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovements,
-    MapReplication, MapSpatial, MoveIntentQueue, NetEntityId, NetEntityIndex, PlayerAppearanceComp,
-    PlayerCount, PlayerIndex, PlayerMarker, PlayerMotion, PlayerMotionState, PlayerOutboxComp,
-    RuntimeState,
+    ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovements, MapReplication,
+    MapSpatial, NetEntityId, NetEntityIndex, PlayerAppearanceComp, PlayerCommandQueue, PlayerCount,
+    PlayerIndex, PlayerMarker, PlayerMotion, PlayerMotionState, PlayerOutboxComp, RuntimeState,
 };
 use tracing::{info, warn};
 
-pub(super) fn on_player_added(
+pub(crate) fn on_player_added(
     add: On<Add, PlayerMarker>,
     player_query: Query<(&PlayerMarker, &NetEntityId, &LocalTransform)>,
     mut map_query: Query<&mut MapSpatial>,
@@ -46,7 +45,7 @@ pub(super) fn on_player_added(
     );
 }
 
-pub(super) fn on_player_removed(
+pub(crate) fn on_player_removed(
     remove: On<Remove, PlayerMarker>,
     player_query: Query<(&PlayerMarker, &NetEntityId)>,
     mut map_query: Query<(
@@ -106,7 +105,7 @@ pub(super) fn on_player_removed(
     );
 }
 
-pub(super) fn handle_player_enter(world: &mut World, mut msg: EnterMsg) {
+pub(crate) fn handle_player_enter(world: &mut World, mut msg: EnterMsg) {
     if let Some(existing_entity) = world
         .resource::<PlayerIndex>()
         .0
@@ -137,15 +136,14 @@ pub(super) fn handle_player_enter(world: &mut World, mut msg: EnterMsg) {
         }),
         PlayerAppearanceComp(msg.appearance.clone()),
         PlayerOutboxComp(msg.outbox),
-        MoveIntentQueue::default(),
+        PlayerCommandQueue::default(),
         ChatIntentQueue::default(),
-        AttackIntentQueue::default(),
     ));
 
     world.resource_mut::<RuntimeState>().is_dirty = true;
 }
 
-pub(super) fn handle_player_leave(world: &mut World, msg: LeaveMsg) {
+pub(crate) fn handle_player_leave(world: &mut World, msg: LeaveMsg) {
     let Some(entity) = world
         .resource::<PlayerIndex>()
         .0
@@ -172,18 +170,18 @@ pub(super) fn handle_player_leave(world: &mut World, msg: LeaveMsg) {
     let _ = world.despawn(entity);
 }
 
-pub(super) fn player_entities_on_map(world: &mut World) -> Vec<Entity> {
+pub(crate) fn player_entities_on_map(world: &mut World) -> Vec<Entity> {
     let mut query = world.query::<(Entity, &PlayerMarker)>();
     query.iter(world).map(|(entity, _)| entity).collect()
 }
 
 #[allow(dead_code)]
-pub(super) fn map_has_players(world: &mut World) -> bool {
+pub(crate) fn map_has_players(world: &mut World) -> bool {
     let mut query = world.query::<&PlayerMarker>();
     query.iter(world).next().is_some()
 }
 
 #[allow(dead_code)]
-pub(super) fn player_entity_for_id(world: &mut World, player_id: PlayerId) -> Option<Entity> {
+pub(crate) fn player_entity_for_id(world: &mut World, player_id: PlayerId) -> Option<Entity> {
     world.resource::<PlayerIndex>().0.get(&player_id).copied()
 }

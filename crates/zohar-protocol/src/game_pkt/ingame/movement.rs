@@ -33,7 +33,7 @@ pub enum MovementS2c {
         y: game_pkt::WireWorldCm,
         /// Timestamp
         ts: game_pkt::WireMillis32,
-        /// Movement duration in milliseconds (only for MovementKind::Move)
+        /// Movement duration in milliseconds
         duration: game_pkt::WireMillis32,
     },
 }
