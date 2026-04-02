@@ -1,29 +1,24 @@
 //! Bevy-backed map simulation runtime and protocol-facing map APIs.
 
 pub mod aoi;
-pub mod api;
-pub mod bridge;
+mod bridge;
 pub mod chat;
 pub mod motion;
 pub mod navigation;
-pub mod outbox;
+mod outbox;
 mod replication;
 pub mod runtime;
 pub mod types;
 
-pub use api::{ClientIntent, MapCommand, MapEvent, PlayerEvent};
-pub use bridge::{
-    ClientIntentMsg, EnterMsg, InboundEvent, LeaveMsg, LocalMapInbound, MapEventSender,
-};
+pub use bridge::MapEventSender;
 pub use chat::{MobChatContent, MobChatLine, MobChatStrategyInterval};
 pub use motion::{
     EntityMotionSpeedTable, MobMotionSpeedTable, MobMotionSpeeds, MotionEntityKey, MotionMoveMode,
     PlayerMotionProfileKey, PlayerMotionSpeedTable, PlayerMotionSpeeds,
 };
 pub use navigation::{GridCell, MapNavigator, NavPath, TerrainFlagsGrid};
-pub use outbox::{PlayerOutbox, PlayerOutboxStats};
 pub use runtime::{
-    ContentPlugin, MapConfig, MapPlugin, NetworkPlugin, OutboxPlugin, PlayerCount, SharedConfig,
-    SimSet, SimulationPlugin, StartupReadySignal, WanderConfig,
+    MapConfig, PlayerCount, SharedConfig, SimSet, StartupReadySignal, WanderConfig, build_map_app,
+    spawn_map_runtime,
 };
 pub use types::{InstanceId, MapInstanceKey, MapInstanceKind};

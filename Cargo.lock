@@ -4467,6 +4467,7 @@ dependencies = [
  "zohar-db",
  "zohar-domain",
  "zohar-gamesrv",
+ "zohar-map-port",
  "zohar-protocol",
  "zohar-sim",
 ]
@@ -4516,9 +4517,17 @@ dependencies = [
  "zohar-db",
  "zohar-domain",
  "zohar-gamesrv",
+ "zohar-map-port",
  "zohar-net",
  "zohar-protocol",
  "zohar-sim",
+]
+
+[[package]]
+name = "zohar-map-port"
+version = "0.1.0"
+dependencies = [
+ "zohar-domain",
 ]
 
 [[package]]
@@ -4558,6 +4567,7 @@ dependencies = [
  "tokio",
  "tracing",
  "zohar-domain",
+ "zohar-map-port",
 ]
 
 [[package]]

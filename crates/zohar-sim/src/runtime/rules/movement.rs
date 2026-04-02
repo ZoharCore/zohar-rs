@@ -1,6 +1,7 @@
 use zohar_domain::coords::{LocalPos, LocalSize};
 use zohar_domain::entity::MovementKind;
 use zohar_domain::entity::mob::MobId;
+use zohar_map_port::PacketDuration;
 
 use crate::motion::{MotionEntityKey, MotionMoveMode};
 
@@ -24,7 +25,7 @@ pub(crate) fn calculate_mob_duration(
     from: LocalPos,
     to: LocalPos,
     move_speed: u8,
-) -> Option<u32> {
+) -> Option<PacketDuration> {
     if kind != MovementKind::Move && kind != MovementKind::Wait {
         return None;
     }
@@ -36,7 +37,7 @@ pub(crate) fn calculate_mob_duration(
         snap_local_to_wire_cm(from),
         snap_local_to_wire_cm(to),
     );
-    (duration > 0).then_some(duration)
+    (duration > PacketDuration::ZERO).then_some(duration)
 }
 
 pub(crate) fn desired_destination_unchanged(

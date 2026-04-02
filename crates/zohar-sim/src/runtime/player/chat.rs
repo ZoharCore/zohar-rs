@@ -79,6 +79,8 @@ fn enqueue_local_chat_intents(
             speaker_player_id,
             speaker_entity_id,
             speaker_empire,
+            // TODO: only broadcast local speaking packets
+            channel: chat.channel,
             speaker_name: speaker_name.clone(),
             message: chat.message,
         });

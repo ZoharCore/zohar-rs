@@ -21,6 +21,8 @@ pub(crate) use crate::runtime::resources::{
     NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, RuntimeState, StartupReadySignal,
 };
 pub(crate) use crate::runtime::schedule::SimSet;
+pub(crate) use crate::runtime::time::{SimDuration, SimInstant};
+use zohar_map_port::{ChatChannel, ClientTimestamp, Facing72, MovementArg, PacketDuration};
 
 pub(crate) const DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC: f32 = 4.5;
 pub(crate) const MAX_MOVE_PACKET_STEP_M: f32 = 25.0;
@@ -36,10 +38,10 @@ pub(crate) struct PendingMovement {
     pub(crate) new_pos: LocalPos,
     pub(crate) kind: MovementKind,
     pub(crate) reliable: bool,
-    pub(crate) arg: u8,
-    pub(crate) rot: u8,
-    pub(crate) ts: u32,
-    pub(crate) duration: u32,
+    pub(crate) arg: MovementArg,
+    pub(crate) rot: Facing72,
+    pub(crate) ts: ClientTimestamp,
+    pub(crate) duration: PacketDuration,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,7 @@ pub(crate) struct PendingLocalChat {
     pub(crate) speaker_player_id: PlayerId,
     pub(crate) speaker_entity_id: EntityId,
     pub(crate) speaker_empire: Empire,
+    pub(crate) channel: ChatChannel,
     pub(crate) speaker_name: String,
     pub(crate) message: Vec<u8>,
 }
@@ -66,7 +69,7 @@ pub(crate) struct MapReplication(pub(crate) ReplicationGraph);
 #[derive(Component)]
 pub(crate) struct MapSpawnRules {
     pub(crate) rules: Vec<SpawnRuleState>,
-    pub(crate) scheduled_spawns: BinaryHeap<Reverse<(u64, usize)>>,
+    pub(crate) scheduled_spawns: BinaryHeap<Reverse<(SimInstant, usize)>>,
 }
 
 #[derive(Component, Default)]
@@ -83,5 +86,5 @@ pub(crate) struct NetEntityId {
 #[derive(Component)]
 pub(crate) struct LocalTransform {
     pub(crate) pos: LocalPos,
-    pub(crate) rot: u8,
+    pub(crate) rot: Facing72,
 }

@@ -5,8 +5,9 @@ use bevy::prelude::*;
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg, PacketDuration};
 
-use super::state::{MobBrainState, PlayerMotionState};
+use super::state::{MobBrainState, PlayerMotionState, SimDuration};
 
 #[derive(Resource, Default)]
 pub(crate) struct ActionBuffer(pub(crate) Vec<Action>);
@@ -17,10 +18,10 @@ pub(crate) enum MobActionCompletion {
     None,
     RethinkAtActionEnd,
     RethinkAtActionEndOrDelay {
-        max_delay_ms: u64,
+        max_delay_ms: SimDuration,
     },
     IdleWander {
-        post_move_pause_ms: u64,
+        post_move_pause_ms: SimDuration,
     },
 }
 
@@ -31,40 +32,40 @@ pub(crate) enum Action {
         player_id: PlayerId,
         entity_id: EntityId,
         kind: MovementKind,
-        arg: u8,
-        rot: u8,
+        arg: MovementArg,
+        rot: Facing72,
         end_pos: LocalPos,
-        ts: u32,
-        duration: u32,
+        ts: ClientTimestamp,
+        duration: PacketDuration,
         motion: PlayerMotionState,
     },
     PlayerAttack {
         player_entity: Entity,
         entity_id: EntityId,
         pos: LocalPos,
-        rot: u8,
-        attack_type: u8,
-        ts: u32,
-        duration: u32,
+        rot: Facing72,
+        attack: AttackIntent,
+        ts: ClientTimestamp,
+        duration: PacketDuration,
     },
     MobMotion {
         mob_entity: Entity,
         entity_id: EntityId,
         start_pos: LocalPos,
         end_pos: LocalPos,
-        rot: u8,
+        rot: Facing72,
         kind: MovementKind,
-        ts: u32,
-        duration: u32,
+        ts: ClientTimestamp,
+        duration: PacketDuration,
         next_brain: MobBrainState,
     },
     MobAttack {
         mob_entity: Entity,
         entity_id: EntityId,
         pos: LocalPos,
-        rot: u8,
-        ts: u32,
-        duration: u32,
+        rot: Facing72,
+        ts: ClientTimestamp,
+        duration: PacketDuration,
         next_brain: MobBrainState,
     },
 }

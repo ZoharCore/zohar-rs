@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::MovementKind;
 use zohar_domain::entity::player::PlayerId;
+use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg, PacketDuration};
 
 use super::super::state::{MapPendingMovements, RuntimeState};
 use super::{Action, ActionBuffer};
@@ -24,7 +25,7 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
     let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
         return;
     };
-    let now_ms = world.resource::<RuntimeState>().sim_time_ms;
+    let now = world.resource::<RuntimeState>().sim_now;
 
     let (movement, dirty) = match action {
         Action::PlayerMotion {
@@ -60,7 +61,7 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
             entity_id,
             pos,
             rot,
-            attack_type,
+            attack,
             ts,
             duration,
         } => (
@@ -70,7 +71,7 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
                 entity_id,
                 pos,
                 rot,
-                attack_type,
+                attack,
                 ts,
                 duration,
             )),
@@ -88,8 +89,8 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
             next_brain,
         } => (
             Some(apply_mob_motion(
-                world, map_entity, now_ms, mob_entity, entity_id, start_pos, end_pos, rot, kind,
-                ts, duration, next_brain,
+                world, map_entity, now, mob_entity, entity_id, start_pos, end_pos, rot, kind, ts,
+                duration, next_brain,
             )),
             true,
         ),
@@ -103,8 +104,7 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
             next_brain,
         } => (
             Some(apply_mob_attack(
-                world, map_entity, now_ms, mob_entity, entity_id, pos, rot, ts, duration,
-                next_brain,
+                world, map_entity, now, mob_entity, entity_id, pos, rot, ts, duration, next_brain,
             )),
             true,
         ),
@@ -125,11 +125,11 @@ fn apply_player_motion(
     player_id: PlayerId,
     entity_id: zohar_domain::entity::EntityId,
     kind: MovementKind,
-    arg: u8,
-    rot: u8,
+    arg: MovementArg,
+    rot: Facing72,
     end_pos: LocalPos,
-    ts: u32,
-    duration: u32,
+    ts: ClientTimestamp,
+    duration: PacketDuration,
     motion: super::super::state::PlayerMotionState,
 ) -> Option<super::super::state::PendingMovement> {
     if let Some(mut transform) = world
@@ -170,10 +170,10 @@ fn apply_player_attack(
     player_entity: Entity,
     entity_id: zohar_domain::entity::EntityId,
     pos: LocalPos,
-    rot: u8,
-    attack_type: u8,
-    ts: u32,
-    duration: u32,
+    rot: Facing72,
+    _attack: AttackIntent,
+    ts: ClientTimestamp,
+    duration: PacketDuration,
 ) -> super::super::state::PendingMovement {
     if let Some(mut transform) = world
         .entity_mut(player_entity)
@@ -183,12 +183,18 @@ fn apply_player_attack(
     }
 
     super::super::state::PendingMovement {
-        mover_player_id: None,
+        mover_player_id: Some(
+            world
+                .entity(player_entity)
+                .get::<super::super::state::PlayerMarker>()
+                .map(|marker| marker.player_id)
+                .expect("player attack should have a player marker"),
+        ),
         entity_id,
         new_pos: pos,
         kind: MovementKind::Attack,
         reliable: true,
-        arg: attack_type,
+        arg: MovementArg::basic_attack(),
         rot,
         ts,
         duration,
@@ -198,15 +204,15 @@ fn apply_player_attack(
 fn apply_mob_motion(
     world: &mut World,
     map_entity: Entity,
-    now_ms: u64,
+    now: super::super::state::SimInstant,
     mob_entity: Entity,
     entity_id: zohar_domain::entity::EntityId,
     start_pos: LocalPos,
     end_pos: LocalPos,
-    rot: u8,
+    rot: Facing72,
     kind: MovementKind,
-    ts: u32,
-    duration: u32,
+    ts: ClientTimestamp,
+    duration: PacketDuration,
     next_brain: super::super::state::MobBrainState,
 ) -> super::super::state::PendingMovement {
     if let Some(mut transform) = world
@@ -216,7 +222,7 @@ fn apply_mob_motion(
         transform.pos = start_pos;
         transform.rot = rot;
     }
-    apply_mob_motion_state(world, mob_entity, now_ms, start_pos, end_pos, duration);
+    apply_mob_motion_state(world, mob_entity, now, start_pos, end_pos, duration);
     if let Some(mut spatial) = world
         .entity_mut(map_entity)
         .get_mut::<super::super::state::MapSpatial>()
@@ -231,7 +237,7 @@ fn apply_mob_motion(
         new_pos: end_pos,
         kind,
         reliable: false,
-        arg: 0,
+        arg: MovementArg::ZERO,
         rot,
         ts,
         duration,
@@ -241,13 +247,13 @@ fn apply_mob_motion(
 fn apply_mob_attack(
     world: &mut World,
     map_entity: Entity,
-    now_ms: u64,
+    now: super::super::state::SimInstant,
     mob_entity: Entity,
     entity_id: zohar_domain::entity::EntityId,
     pos: LocalPos,
-    rot: u8,
-    ts: u32,
-    duration: u32,
+    rot: Facing72,
+    ts: ClientTimestamp,
+    duration: PacketDuration,
     next_brain: super::super::state::MobBrainState,
 ) -> super::super::state::PendingMovement {
     if let Some(mut transform) = world
@@ -257,7 +263,7 @@ fn apply_mob_attack(
         transform.pos = pos;
         transform.rot = rot;
     }
-    apply_mob_motion_state(world, mob_entity, now_ms, pos, pos, 0);
+    apply_mob_motion_state(world, mob_entity, now, pos, pos, PacketDuration::ZERO);
     if let Some(mut spatial) = world
         .entity_mut(map_entity)
         .get_mut::<super::super::state::MapSpatial>()
@@ -272,7 +278,7 @@ fn apply_mob_attack(
         new_pos: pos,
         kind: MovementKind::Attack,
         reliable: true,
-        arg: 0,
+        arg: MovementArg::basic_attack(),
         rot,
         ts,
         duration,
@@ -307,10 +313,10 @@ fn push_pending_movement(
 fn apply_mob_motion_state(
     world: &mut World,
     mob_entity: Entity,
-    now_ms: u64,
+    now: super::super::state::SimInstant,
     start_pos: LocalPos,
     end_pos: LocalPos,
-    duration: u32,
+    duration: PacketDuration,
 ) {
     if let Some(mut motion) = world
         .entity_mut(mob_entity)
@@ -319,8 +325,10 @@ fn apply_mob_motion_state(
         motion.0 = super::super::state::MobMotionState {
             segment_start_pos: start_pos,
             segment_end_pos: end_pos,
-            segment_start_at_ms: now_ms,
-            segment_end_at_ms: now_ms.saturating_add(u64::from(duration)),
+            segment_start_at: now,
+            segment_end_at: now.saturating_add(
+                super::super::state::SimDuration::from_packet_duration(duration),
+            ),
         };
     }
 }

@@ -1,70 +1,25 @@
-use crate::api::ClientIntent;
-use crate::outbox::PlayerOutbox;
 use anyhow::anyhow;
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tokio::sync::oneshot;
-use zohar_domain::Empire;
-use zohar_domain::appearance::PlayerAppearance;
-use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::EntityId;
-use zohar_domain::entity::player::PlayerId;
+use zohar_map_port::{ClientIntentMsg, EnterMsg, GlobalShoutMsg, LeaveMsg, PlayerEvent};
+
+use crate::outbox::PlayerOutbox;
+
+const PLAYER_EVENT_BUFFER: usize = 256;
 
 #[derive(Debug)]
-pub struct EnterMsg {
-    pub player_id: PlayerId,
-    pub player_net_id: EntityId,
-    pub initial_pos: LocalPos,
-    pub appearance: PlayerAppearance,
-    pub outbox: PlayerOutbox,
-}
-
-#[derive(Debug)]
-pub struct LeaveMsg {
-    pub player_id: PlayerId,
-    pub player_net_id: EntityId,
-}
-
-#[derive(Debug)]
-pub struct ClientIntentMsg {
-    pub player_id: PlayerId,
-    pub intent: ClientIntent,
-}
-
-#[derive(Debug)]
-pub struct GlobalShoutMsg {
-    pub from_player_name: String,
-    pub from_empire: Empire,
-    pub message_bytes: Vec<u8>,
-}
-
-#[derive(Debug)]
-pub enum LocalMapInbound {
-    ReserveNetId {
-        reply: oneshot::Sender<EntityId>,
-    },
-    PlayerEnter {
-        msg: EnterMsg,
-    },
-    PlayerLeave {
-        msg: LeaveMsg,
-    },
-    ClientIntent {
-        msg: ClientIntentMsg,
-    },
-    GlobalShout {
-        from_player_name: String,
-        from_empire: Empire,
-        message_bytes: Vec<u8>,
-    },
-}
-
-#[derive(Debug)]
-pub enum InboundEvent {
+pub(crate) enum InboundEvent {
     ReserveNetId { reply: oneshot::Sender<EntityId> },
-    PlayerEnter { msg: EnterMsg },
+    PlayerEnter { msg: EnterMsg, outbox: PlayerOutbox },
     PlayerLeave { msg: LeaveMsg },
     ClientIntent { msg: ClientIntentMsg },
     GlobalShout { msg: GlobalShoutMsg },
+}
+
+pub(crate) fn inbound_channel(buffer: usize) -> (MapEventSender, Receiver<InboundEvent>) {
+    let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(buffer.max(1));
+    (MapEventSender { inbound_tx }, inbound_rx)
 }
 
 #[derive(Clone)]
@@ -73,47 +28,44 @@ pub struct MapEventSender {
 }
 
 impl MapEventSender {
-    pub fn channel_pair(buffer: usize) -> (Self, Receiver<InboundEvent>) {
-        let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(buffer.max(1));
-        (Self { inbound_tx }, inbound_rx)
+    pub fn send_player_leave(&self, msg: LeaveMsg) -> anyhow::Result<()> {
+        self.enqueue(InboundEvent::PlayerLeave { msg })
     }
 
-    pub fn send(&self, event: LocalMapInbound) -> anyhow::Result<()> {
-        let event = self.to_inbound(event);
-        self.inbound_tx.send(event).map_err(enqueue_error)
+    pub fn try_send_client_intent(&self, msg: ClientIntentMsg) -> anyhow::Result<()> {
+        self.try_enqueue(InboundEvent::ClientIntent { msg })
     }
 
-    pub fn try_send(&self, event: LocalMapInbound) -> anyhow::Result<()> {
-        let event = self.to_inbound(event);
-        self.inbound_tx.try_send(event).map_err(enqueue_try_error)
+    pub fn try_send_global_shout(&self, msg: GlobalShoutMsg) -> anyhow::Result<()> {
+        self.try_enqueue(InboundEvent::GlobalShout { msg })
+    }
+
+    pub fn enter_player(
+        &self,
+        msg: EnterMsg,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<PlayerEvent>> {
+        let (player_tx, player_rx) = tokio::sync::mpsc::channel(PLAYER_EVENT_BUFFER);
+        self.enqueue(InboundEvent::PlayerEnter {
+            msg,
+            outbox: PlayerOutbox::new(player_tx),
+        })?;
+        Ok(player_rx)
     }
 
     pub async fn reserve_net_id(&self) -> anyhow::Result<EntityId> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.send(LocalMapInbound::ReserveNetId { reply: reply_tx })?;
+        self.enqueue(InboundEvent::ReserveNetId { reply: reply_tx })?;
         reply_rx
             .await
             .map_err(|_| anyhow!("map runtime dropped net id reservation reply"))
     }
 
-    fn to_inbound(&self, event: LocalMapInbound) -> InboundEvent {
-        match event {
-            LocalMapInbound::ReserveNetId { reply } => InboundEvent::ReserveNetId { reply },
-            LocalMapInbound::PlayerEnter { msg } => InboundEvent::PlayerEnter { msg },
-            LocalMapInbound::PlayerLeave { msg } => InboundEvent::PlayerLeave { msg },
-            LocalMapInbound::ClientIntent { msg } => InboundEvent::ClientIntent { msg },
-            LocalMapInbound::GlobalShout {
-                from_player_name,
-                from_empire,
-                message_bytes,
-            } => InboundEvent::GlobalShout {
-                msg: GlobalShoutMsg {
-                    from_player_name,
-                    from_empire,
-                    message_bytes,
-                },
-            },
-        }
+    fn enqueue(&self, event: InboundEvent) -> anyhow::Result<()> {
+        self.inbound_tx.send(event).map_err(enqueue_error)
+    }
+
+    fn try_enqueue(&self, event: InboundEvent) -> anyhow::Result<()> {
+        self.inbound_tx.try_send(event).map_err(enqueue_try_error)
     }
 }
 
@@ -131,16 +83,21 @@ fn enqueue_error(err: crossbeam_channel::SendError<InboundEvent>) -> anyhow::Err
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::ClientIntent;
-    use zohar_domain::entity::EntityId;
+    use zohar_domain::Empire;
+    use zohar_domain::appearance::PlayerAppearance;
+    use zohar_domain::coords::LocalPos;
     use zohar_domain::entity::player::PlayerId;
+    use zohar_domain::entity::{EntityId, MovementKind};
+    use zohar_map_port::{
+        AttackIntent, AttackTargetIntent, ClientIntent, ClientTimestamp, Facing72, MovementArg,
+    };
 
     #[tokio::test]
     async fn reserve_net_id_round_trip() {
-        let (sender, rx) = MapEventSender::channel_pair(4);
+        let (sender, rx) = inbound_channel(4);
         let (reply_tx, reply_rx) = oneshot::channel();
         sender
-            .send(LocalMapInbound::ReserveNetId { reply: reply_tx })
+            .enqueue(InboundEvent::ReserveNetId { reply: reply_tx })
             .expect("enqueue reserve request");
 
         let InboundEvent::ReserveNetId { reply } = rx.recv().expect("event") else {
@@ -152,46 +109,96 @@ mod tests {
     }
 
     #[test]
-    fn try_send_reports_full_queue() {
-        let (sender, _rx) = MapEventSender::channel_pair(1);
-        let (reply_a, _reply_a_rx) = oneshot::channel();
-        sender
-            .send(LocalMapInbound::ReserveNetId { reply: reply_a })
-            .expect("enqueue first");
-
-        let (reply_b, _reply_b_rx) = oneshot::channel();
-        let err = sender
-            .try_send(LocalMapInbound::ReserveNetId { reply: reply_b })
-            .expect_err("second enqueue should fail when queue is full");
-        assert!(
-            err.to_string().contains("full"),
-            "expected full queue error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn send_reports_disconnected_queue() {
-        let (sender, rx) = MapEventSender::channel_pair(1);
+    fn try_send_reports_disconnected_queue() {
+        let (sender, rx) = inbound_channel(1);
         drop(rx);
         let err = sender
-            .send(LocalMapInbound::ClientIntent {
-                msg: ClientIntentMsg {
-                    player_id: PlayerId::from(1),
-                    intent: ClientIntent::Move {
-                        entity_id: EntityId(7),
-                        kind: zohar_domain::entity::MovementKind::Move,
-                        arg: 0,
-                        rot: 0,
-                        x: 1.0,
-                        y: 2.0,
-                        ts: 1,
-                    },
-                },
+            .try_send_client_intent(ClientIntentMsg {
+                player_id: PlayerId::from(1),
+                intent: ClientIntent::Move(zohar_map_port::MoveIntent {
+                    kind: MovementKind::Move,
+                    arg: MovementArg::ZERO,
+                    facing: Facing72::try_from(0).expect("valid facing"),
+                    target: LocalPos::new(1.0, 2.0),
+                    client_ts: ClientTimestamp::new(1),
+                }),
             })
             .expect_err("enqueue should fail when receiver is dropped");
         assert!(
             err.to_string().contains("closed"),
             "expected closed queue error, got: {err}"
         );
+    }
+
+    #[test]
+    fn enter_player_creates_private_outbound_channel() {
+        let (sender, rx) = inbound_channel(1);
+        let _player_rx = sender
+            .enter_player(EnterMsg {
+                player_id: PlayerId::from(1),
+                player_net_id: EntityId(7),
+                initial_pos: LocalPos::new(1.0, 2.0),
+                appearance: PlayerAppearance {
+                    name: "alice".into(),
+                    class: zohar_domain::entity::player::PlayerClass::Warrior,
+                    gender: zohar_domain::entity::player::PlayerGender::Male,
+                    empire: Empire::Red,
+                    body_part: 0,
+                    level: 1,
+                    move_speed: 100,
+                    attack_speed: 100,
+                    guild_id: 0,
+                },
+            })
+            .expect("player enter should enqueue");
+
+        let InboundEvent::PlayerEnter { msg, .. } = rx.recv().expect("event") else {
+            panic!("expected PlayerEnter");
+        };
+        assert_eq!(msg.player_id, PlayerId::from(1));
+    }
+
+    #[test]
+    fn global_shout_round_trips_as_typed_message() {
+        let (sender, rx) = inbound_channel(1);
+        sender
+            .try_send_global_shout(GlobalShoutMsg {
+                from_player_name: "alice".into(),
+                from_empire: Empire::Yellow,
+                message_bytes: b"hello".to_vec(),
+            })
+            .expect("enqueue shout");
+
+        let InboundEvent::GlobalShout { msg } = rx.recv().expect("event") else {
+            panic!("expected GlobalShout");
+        };
+        assert_eq!(msg.from_player_name, "alice");
+        assert_eq!(msg.from_empire, Empire::Yellow);
+        assert_eq!(msg.message_bytes, b"hello");
+    }
+
+    #[test]
+    fn client_attack_intent_round_trips_semantically() {
+        let (sender, rx) = inbound_channel(1);
+        sender
+            .try_send_client_intent(ClientIntentMsg {
+                player_id: PlayerId::from(1),
+                intent: ClientIntent::Attack(AttackTargetIntent {
+                    target: EntityId(99),
+                    attack: AttackIntent::Basic,
+                }),
+            })
+            .expect("enqueue attack");
+
+        let InboundEvent::ClientIntent { msg } = rx.recv().expect("event") else {
+            panic!("expected ClientIntent");
+        };
+        assert!(matches!(
+            msg.intent,
+            ClientIntent::Attack(AttackTargetIntent {
+                target: EntityId(99),
+                attack: AttackIntent::Basic,
+            })
+        ));
     }
 }

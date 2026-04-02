@@ -8,6 +8,9 @@ use std::time::Instant;
 use tokio::sync::oneshot;
 use zohar_domain::entity::EntityId;
 use zohar_domain::entity::player::PlayerId;
+use zohar_map_port::ClientTimestamp;
+
+use super::time::SimInstant;
 
 #[derive(Resource, Default)]
 pub struct PlayerCount(pub u32);
@@ -32,9 +35,15 @@ pub(crate) struct RuntimeState {
     pub(crate) next_pack_id: u32,
     pub(crate) map_entity: Option<Entity>,
     pub(crate) is_dirty: bool,
-    pub(crate) sim_time_ms: u64,
+    pub(crate) sim_now: SimInstant,
     pub(crate) packet_time_start: Instant,
     pub(crate) rng: SmallRng,
+}
+
+impl RuntimeState {
+    pub(crate) fn packet_now(&self) -> ClientTimestamp {
+        self.sim_now.to_client_timestamp()
+    }
 }
 
 impl Default for RuntimeState {
@@ -44,7 +53,7 @@ impl Default for RuntimeState {
             next_pack_id: 0,
             map_entity: None,
             is_dirty: false,
-            sim_time_ms: 0,
+            sim_now: SimInstant::ZERO,
             packet_time_start: Instant::now(),
             rng: rand::make_rng(),
         }

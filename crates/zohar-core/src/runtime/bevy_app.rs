@@ -1,34 +1,15 @@
 use bevy::app::{AppExit, PluginsState};
 use bevy::prelude::*;
-use crossbeam_channel::Receiver;
 use std::time::{Duration, Instant};
-use zohar_sim::bridge::InboundEvent;
-use zohar_sim::{
-    ContentPlugin, MapConfig, MapPlugin, NetworkPlugin, OutboxPlugin, PlayerCount, SharedConfig,
-    SimulationPlugin,
-};
+use zohar_sim::PlayerCount;
 
 const ACTIVE_LOOP_CADENCE: Duration = Duration::from_millis(10);
 const IDLE_LOOP_CADENCE: Duration = Duration::from_millis(100);
 
-pub(crate) fn run_map_app(
-    shared_config: SharedConfig,
-    map_config: MapConfig,
-    inbound_rx: Receiver<InboundEvent>,
-) {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins);
-    app.insert_resource(Time::<Fixed>::from_hz(25.0));
+pub(crate) fn run_map_app(mut app: App) {
     app.world_mut()
         .resource_mut::<Time<Virtual>>()
         .set_max_delta(Duration::from_millis(60));
-    app.add_plugins((
-        ContentPlugin::new(shared_config, map_config),
-        NetworkPlugin::new(inbound_rx),
-        MapPlugin,
-        SimulationPlugin,
-        OutboxPlugin,
-    ));
     app.set_runner(adaptive_runtime_runner);
     app.run();
 }

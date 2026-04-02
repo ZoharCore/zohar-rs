@@ -17,10 +17,11 @@ use std::sync::Arc;
 use zohar_domain::coords::{LocalBox, LocalBoxExt, LocalPos, LocalSize};
 use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::spawn::{FacingStrategy, SpawnRule};
+use zohar_map_port::Facing72;
 
 pub(crate) fn bootstrap_map_runtime(world: &mut World) {
     let map_config = world.resource::<super::state::MapConfig>();
-    let sim_time_ms = world.resource::<RuntimeState>().sim_time_ms;
+    let sim_now = world.resource::<RuntimeState>().sim_now;
 
     let mut rules = Vec::new();
     let mut scheduled_spawns = BinaryHeap::new();
@@ -29,9 +30,9 @@ pub(crate) fn bootstrap_map_runtime(world: &mut World) {
             rule,
             active_instances: 0,
             entities: HashSet::new(),
-            respawn_at_ms: Some(sim_time_ms),
+            respawn_at: Some(sim_now),
         });
-        scheduled_spawns.push(Reverse((sim_time_ms, idx)));
+        scheduled_spawns.push(Reverse((sim_now, idx)));
     }
 
     let map_entity = world
@@ -73,7 +74,7 @@ pub(crate) fn spawn_rules(world: &mut World) {
     };
 
     loop {
-        let sim_time_ms = world.resource::<RuntimeState>().sim_time_ms;
+        let sim_now = world.resource::<RuntimeState>().sim_now;
         let next = {
             let Some(spawn_rules) = world.entity(map_entity).get::<MapSpawnRules>() else {
                 break;
@@ -81,10 +82,10 @@ pub(crate) fn spawn_rules(world: &mut World) {
             spawn_rules.scheduled_spawns.peek().copied().map(|v| v.0)
         };
 
-        let Some((respawn_at_ms, rule_index)) = next else {
+        let Some((respawn_at, rule_index)) = next else {
             break;
         };
-        if respawn_at_ms > sim_time_ms {
+        if respawn_at > sim_now {
             break;
         }
 
@@ -104,10 +105,10 @@ pub(crate) fn spawn_rules(world: &mut World) {
                         false
                     } else {
                         let rule_state = &mut spawn_rules.rules[rule_index];
-                        if rule_state.respawn_at_ms != Some(respawn_at_ms) {
+                        if rule_state.respawn_at != Some(respawn_at) {
                             false
                         } else if rule_state.active_instances >= rule_state.rule.max_count {
-                            rule_state.respawn_at_ms = None;
+                            rule_state.respawn_at = None;
                             false
                         } else {
                             true
@@ -164,13 +165,13 @@ pub(crate) fn spawn_rules(world: &mut World) {
             let current = spawn_rules.rules[rule_index].active_instances;
             let target = spawn_rules.rules[rule_index].rule.max_count;
             if current < target {
-                let retry_at = sim_time_ms.saturating_add(1);
-                spawn_rules.rules[rule_index].respawn_at_ms = Some(retry_at);
+                let retry_at = sim_now.saturating_add(super::state::SimDuration::from_millis(1));
+                spawn_rules.rules[rule_index].respawn_at = Some(retry_at);
                 spawn_rules
                     .scheduled_spawns
                     .push(Reverse((retry_at, rule_index)));
             } else {
-                spawn_rules.rules[rule_index].respawn_at_ms = None;
+                spawn_rules.rules[rule_index].respawn_at = None;
             }
         }
 
@@ -238,7 +239,7 @@ pub(crate) fn preload_map_to_spawn_cap_world(world: &mut World) {
 
     if let Some(mut spawn_rules) = world.entity_mut(map_entity).get_mut::<MapSpawnRules>() {
         for rule_state in &mut spawn_rules.rules {
-            rule_state.respawn_at_ms = None;
+            rule_state.respawn_at = None;
         }
         spawn_rules.scheduled_spawns.clear();
     }
@@ -335,7 +336,7 @@ fn spawn_one_mob(
     _rule: &SpawnRule,
     mob_id: MobId,
     pos: LocalPos,
-    rot: u8,
+    rot: Facing72,
     pack_id: Option<u32>,
 ) -> Option<zohar_domain::entity::EntityId> {
     let proto = shared.mobs.get(&mob_id)?;
@@ -344,13 +345,13 @@ fn spawn_one_mob(
         let mut state = world.resource_mut::<RuntimeState>();
         let entity_id = next_entity_id(&mut state);
         let next_wander_decision_at_ms = if proto.bhv_flags.can_wander() {
-            state.sim_time_ms.saturating_add(random_duration_between_ms(
+            state.sim_now.saturating_add(random_duration_between_ms(
                 &mut state.rng,
                 shared.wander.decision_pause_idle_min,
                 shared.wander.decision_pause_idle_max,
             ))
         } else {
-            0
+            super::state::SimInstant::ZERO
         };
 
         (entity_id, next_wander_decision_at_ms)
@@ -368,13 +369,13 @@ fn spawn_one_mob(
         MobMotion(MobMotionState {
             segment_start_pos: pos,
             segment_end_pos: pos,
-            segment_start_at_ms: 0,
-            segment_end_at_ms: 0,
+            segment_start_at: super::state::SimInstant::ZERO,
+            segment_end_at: super::state::SimInstant::ZERO,
         }),
         MobAggroQueue::default(),
         MobHomeAnchor { pos },
         MobBrainState {
-            wander_next_decision_at_ms: next_wander_decision_at_ms,
+            wander_next_decision_at: next_wander_decision_at_ms,
             ..MobBrainState::default()
         },
     ));

@@ -8,6 +8,7 @@ use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_map_port::{AttackIntent, ChatChannel, ClientTimestamp, Facing72, MovementArg};
 
 pub(crate) use self::lifecycle as players;
 pub(crate) use crate::runtime::action as action_pipeline;
@@ -19,28 +20,29 @@ pub(crate) use crate::runtime::spatial as query;
 pub(crate) struct PlayerMotionState {
     pub(crate) segment_start_pos: LocalPos,
     pub(crate) segment_end_pos: LocalPos,
-    pub(crate) segment_start_ts: u32,
-    pub(crate) segment_end_ts: u32,
-    pub(crate) last_client_ts: u32,
+    pub(crate) segment_start_ts: ClientTimestamp,
+    pub(crate) segment_end_ts: ClientTimestamp,
+    pub(crate) last_client_ts: ClientTimestamp,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PlayerCommand {
     Move {
         kind: MovementKind,
-        arg: u8,
-        rot: u8,
+        arg: MovementArg,
+        rot: Facing72,
         target: LocalPos,
-        ts: u32,
+        ts: ClientTimestamp,
     },
     Attack {
         target: EntityId,
-        attack_type: u8,
+        attack: AttackIntent,
     },
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ChatIntent {
+    pub(crate) channel: ChatChannel,
     pub(crate) message: Vec<u8>,
 }
 

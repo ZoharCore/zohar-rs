@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use rand::{Rng, RngExt};
-
-use crate::api::PlayerEvent;
+use zohar_map_port::{ChatChannel, PlayerEvent};
 
 use super::players::player_entities_on_map;
 use super::state::{
@@ -17,7 +16,7 @@ pub(crate) fn emit_idle_chat(world: &mut World) {
     }
 
     let shared = world.resource::<SharedConfig>().clone();
-    let now_ms = world.resource::<RuntimeState>().sim_time_ms;
+    let now = world.resource::<RuntimeState>().sim_now;
 
     let mob_entities: Vec<(
         Entity,
@@ -63,15 +62,15 @@ pub(crate) fn emit_idle_chat(world: &mut World) {
 
             let mut ent = world.entity_mut(mob_entity);
             if let Some(mut chat_state) = ent.get_mut::<MobChatState>() {
-                if now_ms < chat_state.next_emit_at_ms {
+                if now < chat_state.next_emit_at {
                     false
                 } else {
-                    chat_state.next_emit_at_ms = now_ms.saturating_add(next_delay_ms);
+                    chat_state.next_emit_at = now.saturating_add(next_delay_ms);
                     true
                 }
             } else {
                 ent.insert(MobChatState {
-                    next_emit_at_ms: now_ms.saturating_add(next_delay_ms),
+                    next_emit_at: now.saturating_add(next_delay_ms),
                 });
                 false
             }
@@ -100,7 +99,7 @@ pub(crate) fn emit_idle_chat(world: &mut World) {
         if let Some(mut outbox) = world.entity_mut(recipient).get_mut::<PlayerOutboxComp>() {
             for (sender_entity_id, message) in &emissions {
                 outbox.0.push_reliable(PlayerEvent::Chat {
-                    kind: 0,
+                    channel: ChatChannel::Speak,
                     sender_entity_id: Some(*sender_entity_id),
                     empire: None,
                     message: message.clone(),
@@ -110,10 +109,10 @@ pub(crate) fn emit_idle_chat(world: &mut World) {
     }
 }
 
-fn random_interval_ms(rng: &mut impl Rng, min_ms: u64, max_ms: u64) -> u64 {
+fn random_interval_ms(rng: &mut impl Rng, min_ms: u64, max_ms: u64) -> super::state::SimDuration {
     if min_ms >= max_ms {
-        min_ms
+        super::state::SimDuration::from_millis(min_ms)
     } else {
-        rng.random_range(min_ms..=max_ms)
+        super::state::SimDuration::from_millis(rng.random_range(min_ms..=max_ms))
     }
 }

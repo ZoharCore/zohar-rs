@@ -1,8 +1,7 @@
 use bevy::prelude::*;
-use zohar_domain::coords::LocalPos;
+use zohar_map_port::{ChatChannel, ClientIntent, ClientIntentMsg, GlobalShoutMsg, PlayerEvent};
 
-use crate::api::{ClientIntent, PlayerEvent};
-use crate::bridge::{ClientIntentMsg, InboundEvent};
+use crate::bridge::InboundEvent;
 
 use super::players::{handle_player_enter, handle_player_leave, player_entities_on_map};
 use super::state::{
@@ -34,7 +33,7 @@ pub(crate) fn drain_inbound(world: &mut World) {
                 };
                 let _ = reply.send(net_id);
             }
-            InboundEvent::PlayerEnter { msg } => handle_player_enter(world, msg),
+            InboundEvent::PlayerEnter { msg, outbox } => handle_player_enter(world, msg, outbox),
             InboundEvent::PlayerLeave { msg } => handle_player_leave(world, msg),
             InboundEvent::ClientIntent { msg } => handle_client_intent(world, msg),
             InboundEvent::GlobalShout { msg } => handle_global_shout(world, msg),
@@ -53,15 +52,7 @@ fn handle_client_intent(world: &mut World, msg: ClientIntentMsg) {
     };
 
     match msg.intent {
-        ClientIntent::Move {
-            entity_id: _,
-            kind,
-            arg,
-            rot,
-            x,
-            y,
-            ts,
-        } => {
+        ClientIntent::Move(intent) => {
             if let Some(mut queue) = world
                 .entity_mut(player_entity)
                 .get_mut::<PlayerCommandQueue>()
@@ -69,28 +60,29 @@ fn handle_client_intent(world: &mut World, msg: ClientIntentMsg) {
                 push_player_command(
                     &mut queue.0,
                     PlayerCommand::Move {
-                        kind,
-                        arg,
-                        rot,
-                        target: LocalPos::new(x, y),
-                        ts,
+                        kind: intent.kind,
+                        arg: intent.arg,
+                        rot: intent.facing,
+                        target: intent.target,
+                        ts: intent.client_ts,
                     },
                 );
             }
         }
-        ClientIntent::Chat { message } => {
+        ClientIntent::Chat(intent) => {
             if let Some(mut queue) = world.entity_mut(player_entity).get_mut::<ChatIntentQueue>() {
-                queue.0.push(ChatIntent { message });
+                queue.0.push(ChatIntent {
+                    // TODO: only broadcast local speaking packets
+                    channel: intent.channel,
+                    message: intent.message,
+                });
                 if queue.0.len() > MAX_CHAT_INTENTS_PER_TICK {
                     let overflow = queue.0.len() - MAX_CHAT_INTENTS_PER_TICK;
                     queue.0.drain(0..overflow);
                 }
             }
         }
-        ClientIntent::Attack {
-            target,
-            attack_type,
-        } => {
+        ClientIntent::Attack(intent) => {
             if let Some(mut queue) = world
                 .entity_mut(player_entity)
                 .get_mut::<PlayerCommandQueue>()
@@ -98,8 +90,8 @@ fn handle_client_intent(world: &mut World, msg: ClientIntentMsg) {
                 push_player_command(
                     &mut queue.0,
                     PlayerCommand::Attack {
-                        target,
-                        attack_type,
+                        target: intent.target,
+                        attack: intent.attack,
                     },
                 );
             }
@@ -179,16 +171,18 @@ fn player_move_commands_match(lhs: &PlayerCommand, rhs: &PlayerCommand) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zohar_domain::coords::LocalPos;
     use zohar_domain::entity::EntityId;
     use zohar_domain::entity::MovementKind;
+    use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg};
 
     fn move_command(kind: MovementKind, ts: u32, x: f32, y: f32) -> PlayerCommand {
         PlayerCommand::Move {
             kind,
-            arg: 0,
-            rot: 0,
+            arg: MovementArg::ZERO,
+            rot: Facing72::from_wrapped(0),
             target: LocalPos::new(x, y),
-            ts,
+            ts: ClientTimestamp::new(ts),
         }
     }
 
@@ -203,18 +197,18 @@ mod tests {
             queue[0],
             PlayerCommand::Move {
                 kind: MovementKind::Move,
-                ts: 100,
+                ts,
                 ..
-            }
+            } if ts == ClientTimestamp::new(100)
         ));
         assert!(matches!(
             queue[1],
             PlayerCommand::Move {
                 kind: MovementKind::Move,
-                ts: 120,
+                ts,
                 target,
                 ..
-            } if target == LocalPos::new(2.0, 2.0)
+            } if ts == ClientTimestamp::new(120) && target == LocalPos::new(2.0, 2.0)
         ));
     }
 
@@ -225,7 +219,10 @@ mod tests {
         push_player_command(&mut queue, move_command(MovementKind::Move, 100, 1.0, 1.0));
 
         assert_eq!(queue.len(), 1);
-        assert!(matches!(queue[0], PlayerCommand::Move { ts: 100, .. }));
+        assert!(matches!(
+            queue[0],
+            PlayerCommand::Move { ts, .. } if ts == ClientTimestamp::new(100)
+        ));
     }
 
     #[test]
@@ -246,9 +243,9 @@ mod tests {
             queue[1],
             PlayerCommand::Move {
                 kind: MovementKind::Wait,
-                ts: 120,
+                ts,
                 ..
-            }
+            } if ts == ClientTimestamp::new(120)
         ));
     }
 
@@ -269,13 +266,16 @@ mod tests {
                 .count(),
             MAX_MOVE_INTENTS_PER_TICK
         );
-        assert!(matches!(queue[0], PlayerCommand::Move { ts: 102, .. }));
+        assert!(matches!(
+            queue[0],
+            PlayerCommand::Move { ts, .. } if ts == ClientTimestamp::new(102)
+        ));
         assert!(matches!(
             queue.last().expect("latest"),
             PlayerCommand::Move {
                 ts,
                 ..
-            } if *ts == 101 + MAX_MOVE_INTENTS_PER_TICK as u32
+            } if *ts == ClientTimestamp::new(101 + MAX_MOVE_INTENTS_PER_TICK as u32)
         ));
     }
 
@@ -287,12 +287,17 @@ mod tests {
                 &mut queue,
                 PlayerCommand::Attack {
                     target: EntityId(idx + 1),
-                    attack_type: 1,
+                    attack: AttackIntent::Skill(
+                        zohar_domain::entity::player::skill::SkillId::ThreeWayCut,
+                    ),
                 },
             );
         }
 
-        assert!(matches!(queue[0], PlayerCommand::Move { ts: 100, .. }));
+        assert!(matches!(
+            queue[0],
+            PlayerCommand::Move { ts, .. } if ts == ClientTimestamp::new(100)
+        ));
         assert_eq!(
             queue
                 .iter()
@@ -303,7 +308,7 @@ mod tests {
     }
 }
 
-fn handle_global_shout(world: &mut World, msg: crate::bridge::GlobalShoutMsg) {
+fn handle_global_shout(world: &mut World, msg: GlobalShoutMsg) {
     let payload = format_global_shout(&msg.from_player_name, &msg.message_bytes).into_bytes();
     let player_entities = player_entities_on_map(world);
 
@@ -322,7 +327,7 @@ fn handle_global_shout(world: &mut World, msg: crate::bridge::GlobalShoutMsg) {
 
         if let Some(mut outbox) = world.entity_mut(entity).get_mut::<PlayerOutboxComp>() {
             outbox.0.push_reliable(PlayerEvent::Chat {
-                kind: 6,
+                channel: ChatChannel::Shout,
                 sender_entity_id: None,
                 empire: Some(msg.from_empire),
                 message: payload.clone(),

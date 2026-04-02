@@ -7,6 +7,7 @@
 
 use binrw::BinWrite;
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -22,7 +23,7 @@ use zohar_content::types::maps::ContentMap;
 use zohar_db::{Game, GameDb, PlayersView, ProfilesView, SessionsView, postgres_backend};
 use zohar_domain::Empire as DomainEmpire;
 use zohar_domain::MapId;
-use zohar_domain::entity::EntityId;
+use zohar_domain::coords::LocalSize;
 use zohar_domain::entity::player::{PlayerBaseAppearance, PlayerClass, PlayerGender};
 use zohar_gamesrv::infra::{
     ChannelDirectory, ClusterEventBus, MapEndpointResolver, StaticChannelDirectory,
@@ -32,6 +33,7 @@ use zohar_gamesrv::{ContentCoords, EmpireStartMaps, GameContext, GatewayContext}
 use zohar_net::SimpleBinRwCodec;
 use zohar_protocol::game_pkt::handshake::{HandshakeGameC2s, HandshakeGameS2c};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
+use zohar_protocol::game_pkt::ingame::world::{EntityType, WorldS2c};
 use zohar_protocol::game_pkt::ingame::{InGameC2s, InGameS2c};
 use zohar_protocol::game_pkt::loading::{LoadingC2s, LoadingC2sSpecific, LoadingS2c};
 use zohar_protocol::game_pkt::login::{
@@ -44,6 +46,10 @@ use zohar_protocol::game_pkt::{ControlC2s, ControlS2c, PacketSequencer};
 use zohar_protocol::handshake::{HandshakeSyncData, WireDeltaMillis, WireMillis32};
 use zohar_protocol::phase::PhaseId;
 use zohar_protocol::token::TokenSigner;
+use zohar_sim::{
+    EntityMotionSpeedTable, MapConfig, MapInstanceKey, SharedConfig, WanderConfig,
+    spawn_map_runtime,
+};
 
 const TEST_USERNAME_PREFIX: &str = "test_user";
 static NEXT_TEST_USER: AtomicU32 = AtomicU32::new(1);
@@ -58,6 +64,25 @@ fn test_token_signer() -> Arc<TokenSigner> {
         b"test-auth-token-secret".to_vec(),
         Duration::from_secs(30),
     ))
+}
+
+fn spawn_test_map_runtime() -> zohar_sim::MapEventSender {
+    spawn_map_runtime(
+        SharedConfig {
+            motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
+            mobs: Arc::new(HashMap::new()),
+            wander: WanderConfig::default(),
+            mob_chat: Arc::default(),
+        },
+        MapConfig {
+            map_key: MapInstanceKey::shared(1, MapId::new(1)),
+            empire: None,
+            local_size: LocalSize::new(16_384.0, 16_384.0),
+            navigator: None,
+            spawn_rules: Vec::new(),
+        },
+        256,
+    )
 }
 
 /// Test that concurrent login attempts are properly serialized by session lock.
@@ -505,6 +530,75 @@ async fn test_ingame_periodic_handshake_resync_runs_while_session_is_active() ->
 }
 
 #[tokio::test]
+async fn test_ingame_bootstrap_sends_handshake_before_map_driven_self_spawn() -> anyhow::Result<()>
+{
+    if !has_test_db_url() {
+        return Ok(());
+    }
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _resolver, ctx, username) = setup_test_env_with_options(1, true).await?;
+    let valid_token = issue_login_key(&ctx.db, &username).await?;
+
+    let mut ingame = connect_to_ingame(addr, &username, valid_token, [0; 16]).await?;
+    let mut saw_handshake = false;
+    let mut saw_spawn = false;
+
+    for _ in 0..16 {
+        let packet = timeout(Duration::from_secs(3), ingame.next())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for in-game bootstrap packets"))?
+            .ok_or(anyhow::anyhow!(
+                "stream closed before in-game bootstrap completed"
+            ))??;
+
+        match packet {
+            InGameS2c::System(SystemS2c::SetServerTime { .. })
+            | InGameS2c::System(SystemS2c::SetChannelInfo { .. }) => {
+                assert!(
+                    !saw_spawn,
+                    "system packets should be sent before map-driven self spawn"
+                );
+            }
+            InGameS2c::Control(ControlS2c::RequestHandshake { data }) => {
+                assert!(
+                    !saw_spawn,
+                    "initial RequestHandshake should be sent before map-driven self spawn"
+                );
+                saw_handshake = true;
+                reply_to_ingame_handshake(&mut ingame, data).await?;
+            }
+            InGameS2c::World(WorldS2c::SpawnEntity {
+                entity_type,
+                race_num,
+                ..
+            }) => {
+                assert!(
+                    saw_handshake,
+                    "self SpawnEntity should arrive after the initial RequestHandshake"
+                );
+                assert_eq!(entity_type, EntityType::Player);
+                assert_eq!(race_num, 0);
+                saw_spawn = true;
+            }
+            InGameS2c::World(WorldS2c::SetEntityDetails { name, level, .. }) => {
+                assert!(saw_spawn, "self SetEntityDetails should follow SpawnEntity");
+                assert_eq!(name.as_str(), "wire_player");
+                assert_eq!(level, 1);
+                return Ok(());
+            }
+            InGameS2c::Control(ControlS2c::RequestHeartbeat) => {
+                ingame
+                    .send(InGameC2s::Control(ControlC2s::HeartbeatResponse))
+                    .await?;
+            }
+            _ => {}
+        }
+    }
+
+    anyhow::bail!("did not observe map-driven self spawn/details during in-game bootstrap")
+}
+
+#[tokio::test]
 async fn test_ingame_periodic_handshake_resync_coexists_with_idle_heartbeat() -> anyhow::Result<()>
 {
     if !has_test_db_url() {
@@ -615,16 +709,7 @@ async fn setup_test_env_with_options_and_heartbeat(
         .map_code_by_id(MapId::new(1))
         .ok_or_else(|| anyhow::anyhow!("missing map code for map id 1"))?
         .to_string();
-    let (map_events, inbound_rx) = zohar_sim::MapEventSender::channel_pair(256);
-    std::thread::spawn(move || {
-        let mut next_net_id = 1_u32;
-        while let Ok(event) = inbound_rx.recv() {
-            if let zohar_sim::InboundEvent::ReserveNetId { reply, .. } = event {
-                let _ = reply.send(EntityId(next_net_id));
-                next_net_id = next_net_id.saturating_add(1);
-            }
-        }
-    });
+    let map_events = spawn_test_map_runtime();
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

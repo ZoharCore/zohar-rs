@@ -66,10 +66,7 @@ pub(crate) fn process_player_actions(world: &mut World) {
                         apply_action(world, action);
                     }
                 }
-                PlayerCommand::Attack {
-                    target,
-                    attack_type,
-                } => {
+                PlayerCommand::Attack { target, attack } => {
                     let Some(attacker_pos) = world
                         .entity(player_entity)
                         .get::<LocalTransform>()
@@ -88,7 +85,7 @@ pub(crate) fn process_player_actions(world: &mut World) {
                     };
 
                     if let Some(action) =
-                        build_player_attack_action(world, player_entity, target, attack_type)
+                        build_player_attack_action(world, player_entity, target, attack)
                     {
                         apply_action(world, action);
                     }

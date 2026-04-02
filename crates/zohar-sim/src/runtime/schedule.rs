@@ -1,5 +1,6 @@
 use super::resources::PlayerCount;
 use super::resources::RuntimeState;
+use super::time::SimInstant;
 use bevy::prelude::*;
 use std::time::{Duration, Instant};
 
@@ -19,15 +20,12 @@ pub enum SimSet {
 const ACTIVE_SIM_TIMESTEP: Duration = Duration::from_millis(40);
 const IDLE_SIM_TIMESTEP: Duration = Duration::from_secs(1);
 
-pub(crate) fn packet_time_ms(packet_time_start: Instant) -> u32 {
-    packet_time_start
-        .elapsed()
-        .as_millis()
-        .min(u32::MAX as u128) as u32
+pub(crate) fn sample_sim_now(packet_time_start: Instant) -> SimInstant {
+    SimInstant::from_elapsed(packet_time_start.elapsed())
 }
 
 pub(crate) fn advance_sim_time(mut state: ResMut<RuntimeState>) {
-    state.sim_time_ms = u64::from(packet_time_ms(state.packet_time_start));
+    state.sim_now = sample_sim_now(state.packet_time_start);
 }
 
 pub(crate) fn sync_fixed_tick_rate(

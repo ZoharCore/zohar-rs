@@ -4,14 +4,17 @@ use zohar_domain::Empire as DomainEmpire;
 use zohar_domain::appearance::EntityKind;
 use zohar_domain::entity::mob::MobKind;
 use zohar_domain::entity::player::skill::{
-    NinjaSkillBranch, ShamanSkillBranch, SkillBranch as DomainSkillBranch, SuraSkillBranch,
-    WarriorSkillBranch,
+    NinjaSkillBranch, ShamanSkillBranch, SkillBranch as DomainSkillBranch,
+    SkillId as DomainSkillId, SuraSkillBranch, WarriorSkillBranch,
 };
 use zohar_domain::entity::player::{
     PlayerBaseAppearance as DomainPlayerAppearance, PlayerClass as DomainPlayerClass,
     PlayerGender as DomainPlayerGender, PlayerSlot, PlayerStats, PlayerSummary,
 };
 use zohar_domain::entity::{EntityId, MovementKind as DomainMovementKind};
+use zohar_map_port::{AttackIntent as PortAttackIntent, ChatChannel};
+use zohar_protocol::game_pkt::ChatKind;
+use zohar_protocol::game_pkt::ingame::Skill;
 use zohar_protocol::game_pkt::ingame::movement::MovementKind;
 use zohar_protocol::game_pkt::ingame::world::EntityType;
 use zohar_protocol::game_pkt::select::{Player, PlayerBaseAppearance};
@@ -61,6 +64,30 @@ impl ToProtocol<MovementKind> for DomainMovementKind {
             DomainMovementKind::Move => MovementKind::Move,
             DomainMovementKind::Attack => MovementKind::Attack,
             DomainMovementKind::Combo => MovementKind::Combo,
+        }
+    }
+}
+
+impl ToDomain<ChatChannel> for ChatKind {
+    fn to_domain(self) -> ChatChannel {
+        match self {
+            ChatKind::Speak => ChatChannel::Speak,
+            ChatKind::Info => ChatChannel::Info,
+            ChatKind::Notice => ChatChannel::Notice,
+            ChatKind::Command => ChatChannel::Command,
+            ChatKind::Shout => ChatChannel::Shout,
+        }
+    }
+}
+
+impl ToProtocol<ChatKind> for ChatChannel {
+    fn to_protocol(self) -> ChatKind {
+        match self {
+            ChatChannel::Speak => ChatKind::Speak,
+            ChatChannel::Info => ChatKind::Info,
+            ChatChannel::Notice => ChatKind::Notice,
+            ChatChannel::Command => ChatKind::Command,
+            ChatChannel::Shout => ChatKind::Shout,
         }
     }
 }
@@ -207,6 +234,182 @@ impl ToProtocol<SkillBranch> for DomainSkillBranch {
             | DomainSkillBranch::Ninja(NinjaSkillBranch::Archery)
             | DomainSkillBranch::Sura(SuraSkillBranch::BlackMagic)
             | DomainSkillBranch::Shaman(ShamanSkillBranch::Healing) => SkillBranch::BranchB,
+        }
+    }
+}
+
+impl ToDomain<DomainSkillId> for Skill {
+    fn to_domain(self) -> DomainSkillId {
+        match self {
+            Skill::ThreeWayCut => DomainSkillId::ThreeWayCut,
+            Skill::SwordSpin => DomainSkillId::SwordSpin,
+            Skill::Berserk => DomainSkillId::Berserk,
+            Skill::AuraOfTheSword => DomainSkillId::AuraOfTheSword,
+            Skill::Dash => DomainSkillId::Dash,
+            Skill::LifeForce => DomainSkillId::LifeForce,
+            Skill::Shockwave => DomainSkillId::Shockwave,
+            Skill::Bash => DomainSkillId::Bash,
+            Skill::Stump => DomainSkillId::Stump,
+            Skill::StrongBody => DomainSkillId::StrongBody,
+            Skill::SwordStrike => DomainSkillId::SwordStrike,
+            Skill::SwordOrb => DomainSkillId::SwordOrb,
+            Skill::Ambush => DomainSkillId::Ambush,
+            Skill::FastAttack => DomainSkillId::FastAttack,
+            Skill::RollingDagger => DomainSkillId::RollingDagger,
+            Skill::Stealth => DomainSkillId::Stealth,
+            Skill::PoisonousCloud => DomainSkillId::PoisonousCloud,
+            Skill::InsidiousPoison => DomainSkillId::InsidiousPoison,
+            Skill::RepetitiveShot => DomainSkillId::RepetitiveShot,
+            Skill::ArrowShower => DomainSkillId::ArrowShower,
+            Skill::FireArrow => DomainSkillId::FireArrow,
+            Skill::FeatherWalk => DomainSkillId::FeatherWalk,
+            Skill::PoisonArrow => DomainSkillId::PoisonArrow,
+            Skill::Spark => DomainSkillId::Spark,
+            Skill::FingerStrike => DomainSkillId::FingerStrike,
+            Skill::DragonSwirl => DomainSkillId::DragonSwirl,
+            Skill::EnchantedBlade => DomainSkillId::EnchantedBlade,
+            Skill::Fear => DomainSkillId::Fear,
+            Skill::EnchantedArmor => DomainSkillId::EnchantedArmor,
+            Skill::Dispel => DomainSkillId::Dispel,
+            Skill::DarkStrike => DomainSkillId::DarkStrike,
+            Skill::FlameStrike => DomainSkillId::FlameStrike,
+            Skill::FlameSpirit => DomainSkillId::FlameSpirit,
+            Skill::DarkProtection => DomainSkillId::DarkProtection,
+            Skill::SpiritStrike => DomainSkillId::SpiritStrike,
+            Skill::DarkOrb => DomainSkillId::DarkOrb,
+            Skill::FlyingTalisman => DomainSkillId::FlyingTalisman,
+            Skill::ShootingDragon => DomainSkillId::ShootingDragon,
+            Skill::DragonRoar => DomainSkillId::DragonRoar,
+            Skill::Blessing => DomainSkillId::Blessing,
+            Skill::Reflect => DomainSkillId::Reflect,
+            Skill::DragonAid => DomainSkillId::DragonAid,
+            Skill::LightningThrow => DomainSkillId::LightningThrow,
+            Skill::SummonLightning => DomainSkillId::SummonLightning,
+            Skill::LightningClaw => DomainSkillId::LightningClaw,
+            Skill::Cure => DomainSkillId::Cure,
+            Skill::Swiftness => DomainSkillId::Swiftness,
+            Skill::AttackUp => DomainSkillId::AttackUp,
+            Skill::Leadership => DomainSkillId::Leadership,
+            Skill::Combo => DomainSkillId::Combo,
+            Skill::Fishing => DomainSkillId::Fishing,
+            Skill::Mining => DomainSkillId::Mining,
+            Skill::LanguageShinsoo => DomainSkillId::LanguageShinsoo,
+            Skill::LanguageChunjo => DomainSkillId::LanguageChunjo,
+            Skill::LanguageJinno => DomainSkillId::LanguageJinno,
+            Skill::Polymorph => DomainSkillId::Polymorph,
+            Skill::HorseRiding => DomainSkillId::HorseRiding,
+            Skill::HorseSummon => DomainSkillId::HorseSummon,
+            Skill::HorseWildAttack => DomainSkillId::HorseWildAttack,
+            Skill::HorseCharge => DomainSkillId::HorseCharge,
+            Skill::HorseEscape => DomainSkillId::HorseEscape,
+            Skill::HorseWildAttackRange => DomainSkillId::HorseWildAttackRange,
+            Skill::AddHp => DomainSkillId::AddHp,
+            Skill::PenetrationResistance => DomainSkillId::PenetrationResistance,
+            Skill::GuildEye => DomainSkillId::GuildEye,
+            Skill::GuildBlood => DomainSkillId::GuildBlood,
+            Skill::GuildBless => DomainSkillId::GuildBless,
+            Skill::GuildSeonghwi => DomainSkillId::GuildSeonghwi,
+            Skill::GuildAcceleration => DomainSkillId::GuildAcceleration,
+            Skill::GuildBunno => DomainSkillId::GuildBunno,
+            Skill::GuildJumun => DomainSkillId::GuildJumun,
+            Skill::GuildTeleport => DomainSkillId::GuildTeleport,
+            Skill::GuildDoor => DomainSkillId::GuildDoor,
+        }
+    }
+}
+
+impl ToProtocol<Skill> for DomainSkillId {
+    fn to_protocol(self) -> Skill {
+        match self {
+            DomainSkillId::ThreeWayCut => Skill::ThreeWayCut,
+            DomainSkillId::SwordSpin => Skill::SwordSpin,
+            DomainSkillId::Berserk => Skill::Berserk,
+            DomainSkillId::AuraOfTheSword => Skill::AuraOfTheSword,
+            DomainSkillId::Dash => Skill::Dash,
+            DomainSkillId::LifeForce => Skill::LifeForce,
+            DomainSkillId::Shockwave => Skill::Shockwave,
+            DomainSkillId::Bash => Skill::Bash,
+            DomainSkillId::Stump => Skill::Stump,
+            DomainSkillId::StrongBody => Skill::StrongBody,
+            DomainSkillId::SwordStrike => Skill::SwordStrike,
+            DomainSkillId::SwordOrb => Skill::SwordOrb,
+            DomainSkillId::Ambush => Skill::Ambush,
+            DomainSkillId::FastAttack => Skill::FastAttack,
+            DomainSkillId::RollingDagger => Skill::RollingDagger,
+            DomainSkillId::Stealth => Skill::Stealth,
+            DomainSkillId::PoisonousCloud => Skill::PoisonousCloud,
+            DomainSkillId::InsidiousPoison => Skill::InsidiousPoison,
+            DomainSkillId::RepetitiveShot => Skill::RepetitiveShot,
+            DomainSkillId::ArrowShower => Skill::ArrowShower,
+            DomainSkillId::FireArrow => Skill::FireArrow,
+            DomainSkillId::FeatherWalk => Skill::FeatherWalk,
+            DomainSkillId::PoisonArrow => Skill::PoisonArrow,
+            DomainSkillId::Spark => Skill::Spark,
+            DomainSkillId::FingerStrike => Skill::FingerStrike,
+            DomainSkillId::DragonSwirl => Skill::DragonSwirl,
+            DomainSkillId::EnchantedBlade => Skill::EnchantedBlade,
+            DomainSkillId::Fear => Skill::Fear,
+            DomainSkillId::EnchantedArmor => Skill::EnchantedArmor,
+            DomainSkillId::Dispel => Skill::Dispel,
+            DomainSkillId::DarkStrike => Skill::DarkStrike,
+            DomainSkillId::FlameStrike => Skill::FlameStrike,
+            DomainSkillId::FlameSpirit => Skill::FlameSpirit,
+            DomainSkillId::DarkProtection => Skill::DarkProtection,
+            DomainSkillId::SpiritStrike => Skill::SpiritStrike,
+            DomainSkillId::DarkOrb => Skill::DarkOrb,
+            DomainSkillId::FlyingTalisman => Skill::FlyingTalisman,
+            DomainSkillId::ShootingDragon => Skill::ShootingDragon,
+            DomainSkillId::DragonRoar => Skill::DragonRoar,
+            DomainSkillId::Blessing => Skill::Blessing,
+            DomainSkillId::Reflect => Skill::Reflect,
+            DomainSkillId::DragonAid => Skill::DragonAid,
+            DomainSkillId::LightningThrow => Skill::LightningThrow,
+            DomainSkillId::SummonLightning => Skill::SummonLightning,
+            DomainSkillId::LightningClaw => Skill::LightningClaw,
+            DomainSkillId::Cure => Skill::Cure,
+            DomainSkillId::Swiftness => Skill::Swiftness,
+            DomainSkillId::AttackUp => Skill::AttackUp,
+            DomainSkillId::Leadership => Skill::Leadership,
+            DomainSkillId::Combo => Skill::Combo,
+            DomainSkillId::Fishing => Skill::Fishing,
+            DomainSkillId::Mining => Skill::Mining,
+            DomainSkillId::LanguageShinsoo => Skill::LanguageShinsoo,
+            DomainSkillId::LanguageChunjo => Skill::LanguageChunjo,
+            DomainSkillId::LanguageJinno => Skill::LanguageJinno,
+            DomainSkillId::Polymorph => Skill::Polymorph,
+            DomainSkillId::HorseRiding => Skill::HorseRiding,
+            DomainSkillId::HorseSummon => Skill::HorseSummon,
+            DomainSkillId::HorseWildAttack => Skill::HorseWildAttack,
+            DomainSkillId::HorseCharge => Skill::HorseCharge,
+            DomainSkillId::HorseEscape => Skill::HorseEscape,
+            DomainSkillId::HorseWildAttackRange => Skill::HorseWildAttackRange,
+            DomainSkillId::AddHp => Skill::AddHp,
+            DomainSkillId::PenetrationResistance => Skill::PenetrationResistance,
+            DomainSkillId::GuildEye => Skill::GuildEye,
+            DomainSkillId::GuildBlood => Skill::GuildBlood,
+            DomainSkillId::GuildBless => Skill::GuildBless,
+            DomainSkillId::GuildSeonghwi => Skill::GuildSeonghwi,
+            DomainSkillId::GuildAcceleration => Skill::GuildAcceleration,
+            DomainSkillId::GuildBunno => Skill::GuildBunno,
+            DomainSkillId::GuildJumun => Skill::GuildJumun,
+            DomainSkillId::GuildTeleport => Skill::GuildTeleport,
+            DomainSkillId::GuildDoor => Skill::GuildDoor,
+        }
+    }
+}
+
+impl ToProtocol<u8> for DomainSkillId {
+    fn to_protocol(self) -> u8 {
+        let skill: Skill = <DomainSkillId as ToProtocol<Skill>>::to_protocol(self);
+        skill.into()
+    }
+}
+
+impl ToProtocol<u8> for PortAttackIntent {
+    fn to_protocol(self) -> u8 {
+        match self {
+            PortAttackIntent::Basic => 0,
+            PortAttackIntent::Skill(skill) => skill.to_protocol(),
         }
     }
 }

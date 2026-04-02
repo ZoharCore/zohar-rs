@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 zohar-domain = { path = "../zohar-domain" }
+zohar-map-port = { path = "../zohar-map-port" }
 
 anyhow.workspace = true
 bevy.workspace = true

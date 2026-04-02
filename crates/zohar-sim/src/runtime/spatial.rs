@@ -15,11 +15,14 @@ use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::mob::spawn::{SpawnTemplate, WeightedGroupChoice};
 use zohar_domain::entity::mob::{MobBattleType, MobId};
 use zohar_domain::entity::{EntityId, MovementKind};
+#[cfg(test)]
+use zohar_map_port::MovementArg;
+use zohar_map_port::{ClientTimestamp, Facing72, PacketDuration};
 
 use super::rules::{combat, movement};
+use super::time::{SimDuration, SimInstant};
 
 pub(crate) use super::resources::next_entity_id;
-pub(crate) use super::schedule::packet_time_ms;
 
 pub(crate) fn movement_kind_priority(kind: MovementKind) -> u8 {
     match kind {
@@ -68,17 +71,17 @@ pub(crate) fn sanitize_packet_target(current_pos: LocalPos, requested_pos: Local
 pub(crate) fn sample_player_motion_at(
     current_pos: LocalPos,
     motion: &mut PlayerMotionState,
-    packet_ts: u32,
+    packet_ts: impl Into<ClientTimestamp>,
 ) -> LocalPos {
-    sample_player_motion_state_at(current_pos, *motion, packet_ts)
+    sample_player_motion_state_at(current_pos, *motion, packet_ts.into())
 }
 
 pub(crate) fn sample_player_motion_state_at(
     current_pos: LocalPos,
     motion: PlayerMotionState,
-    packet_ts: u32,
+    packet_ts: ClientTimestamp,
 ) -> LocalPos {
-    if motion.last_client_ts == 0 || packet_ts <= motion.last_client_ts {
+    if motion.last_client_ts == ClientTimestamp::ZERO || packet_ts <= motion.last_client_ts {
         return current_pos;
     }
     if motion.segment_end_ts <= motion.segment_start_ts {
@@ -91,11 +94,11 @@ pub(crate) fn sample_player_motion_state_at(
     let total = motion
         .segment_end_ts
         .saturating_sub(motion.segment_start_ts);
-    if total == 0 {
+    if total == PacketDuration::ZERO {
         return current_pos;
     }
     let elapsed = packet_ts.saturating_sub(motion.segment_start_ts);
-    let t = elapsed as f32 / total as f32;
+    let t = elapsed.get() as f32 / total.get() as f32;
     let delta = motion.segment_end_pos - motion.segment_start_pos;
 
     motion.segment_start_pos + delta * t
@@ -103,7 +106,7 @@ pub(crate) fn sample_player_motion_state_at(
 
 pub(crate) fn sample_player_visual_position_at(
     motion: PlayerMotionState,
-    packet_ts: u32,
+    packet_ts: ClientTimestamp,
 ) -> LocalPos {
     if motion.segment_end_ts <= motion.segment_start_ts {
         return motion.segment_end_pos;
@@ -118,35 +121,35 @@ pub(crate) fn sample_player_visual_position_at(
     let total = motion
         .segment_end_ts
         .saturating_sub(motion.segment_start_ts);
-    if total == 0 {
+    if total == PacketDuration::ZERO {
         return motion.segment_end_pos;
     }
     let elapsed = packet_ts.saturating_sub(motion.segment_start_ts);
-    let t = elapsed as f32 / total as f32;
+    let t = elapsed.get() as f32 / total.get() as f32;
     let delta = motion.segment_end_pos - motion.segment_start_pos;
 
     motion.segment_start_pos + delta * t
 }
 
-pub(crate) fn sample_mob_motion_at(motion: &MobMotionState, now_ms: u64) -> LocalPos {
-    if motion.segment_end_at_ms <= motion.segment_start_at_ms {
+pub(crate) fn sample_mob_motion_at(motion: &MobMotionState, now: SimInstant) -> LocalPos {
+    if motion.segment_end_at <= motion.segment_start_at {
         return motion.segment_end_pos;
     }
-    if now_ms <= motion.segment_start_at_ms {
+    if now <= motion.segment_start_at {
         return motion.segment_start_pos;
     }
-    if now_ms >= motion.segment_end_at_ms {
+    if now >= motion.segment_end_at {
         return motion.segment_end_pos;
     }
 
     let total = motion
-        .segment_end_at_ms
-        .saturating_sub(motion.segment_start_at_ms);
-    if total == 0 {
+        .segment_end_at
+        .saturating_sub(motion.segment_start_at);
+    if total == SimDuration::ZERO {
         return motion.segment_end_pos;
     }
-    let elapsed = now_ms.saturating_sub(motion.segment_start_at_ms);
-    let t = elapsed as f32 / total as f32;
+    let elapsed = now.saturating_sub(motion.segment_start_at);
+    let t = elapsed.as_millis() as f32 / total.as_millis() as f32;
     let delta = motion.segment_end_pos - motion.segment_start_pos;
 
     motion.segment_start_pos + delta * t
@@ -168,7 +171,7 @@ pub(crate) fn calculate_move_duration_ms(
     appearance: &PlayerAppearance,
     start_pos: LocalPos,
     target_pos: LocalPos,
-) -> u32 {
+) -> PacketDuration {
     let profile_key = PlayerMotionProfileKey {
         class: appearance.class,
         gender: appearance.gender,
@@ -186,7 +189,7 @@ pub(crate) fn calculate_mob_move_duration_ms(
     move_speed_attr: u8,
     start_pos: LocalPos,
     target_pos: LocalPos,
-) -> u32 {
+) -> PacketDuration {
     let motion_speed = motion_speeds
         .speed_for(MotionEntityKey::Mob(mob_id), move_mode)
         .unwrap_or(DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC);
@@ -198,29 +201,37 @@ pub(crate) fn duration_from_motion_speed(
     move_speed_attr: u8,
     start_pos: LocalPos,
     target_pos: LocalPos,
-) -> u32 {
+) -> PacketDuration {
     if motion_speed_mps <= 0.0 || move_speed_attr == 0 {
-        return 0;
+        return PacketDuration::ZERO;
     }
 
     let dist = (target_pos - start_pos).length();
     let base_dur = (dist / motion_speed_mps) * 1000.0;
-    (base_dur * (100.0 / move_speed_attr as f32)) as u32
+    PacketDuration::new((base_dur * (100.0 / move_speed_attr as f32)) as u32)
 }
 
-pub(crate) fn random_protocol_rot(rng: &mut SmallRng) -> u8 {
-    rng.random_range(0..72)
+pub(crate) fn random_protocol_rot(rng: &mut SmallRng) -> Facing72 {
+    Facing72::from_wrapped(rng.random_range(0..72))
 }
 
-pub(crate) fn random_duration_between_ms(rng: &mut SmallRng, min: Duration, max: Duration) -> u64 {
+pub(crate) fn random_duration_between_ms(
+    rng: &mut SmallRng,
+    min: Duration,
+    max: Duration,
+) -> SimDuration {
     let min_ms = min.as_millis().min(u64::MAX as u128) as u64;
     let max_ms = max.as_millis().min(u64::MAX as u128) as u64;
     let lo = min_ms.min(max_ms);
     let hi = min_ms.max(max_ms);
-    rng.random_range(lo..=hi)
+    SimDuration::from_millis(rng.random_range(lo..=hi))
 }
 
-pub(crate) fn rotation_from_delta(from: LocalPos, to: LocalPos, fallback_rot: u8) -> u8 {
+pub(crate) fn rotation_from_delta(
+    from: LocalPos,
+    to: LocalPos,
+    fallback_rot: Facing72,
+) -> Facing72 {
     let delta = to - from;
     if delta.square_length() <= 0.0001 {
         return fallback_rot;
@@ -231,9 +242,9 @@ pub(crate) fn rotation_from_delta(from: LocalPos, to: LocalPos, fallback_rot: u8
     degrees_to_protocol_rot(angle)
 }
 
-pub(crate) fn degrees_to_protocol_rot(degrees: f32) -> u8 {
+pub(crate) fn degrees_to_protocol_rot(degrees: f32) -> Facing72 {
     let normalized = degrees.rem_euclid(360.0);
-    ((normalized / 5.0) as i32).rem_euclid(72) as u8
+    Facing72::from_wrapped(((normalized / 5.0) as i32).rem_euclid(72) as u8)
 }
 
 pub(crate) fn format_global_shout(from_player_name: &str, message_bytes: &[u8]) -> String {
@@ -416,7 +427,7 @@ pub(crate) fn acquire_aggressive_target(
 pub(crate) fn player_position(
     world: &World,
     entity_id: EntityId,
-    packet_ts: u32,
+    packet_ts: ClientTimestamp,
 ) -> Option<LocalPos> {
     let entity = net_entity(world, entity_id)?;
     world.entity(entity).get::<super::state::PlayerMarker>()?;
@@ -430,7 +441,7 @@ pub(crate) fn player_position(
             segment_end_pos: transform.pos,
             segment_start_ts: packet_ts,
             segment_end_ts: packet_ts,
-            last_client_ts: 0,
+            last_client_ts: ClientTimestamp::ZERO,
         });
     Some(sample_player_visual_position_at(motion, packet_ts))
 }
@@ -439,7 +450,7 @@ pub(crate) fn chase_target_position(
     world: &World,
     current_pos: LocalPos,
     entity_id: EntityId,
-    packet_ts: u32,
+    packet_ts: ClientTimestamp,
     mob_id: MobId,
     mob_move_speed: u8,
     battle_type: MobBattleType,
@@ -486,7 +497,7 @@ pub(crate) fn sample_mob_motion(world: &mut World) {
     let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
         return;
     };
-    let now_ms = world.resource::<RuntimeState>().sim_time_ms;
+    let now = world.resource::<RuntimeState>().sim_now;
 
     let updates = {
         let mut query = world.query::<(
@@ -498,7 +509,7 @@ pub(crate) fn sample_mob_motion(world: &mut World) {
         query
             .iter_mut(world)
             .filter_map(|(_entity, net_id, motion, transform)| {
-                let sampled_pos = sample_mob_motion_at(&motion.0, now_ms);
+                let sampled_pos = sample_mob_motion_at(&motion.0, now);
                 (sampled_pos != transform.pos).then_some((net_id.net_id, sampled_pos))
             })
             .collect::<Vec<_>>()
@@ -534,7 +545,7 @@ pub(crate) fn sample_mob_motion(world: &mut World) {
 pub(crate) fn sampled_mob_position(
     world: &World,
     mob_entity: Entity,
-    now_ms: u64,
+    now: SimInstant,
 ) -> Option<LocalPos> {
     let transform = world
         .entity(mob_entity)
@@ -546,10 +557,10 @@ pub(crate) fn sampled_mob_position(
     else {
         return Some(transform.pos);
     };
-    Some(sample_mob_motion_at(&motion, now_ms))
+    Some(sample_mob_motion_at(&motion, now))
 }
 
-pub(crate) fn mob_movement_in_flight(world: &World, mob_entity: Entity, now_ms: u64) -> bool {
+pub(crate) fn mob_movement_in_flight(world: &World, mob_entity: Entity, now: SimInstant) -> bool {
     let Some(motion) = world
         .entity(mob_entity)
         .get::<super::state::MobMotion>()
@@ -557,7 +568,7 @@ pub(crate) fn mob_movement_in_flight(world: &World, mob_entity: Entity, now_ms: 
     else {
         return false;
     };
-    motion.segment_end_at_ms > now_ms && motion.segment_end_pos != motion.segment_start_pos
+    motion.segment_end_at > now && motion.segment_end_pos != motion.segment_start_pos
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -570,20 +581,22 @@ pub(crate) fn issue_mob_action(
     kind: MovementKind,
     start_pos: LocalPos,
     target_pos: LocalPos,
-    rot: u8,
+    rot: Facing72,
     mob_id: MobId,
     move_speed: u8,
     shared: &super::state::SharedConfig,
-    now_ms: u64,
-    now_ts: u32,
-    duration_override_ms: Option<u32>,
-) -> Option<u32> {
+    now: impl Into<SimInstant>,
+    now_ts: impl Into<ClientTimestamp>,
+    duration_override_ms: Option<PacketDuration>,
+) -> Option<PacketDuration> {
+    let now = now.into();
+    let now_ts = now_ts.into();
     let start_pos = snap_local_to_wire_cm(start_pos);
     let target_pos = snap_local_to_wire_cm(target_pos);
     let duration = duration_override_ms.unwrap_or_else(|| {
         calculate_mob_movement_duration(shared, mob_id, move_speed, kind, start_pos, target_pos)
     });
-    if matches!(kind, MovementKind::Wait | MovementKind::Move) && duration == 0 {
+    if matches!(kind, MovementKind::Wait | MovementKind::Move) && duration == PacketDuration::ZERO {
         return None;
     }
 
@@ -602,14 +615,14 @@ pub(crate) fn issue_mob_action(
             MovementKind::Wait | MovementKind::Move => MobMotionState {
                 segment_start_pos: start_pos,
                 segment_end_pos: target_pos,
-                segment_start_at_ms: now_ms,
-                segment_end_at_ms: now_ms.saturating_add(u64::from(duration)),
+                segment_start_at: now,
+                segment_end_at: now.saturating_add(SimDuration::from_packet_duration(duration)),
             },
             _ => MobMotionState {
                 segment_start_pos: start_pos,
                 segment_end_pos: start_pos,
-                segment_start_at_ms: now_ms,
-                segment_end_at_ms: now_ms,
+                segment_start_at: now,
+                segment_end_at: now,
             },
         };
     }
@@ -629,7 +642,7 @@ pub(crate) fn issue_mob_action(
             new_pos: target_pos,
             kind,
             reliable: kind == MovementKind::Attack,
-            arg: 0,
+            arg: MovementArg::ZERO,
             rot,
             ts: now_ts,
             duration,
@@ -667,7 +680,7 @@ fn predict_moving_target_position(
     current_pos: LocalPos,
     target_pos: LocalPos,
     motion: PlayerMotionState,
-    packet_ts: u32,
+    packet_ts: ClientTimestamp,
     mob_id: MobId,
     mob_move_speed: u8,
     shared: &super::state::SharedConfig,
@@ -677,7 +690,7 @@ fn predict_moving_target_position(
     }
 
     let remaining_ms = motion.segment_end_ts.saturating_sub(packet_ts);
-    if remaining_ms == 0 {
+    if remaining_ms == PacketDuration::ZERO {
         return None;
     }
 
@@ -692,7 +705,7 @@ fn predict_moving_target_position(
         return None;
     }
 
-    let remaining_s = remaining_ms as f32 / 1000.0;
+    let remaining_s = remaining_ms.get() as f32 / 1000.0;
     let target_velocity = target_delta / remaining_s;
     let mob_speed_mps = movement::mob_run_speed_mps(shared, mob_id, mob_move_speed)?;
 
@@ -724,9 +737,9 @@ fn calculate_mob_movement_duration(
     kind: MovementKind,
     from: LocalPos,
     to: LocalPos,
-) -> u32 {
+) -> PacketDuration {
     if kind != MovementKind::Move && kind != MovementKind::Wait {
-        return 0;
+        return PacketDuration::ZERO;
     }
     calculate_mob_move_duration_ms(
         &shared.motion_speeds,
@@ -742,25 +755,34 @@ fn calculate_mob_movement_duration(
 mod tests {
     use super::{degrees_to_protocol_rot, rotation_from_delta};
     use zohar_domain::coords::LocalPos;
+    use zohar_map_port::Facing72;
 
     #[test]
     fn rotation_from_delta_matches_legacy_cardinal_facing() {
         let origin = LocalPos::new(10.0, 10.0);
 
         assert_eq!(
-            rotation_from_delta(origin, LocalPos::new(10.0, 11.0), 99),
+            rotation_from_delta(
+                origin,
+                LocalPos::new(10.0, 11.0),
+                Facing72::from_wrapped(99)
+            ),
             degrees_to_protocol_rot(0.0)
         );
         assert_eq!(
-            rotation_from_delta(origin, LocalPos::new(11.0, 10.0), 99),
+            rotation_from_delta(
+                origin,
+                LocalPos::new(11.0, 10.0),
+                Facing72::from_wrapped(99)
+            ),
             degrees_to_protocol_rot(90.0)
         );
         assert_eq!(
-            rotation_from_delta(origin, LocalPos::new(10.0, 9.0), 99),
+            rotation_from_delta(origin, LocalPos::new(10.0, 9.0), Facing72::from_wrapped(99)),
             degrees_to_protocol_rot(180.0)
         );
         assert_eq!(
-            rotation_from_delta(origin, LocalPos::new(9.0, 10.0), 99),
+            rotation_from_delta(origin, LocalPos::new(9.0, 10.0), Facing72::from_wrapped(99)),
             degrees_to_protocol_rot(270.0)
         );
     }
@@ -768,6 +790,9 @@ mod tests {
     #[test]
     fn rotation_from_delta_preserves_fallback_without_movement() {
         let origin = LocalPos::new(10.0, 10.0);
-        assert_eq!(rotation_from_delta(origin, origin, 37), 37);
+        assert_eq!(
+            rotation_from_delta(origin, origin, Facing72::from_wrapped(37)),
+            Facing72::from_wrapped(37)
+        );
     }
 }

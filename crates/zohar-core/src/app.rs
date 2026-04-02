@@ -9,7 +9,7 @@ use std::time::Duration;
 use zohar_db::postgres_backend;
 use zohar_gamesrv::infra::EndpointMode;
 use zohar_protocol::token::TokenSigner;
-use zohar_sim::MapEventSender;
+use zohar_sim::build_map_app;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ClusterEventTransport {
@@ -47,9 +47,9 @@ pub fn run_core(
         Duration::from_secs(config.token_window_secs),
     ));
 
-    let (map_events, inbound_rx) = MapEventSender::channel_pair(16_384);
     let loaded = load_content(&config, runtime)?;
     let _map_key = loaded.map_key;
+    let (app, map_events) = build_map_app(loaded.shared_config, loaded.map_config, 16_384);
 
     let wiring = wire_infra(
         &config,
@@ -71,6 +71,6 @@ pub fn run_core(
         wiring.listener,
     ));
 
-    run_map_app(loaded.shared_config, loaded.map_config, inbound_rx);
+    run_map_app(app);
     Ok(())
 }

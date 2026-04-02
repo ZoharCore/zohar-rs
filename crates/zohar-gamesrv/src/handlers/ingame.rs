@@ -9,27 +9,27 @@ use super::runtime::{
 use super::session_health::{SessionTick, SessionTracker};
 use super::types::{PhaseResult, SessionEnd};
 use crate::GameContext;
-use crate::adapters::{ToDomain, ToProtocol};
+use crate::adapters::ToProtocol;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, warn};
+use tracing::warn;
 use zohar_db::{GameDb, PlayersView, ProfilesView, SessionsView};
 use zohar_domain::appearance::PlayerAppearance;
-use zohar_domain::coords::{LocalPos, WorldPos};
 use zohar_domain::{Empire as DomainEmpire, MapId};
+use zohar_map_port::{EnterMsg, LeaveMsg, PlayerEvent};
 use zohar_net::connection::NextConnection;
 use zohar_net::{Connection, ConnectionPhaseExt};
-use zohar_protocol::game_pkt::ingame::world::WorldS2c;
-use zohar_protocol::game_pkt::ingame::{
-    InGameC2s, InGameS2c, chat as pkt_chat, combat, movement, system,
-};
-use zohar_protocol::game_pkt::{ChatKind, NetId};
-use zohar_protocol::game_pkt::{ControlS2c, ZeroOpt};
+use zohar_protocol::game_pkt::ControlS2c;
+use zohar_protocol::game_pkt::ingame::{InGameC2s, InGameS2c, system};
 use zohar_protocol::handshake::HandshakeState;
-use zohar_sim::{ClientIntentMsg, EnterMsg, LeaveMsg, LocalMapInbound, PlayerEvent, PlayerOutbox};
 
 pub(super) mod chat;
-pub(super) mod spawn;
+pub(super) mod combat;
+pub(super) mod fishing;
+pub(super) mod guild;
+pub(super) mod movement;
+pub(super) mod trading;
+pub(super) mod world;
 
 pub(super) type ThisPhase = zohar_net::connection::game_conn::InGame;
 
@@ -39,22 +39,23 @@ pub(super) struct InGameCtx<'a> {
     session: &'a mut SessionTracker,
     pub(super) username: String,
     pub(super) player_name: String,
-    pub(super) net_id: NetId,
     pub(super) player_id: zohar_domain::entity::player::PlayerId,
     pub(super) map_id: MapId,
-    // Player data from DB
-    pub(super) player_class: zohar_domain::entity::player::PlayerClass,
-    pub(super) player_gender: zohar_domain::entity::player::PlayerGender,
-    pub(super) base_appearance: zohar_domain::entity::player::PlayerBaseAppearance,
     pub(super) player_empire: DomainEmpire,
-    pub(super) spawn_pos: WorldPos,
-    pub(super) player_level: i32,
 }
 
 const MAP_EVENT_BURST_LIMIT: usize = 32;
 
 async fn handle_enter(state: &mut InGameCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
-    let mut effects = spawn::enter_world_effects(state);
+    let mut effects = PhaseEffects::empty();
+    let channel_id = state.ctx.channel_id.min(u8::MAX as u32) as u8;
+
+    effects.push(InGameS2c::System(system::SystemS2c::SetServerTime {
+        time: state.handshake.uptime_at(Instant::now()).into(),
+    }));
+    effects.push(InGameS2c::System(system::SystemS2c::SetChannelInfo {
+        channel_id,
+    }));
     effects.push(
         ControlS2c::RequestHandshake {
             data: state.handshake.sync_data(Instant::now(), Duration::ZERO),
@@ -103,123 +104,20 @@ async fn handle_packet(
 ) -> PhaseResult<PhaseEffects<ThisPhase>> {
     state.session.mark_rx(now);
     match packet {
-        InGameC2s::Control(control) => {
-            match handle_session_control(control, now, state.handshake)? {
-                ControlDecision::Handled(outcome) => {
-                    let mut effects = PhaseEffects::empty();
-                    effects.extend(outcome.send);
-                    Ok(effects)
-                }
-                ControlDecision::Reject(reason) => Ok(PhaseEffects::disconnect(reason)),
+        InGameC2s::Control(packet) => match handle_session_control(packet, now, state.handshake)? {
+            ControlDecision::Handled(outcome) => {
+                let mut effects = PhaseEffects::empty();
+                effects.extend(outcome.send);
+                Ok(effects)
             }
-        }
-        InGameC2s::Chat(pkt_chat::ChatC2s::SubmitChatMessage { kind, message }) => {
-            chat::handle_chat_message(kind, message, state).await
-        }
-        InGameC2s::Combat(combat::CombatC2s::InputAttack {
-            attack_type,
-            target,
-            _unknown,
-        }) => {
-            let ZeroOpt(None) = attack_type else {
-                warn!("Skills not yet supported for attacks, ignoring");
-                return Ok(PhaseEffects::empty());
-            };
-
-            let intent_msg = ClientIntentMsg {
-                player_id: state.player_id,
-                intent: zohar_sim::ClientIntent::Attack {
-                    target: target.to_domain(),
-                    attack_type: 0,
-                },
-            };
-            if let Err(err) = state
-                .ctx
-                .map_events
-                .try_send(LocalMapInbound::ClientIntent { msg: intent_msg })
-            {
-                warn!(
-                    player_id = ?state.player_id,
-                    map_id = state.map_id.get(),
-                    target = u32::from(target),
-                    error = ?err,
-                    "Failed to enqueue attack intent to map runtime"
-                );
-            }
-            Ok(PhaseEffects::empty())
-        }
-        InGameC2s::Combat(combat::CombatC2s::SignalTargetSwitch { target }) => {
-            debug!(
-                player_id = ?state.player_id,
-                map_id = state.map_id.get(),
-                target = u32::from(target),
-                "Received client target selection"
-            );
-            Ok(PhaseEffects::empty())
-        }
-        InGameC2s::Move(movement::MovementC2s::InputMovement {
-            kind,
-            arg,
-            rot,
-            x,
-            y,
-            ts,
-        }) => {
-            let kind = kind.to_domain();
-            let packet_ts = u32::from(ts);
-
-            // Send movement intent to MapActor for broadcast to all players
-            let Some(local_pos) = state.ctx.coords.world_wire_to_local(state.map_id, x, y) else {
-                warn!(
-                    player_id = ?state.player_id,
-                    map_id = state.map_id.get(),
-                    wire_x = i32::from(x),
-                    wire_y = i32::from(y),
-                    "Ignoring out-of-bounds movement position"
-                );
-                return Ok(PhaseEffects::empty());
-            };
-            let intent_msg = ClientIntentMsg {
-                player_id: state.player_id,
-                intent: zohar_sim::ClientIntent::Move {
-                    entity_id: zohar_domain::entity::EntityId(state.net_id.into()),
-                    kind,
-                    arg,
-                    rot,
-                    x: local_pos.x,
-                    y: local_pos.y,
-                    // Preserve client-provided movement time (reference server behavior).
-                    ts: packet_ts,
-                },
-            };
-            if let Err(err) = state
-                .ctx
-                .map_events
-                .try_send(LocalMapInbound::ClientIntent { msg: intent_msg })
-            {
-                warn!(
-                    player_id = ?state.player_id,
-                    map_id = state.map_id.get(),
-                    kind = ?kind,
-                    ts = packet_ts,
-                    error = ?err,
-                    "Failed to enqueue movement intent to map runtime"
-                );
-            }
-            Ok(PhaseEffects::empty())
-        }
-        InGameC2s::Trading(_) => {
-            warn!("Unhandled in-game trading packet");
-            Ok(PhaseEffects::disconnect("unhandled in-game trading packet"))
-        }
-        InGameC2s::Guild(_) => {
-            warn!("Unhandled in-game guild packet");
-            Ok(PhaseEffects::disconnect("unhandled in-game guild packet"))
-        }
-        InGameC2s::Fishing(_) => {
-            warn!("Unhandled in-game fishing packet");
-            Ok(PhaseEffects::disconnect("unhandled in-game fishing packet"))
-        }
+            ControlDecision::Reject(reason) => Ok(PhaseEffects::disconnect(reason)),
+        },
+        InGameC2s::Chat(packet) => chat::handle_packet(packet, state).await,
+        InGameC2s::Combat(packet) => combat::handle_packet(packet, state).await,
+        InGameC2s::Move(packet) => movement::handle_packet(packet, state).await,
+        InGameC2s::Trading(packet) => trading::handle_packet(packet, state).await,
+        InGameC2s::Guild(packet) => guild::handle_packet(packet, state).await,
+        InGameC2s::Fishing(packet) => fishing::handle_packet(packet, state).await,
     }
 }
 
@@ -230,119 +128,16 @@ fn map_event_to_packets(
 ) -> Vec<InGameS2c> {
     match event {
         PlayerEvent::EntitySpawn { show, details } => {
-            let Some(world_pos) = coords.local_to_world(map_id, show.pos) else {
-                return Vec::new();
-            };
-            let net_id = show.entity_id.to_protocol();
-
-            // Derive entity_type and race_num from EntityKind variant
-            let (entity_type, race_num) = show.kind.to_protocol();
-
-            // Convert meter float world coords into centimeter i32 world coords
-            let (x, y) = world_pos.to_protocol();
-
-            let show_pkt = InGameS2c::World(WorldS2c::SpawnEntity {
-                net_id,
-                angle: show.angle,
-                x,
-                y,
-                entity_type,
-                race_num,
-                move_speed: show.move_speed,
-                attack_speed: show.attack_speed,
-                state_flags: show.state_flags,
-                buff_flags: show.buff_flags,
-            });
-
-            let mut out = vec![show_pkt];
-
-            if let Some(details) = details {
-                let details_pkt = InGameS2c::World(WorldS2c::SetEntityDetails {
-                    net_id,
-                    name: details.name.into(),
-                    body_part: details.body_part,
-                    wep_part: details.wep_part,
-                    _reserved_part: 0,
-                    hair_part: details.hair_part,
-                    empire: details.empire.to_protocol(),
-                    guild_id: details.guild_id,
-                    level: details.level,
-                    rank_pts: details.rank_pts,
-                    pvp_mode: details.pvp_mode,
-                    mount_id: details.mount_id,
-                });
-
-                out.push(details_pkt);
-            }
-            out
+            world::encode_entity_spawn(show, details, map_id, coords)
         }
-        PlayerEvent::EntityMove {
-            entity_id,
-            kind,
-            arg,
-            rot,
-            x,
-            y,
-            ts: source_ts,
-            duration,
-        } => {
-            let local_pos = LocalPos::new(x, y);
-            let Some(world_pos) = coords.local_to_world(map_id, local_pos) else {
-                warn!(
-                    map_id = map_id.get(),
-                    entity_id = entity_id.0,
-                    ?kind,
-                    local_x = x,
-                    local_y = y,
-                    "Dropping movement packet due to out-of-bounds local position"
-                );
-                return Vec::new();
-            };
-            // Convert meter float world coords into centimeter i32 world coords
-            let (x, y) = world_pos.to_protocol();
-
-            let out = vec![InGameS2c::Move(movement::MovementS2c::SyncEntityMovement {
-                kind: kind.to_protocol(),
-                arg,
-                rot,
-                net_id: entity_id.to_protocol(),
-                x,
-                y,
-                // Preserve source timestamp to match reference movement semantics.
-                ts: source_ts.into(),
-                duration: duration.into(),
-            })];
-            out
-        }
-        PlayerEvent::EntityDespawn { entity_id } => {
-            vec![InGameS2c::World(WorldS2c::DestroyEntity {
-                net_id: entity_id.to_protocol(),
-            })]
-        }
+        PlayerEvent::EntityMove(event) => movement::encode_entity_move(event, map_id, coords),
+        PlayerEvent::EntityDespawn { entity_id } => world::encode_entity_despawn(entity_id),
         PlayerEvent::Chat {
-            kind,
+            channel,
             sender_entity_id,
             empire,
             message,
-        } => {
-            // TODO fix this monstrosity with proper num_enum or binrw repr u8 mappings
-            let chat_kind = match kind {
-                0 => ChatKind::Speak,
-                1 => ChatKind::Info,
-                2 => ChatKind::Notice,
-                5 => ChatKind::Command,
-                6 => ChatKind::Shout,
-                _ => ChatKind::Info,
-            };
-            vec![InGameS2c::Chat(pkt_chat::ChatS2c::NotifyChatMessage {
-                kind: chat_kind,
-                net_id: zohar_protocol::game_pkt::ZeroOpt::from(
-                    sender_entity_id.map(|id| id.to_protocol()),
-                ),
-                empire: zohar_protocol::game_pkt::ZeroOpt::from(empire.map(|e| e.to_protocol())),
-                message,
-            })]
-        }
+        } => chat::encode_chat_event(channel, sender_entity_id, empire, message),
     }
 }
 
@@ -483,7 +278,7 @@ pub(crate) async fn run_ingame(
     }
     let map_id = resolved_spawn.map_id;
     let initial_pos = resolved_spawn.local_pos;
-    let spawn_pos = ctx
+    let _spawn_pos = ctx
         .coords
         .local_to_world(map_id, initial_pos)
         .expect("resolved local spawn position must map to world coordinates");
@@ -508,10 +303,6 @@ pub(crate) async fn run_ingame(
             username: end_username.clone(),
         });
     }
-
-    // 4. Create the Channel and Outbox for Map -> Player communication
-    let (map_tx, map_rx) = tokio::sync::mpsc::channel(256);
-    let outbox = PlayerOutbox::new(map_tx);
 
     // 6. Build PlayerAppearance with pre-computed protocol values
     let player_class = player
@@ -541,17 +332,19 @@ pub(crate) async fn run_ingame(
     };
 
     // 7. Enter the Map
-    if let Err(err) = ctx.map_events.send(LocalMapInbound::PlayerEnter {
-        msg: EnterMsg {
-            player_id,
-            player_net_id: zohar_domain::entity::EntityId(net_id.into()),
-            initial_pos,
-            appearance,
-            outbox,
-        },
+    let map_rx = match ctx.map_events.enter_player(EnterMsg {
+        player_id,
+        player_net_id: zohar_domain::entity::EntityId(net_id.into()),
+        initial_pos,
+        appearance,
     }) {
-        warn!(error = ?err, "Failed to register player with map runtime");
-    }
+        Ok(map_rx) => map_rx,
+        Err(err) => {
+            warn!(error = ?err, "Failed to register player with map runtime");
+            let (_tx, map_rx) = tokio::sync::mpsc::channel(1);
+            map_rx
+        }
+    };
 
     // 8. Prepare State
     let mut state = InGameCtx {
@@ -560,15 +353,9 @@ pub(crate) async fn run_ingame(
         session,
         username,
         player_name,
-        net_id,
         player_id,
         map_id,
-        player_class,
-        player_gender,
-        base_appearance,
         player_empire,
-        spawn_pos,
-        player_level: player.as_ref().map(|p| p.level).unwrap_or(1),
     };
 
     let span = base_phase_span::<ThisPhase>();
@@ -586,11 +373,9 @@ pub(crate) async fn run_ingame(
     .await;
 
     // 10. Cleanup
-    let _ = ctx.map_events.send(LocalMapInbound::PlayerLeave {
-        msg: LeaveMsg {
-            player_id,
-            player_net_id: zohar_domain::entity::EntityId(net_id.into()),
-        },
+    let _ = ctx.map_events.send_player_leave(LeaveMsg {
+        player_id,
+        player_net_id: zohar_domain::entity::EntityId(net_id.into()),
     });
 
     result

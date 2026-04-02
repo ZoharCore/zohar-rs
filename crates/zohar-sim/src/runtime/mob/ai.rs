@@ -5,6 +5,7 @@ use std::sync::Arc;
 use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize};
 use zohar_domain::entity::mob::MobPrototypeDef;
 use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_map_port::{ClientTimestamp, Facing72};
 
 use crate::navigation::MapNavigator;
 
@@ -18,9 +19,7 @@ use super::state::{
     LocalTransform, MapConfig, MobAggro, MobAggroQueue, MobBrainMode, MobBrainState, MobHomeAnchor,
     MobMotion, MobRef, RuntimeState, SharedConfig,
 };
-use super::util::{
-    clamp_step_towards, packet_time_ms, random_duration_between_ms, rotation_from_delta,
-};
+use super::util::{clamp_step_towards, random_duration_between_ms, rotation_from_delta};
 
 const LEGACY_CHASE_FOLLOW_DISTANCE_RATIO: f32 = 0.9;
 const LEGACY_ATTACK_THRESHOLD_RATIO: f32 = 1.15;
@@ -33,14 +32,14 @@ const IDLE_WANDER_DISTANCE_EPSILON_M: f32 = 0.25;
 struct MobContext {
     proto: Arc<MobPrototypeDef>,
     map_entity: Entity,
-    now_ms: u64,
-    now_ts: u32,
+    now: super::state::SimInstant,
+    now_ts: ClientTimestamp,
     current_pos: LocalPos,
-    current_rot: u8,
+    current_rot: Facing72,
     home_pos: LocalPos,
     movement_in_flight: bool,
     segment_end_pos: Option<LocalPos>,
-    segment_end_at_ms: Option<u64>,
+    segment_end_at: Option<super::state::SimInstant>,
 }
 
 enum WindupState {
@@ -71,13 +70,13 @@ pub(crate) fn process_mob_ai(world: &mut World) {
             continue;
         };
 
-        let mut state_changed = match handle_attack_windup(&mut brain, context.now_ms) {
+        let mut state_changed = match handle_attack_windup(&mut brain, context.now) {
             WindupState::Blocked => continue,
             WindupState::Proceed { state_changed } => state_changed,
         };
 
         let aggros = drain_mob_aggro(world, mob_entity);
-        state_changed |= apply_new_aggro(&mut brain, &aggros, context.now_ms);
+        state_changed |= apply_new_aggro(&mut brain, &aggros, context.now);
         state_changed |= acquire_idle_target(world, &context, &mut brain);
         let target_pos = validate_target(world, &context, &mut brain, &mut state_changed);
 
@@ -113,10 +112,10 @@ fn collect_mob_context(world: &World, mob_entity: Entity) -> Option<MobContext> 
         .get(&mob_ref.mob_id)
         .cloned()?;
     let state = world.resource::<RuntimeState>();
-    let now_ms = state.sim_time_ms;
-    let now_ts = packet_time_ms(state.packet_time_start);
+    let now = state.sim_now;
+    let now_ts = state.packet_now();
     let map_entity = state.map_entity.unwrap_or(Entity::PLACEHOLDER);
-    let current_pos = super::mob_motion::sampled_mob_position(world, mob_entity, now_ms)?;
+    let current_pos = super::mob_motion::sampled_mob_position(world, mob_entity, now)?;
     let current_rot = world
         .entity(mob_entity)
         .get::<LocalTransform>()
@@ -126,7 +125,7 @@ fn collect_mob_context(world: &World, mob_entity: Entity) -> Option<MobContext> 
         .get::<MobHomeAnchor>()
         .map(|anchor| anchor.pos)
         .unwrap_or(current_pos);
-    let movement_in_flight = super::mob_motion::mob_movement_in_flight(world, mob_entity, now_ms);
+    let movement_in_flight = super::mob_motion::mob_movement_in_flight(world, mob_entity, now);
     let motion = world
         .entity(mob_entity)
         .get::<MobMotion>()
@@ -135,33 +134,33 @@ fn collect_mob_context(world: &World, mob_entity: Entity) -> Option<MobContext> 
     Some(MobContext {
         proto,
         map_entity,
-        now_ms,
+        now,
         now_ts,
         current_pos,
         current_rot,
         home_pos,
         movement_in_flight,
         segment_end_pos: motion.map(|motion| motion.segment_end_pos),
-        segment_end_at_ms: motion.map(|motion| motion.segment_end_at_ms),
+        segment_end_at: motion.map(|motion| motion.segment_end_at),
     })
 }
 
-fn handle_attack_windup(brain: &mut MobBrainState, now_ms: u64) -> WindupState {
+fn handle_attack_windup(brain: &mut MobBrainState, now: super::state::SimInstant) -> WindupState {
     if brain.mode != MobBrainMode::AttackWindup {
         return WindupState::Proceed {
             state_changed: false,
         };
     }
-    if now_ms < brain.attack_windup_until_ms {
+    if now < brain.attack_windup_until {
         return WindupState::Blocked;
     }
 
-    brain.attack_windup_until_ms = 0;
-    brain.next_rethink_at_ms = now_ms;
+    brain.attack_windup_until = super::state::SimInstant::ZERO;
+    brain.next_rethink_at = now;
     if brain.target.is_some() {
         brain.mode = MobBrainMode::Pursuit;
     } else {
-        transition_to_idle(brain, now_ms);
+        transition_to_idle(brain, now);
     }
 
     WindupState::Proceed {
@@ -169,7 +168,11 @@ fn handle_attack_windup(brain: &mut MobBrainState, now_ms: u64) -> WindupState {
     }
 }
 
-fn apply_new_aggro(brain: &mut MobBrainState, aggros: &[MobAggro], now_ms: u64) -> bool {
+fn apply_new_aggro(
+    brain: &mut MobBrainState,
+    aggros: &[MobAggro],
+    now: super::state::SimInstant,
+) -> bool {
     let Some(target_id) = latest_provoked_by(aggros) else {
         return false;
     };
@@ -179,7 +182,7 @@ fn apply_new_aggro(brain: &mut MobBrainState, aggros: &[MobAggro], now_ms: u64) 
 
     brain.target = Some(target_id);
     brain.mode = MobBrainMode::Pursuit;
-    brain.next_rethink_at_ms = now_ms;
+    brain.next_rethink_at = now;
     true
 }
 
@@ -199,7 +202,7 @@ fn acquire_idle_target(world: &World, context: &MobContext, brain: &mut MobBrain
 
     brain.target = Some(acquired);
     brain.mode = MobBrainMode::Pursuit;
-    brain.next_rethink_at_ms = context.now_ms;
+    brain.next_rethink_at = context.now;
     true
 }
 
@@ -232,11 +235,11 @@ fn handle_return(
     brain: &mut MobBrainState,
 ) -> Option<Action> {
     if movement::distance(context.current_pos, context.home_pos) <= HOME_ARRIVAL_RADIUS_M {
-        transition_to_idle(brain, context.now_ms);
+        transition_to_idle(brain, context.now);
         return None;
     }
 
-    if context.now_ms < brain.next_rethink_at_ms {
+    if context.now < brain.next_rethink_at {
         return None;
     }
 
@@ -248,7 +251,7 @@ fn handle_return(
         context.home_pos,
         *brain,
         MobActionCompletion::RethinkAtActionEndOrDelay {
-            max_delay_ms: LEGACY_CHASE_RETHINK_MS,
+            max_delay_ms: super::state::SimDuration::from_millis(LEGACY_CHASE_RETHINK_MS),
         },
     )
 }
@@ -259,9 +262,9 @@ fn handle_idle(
     context: &MobContext,
     brain: &mut MobBrainState,
 ) -> Option<Action> {
-    if let Some(wait_until_ms) = brain.wander_wait_until_ms {
-        if context.now_ms >= wait_until_ms {
-            brain.wander_wait_until_ms = None;
+    if let Some(wait_until) = brain.wander_wait_until {
+        if context.now >= wait_until {
+            brain.wander_wait_until = None;
         } else {
             return None;
         }
@@ -271,19 +274,19 @@ fn handle_idle(
         return None;
     }
 
-    let next_decision_at_ms = if brain.wander_next_decision_at_ms > 0 {
-        brain.wander_next_decision_at_ms
+    let next_decision_at = if brain.wander_next_decision_at > super::state::SimInstant::ZERO {
+        brain.wander_next_decision_at
     } else {
-        context.now_ms
+        context.now
     };
-    if context.now_ms < next_decision_at_ms {
+    if context.now < next_decision_at {
         return None;
     }
 
     let shared = world.resource::<SharedConfig>().clone();
     let pause_until = {
         let mut state = world.resource_mut::<RuntimeState>();
-        context.now_ms.saturating_add(random_duration_between_ms(
+        context.now.saturating_add(random_duration_between_ms(
             &mut state.rng,
             shared.wander.decision_pause_idle_min,
             shared.wander.decision_pause_idle_max,
@@ -296,8 +299,8 @@ fn handle_idle(
         state.rng.random_range(0..denom) == 0
     };
     if !should_wander {
-        brain.wander_next_decision_at_ms = pause_until;
-        brain.wander_wait_until_ms = None;
+        brain.wander_next_decision_at = pause_until;
+        brain.wander_wait_until = None;
         return None;
     }
 
@@ -319,7 +322,7 @@ fn handle_idle(
     };
 
     let Some((destination, _)) = destination else {
-        brain.wander_next_decision_at_ms = pause_until;
+        brain.wander_next_decision_at = pause_until;
         return None;
     };
 
@@ -342,7 +345,7 @@ fn handle_idle(
         MobActionCompletion::IdleWander { post_move_pause_ms },
     )
     .or_else(|| {
-        brain.wander_next_decision_at_ms = pause_until;
+        brain.wander_next_decision_at = pause_until;
         None
     })
 }
@@ -376,45 +379,56 @@ fn handle_pursuit(
         movement::distance(segment_end_pos, target_pos) <= attack_threshold_m
     });
 
-    if context.now_ms >= brain.next_attack_at_ms
+    if context.now >= brain.next_attack_at
         && target_distance_m <= attack_threshold_m
         && (!context.movement_in_flight || segment_end_in_attack_range)
     {
         let timing = combat::attack_timing_for_mob(context.proto.attack_speed);
         brain.mode = MobBrainMode::AttackWindup;
-        brain.attack_windup_until_ms = context
-            .now_ms
-            .saturating_add(u64::from(timing.packet_duration_ms));
-        brain.next_attack_at_ms = context.now_ms.saturating_add(timing.cooldown_ms);
+        brain.attack_windup_until =
+            context
+                .now
+                .saturating_add(super::state::SimDuration::from_packet_duration(
+                    timing.packet_duration,
+                ));
+        brain.next_attack_at = context.now.saturating_add(timing.cooldown);
 
         return build_mob_attack_action(
             world,
             mob_entity,
             target_pos,
-            timing.packet_duration_ms,
+            timing.packet_duration.get(),
             *brain,
             MobActionCompletion::RethinkAtActionEnd,
         );
     }
 
     if context.movement_in_flight && segment_end_in_attack_range {
-        brain.next_rethink_at_ms = context.segment_end_at_ms.unwrap_or(context.now_ms);
+        brain.next_rethink_at = context.segment_end_at.unwrap_or(context.now);
         return None;
     }
-    if context.now_ms < brain.next_rethink_at_ms {
+    if context.now < brain.next_rethink_at {
         return None;
     }
 
     let chase_distance_m = movement::distance(context.current_pos, chase_target_pos);
     let step_len = (chase_distance_m - follow_distance_m).max(0.0);
     if step_len <= CLOSE_CHASE_EPSILON_M {
-        brain.next_rethink_at_ms = context.now_ms.saturating_add(LEGACY_CHASE_RETHINK_MS);
+        brain.next_rethink_at = context
+            .now
+            .saturating_add(super::state::SimDuration::from_millis(
+                LEGACY_CHASE_RETHINK_MS,
+            ));
         return None;
     }
 
     let destination = clamp_step_towards(context.current_pos, chase_target_pos, step_len);
     if movement::desired_destination_unchanged(context.segment_end_pos, destination) {
-        brain.next_rethink_at_ms = context.now_ms.saturating_add(LEGACY_CHASE_RETHINK_MS);
+        brain.next_rethink_at = context
+            .now
+            .saturating_add(super::state::SimDuration::from_millis(
+                LEGACY_CHASE_RETHINK_MS,
+            ));
         return None;
     }
 
@@ -426,7 +440,7 @@ fn handle_pursuit(
         chase_target_pos,
         *brain,
         MobActionCompletion::RethinkAtActionEndOrDelay {
-            max_delay_ms: LEGACY_CHASE_RETHINK_MS,
+            max_delay_ms: super::state::SimDuration::from_millis(LEGACY_CHASE_RETHINK_MS),
         },
     )
 }
@@ -442,13 +456,13 @@ fn persist_brain_if_changed(
     }
 }
 
-fn transition_to_idle(brain: &mut MobBrainState, now_ms: u64) {
+fn transition_to_idle(brain: &mut MobBrainState, now: super::state::SimInstant) {
     brain.mode = MobBrainMode::Idle;
     brain.target = None;
-    brain.attack_windup_until_ms = 0;
-    brain.next_rethink_at_ms = 0;
-    brain.wander_next_decision_at_ms = brain.wander_next_decision_at_ms.max(now_ms);
-    brain.wander_wait_until_ms = None;
+    brain.attack_windup_until = super::state::SimInstant::ZERO;
+    brain.next_rethink_at = super::state::SimInstant::ZERO;
+    brain.wander_next_decision_at = brain.wander_next_decision_at.max(now);
+    brain.wander_wait_until = None;
 }
 
 fn drain_mob_aggro(world: &mut World, mob_entity: Entity) -> Vec<MobAggro> {
@@ -470,10 +484,10 @@ fn sample_idle_wander_target(
     map_size: LocalSize,
     navigator: Option<&MapNavigator>,
     current_pos: LocalPos,
-    current_rot: u8,
+    current_rot: Facing72,
     step_min_m: f32,
     step_max_m: f32,
-) -> Option<(LocalPos, u8)> {
+) -> Option<(LocalPos, Facing72)> {
     let step_min = step_min_m.min(step_max_m);
     let step_max = step_min_m.max(step_max_m);
     for _ in 0..IDLE_WANDER_MAX_ATTEMPTS {

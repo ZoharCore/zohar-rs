@@ -1,11 +1,14 @@
 use zohar_domain::entity::mob::MobBattleType;
+use zohar_map_port::PacketDuration;
+
+use crate::runtime::time::SimDuration;
 
 pub(crate) const PLAYER_MELEE_REACH_M: f32 = 1.5;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AttackTiming {
-    pub(crate) cooldown_ms: u64,
-    pub(crate) packet_duration_ms: u32,
+    pub(crate) cooldown: SimDuration,
+    pub(crate) packet_duration: PacketDuration,
 }
 
 pub(crate) fn effective_attack_range_m(range: u16, _battle_type: MobBattleType) -> f32 {
@@ -17,8 +20,8 @@ pub(crate) fn attack_timing_for_mob(attack_speed: u8) -> AttackTiming {
     let cooldown_ms = (120_000 / speed).clamp(400, 2_000);
     let packet_duration_ms = (cooldown_ms / 2).clamp(200, 1_000);
     AttackTiming {
-        cooldown_ms: u64::from(cooldown_ms),
-        packet_duration_ms,
+        cooldown: SimDuration::from_millis(u64::from(cooldown_ms)),
+        packet_duration: PacketDuration::new(packet_duration_ms),
     }
 }
 
@@ -31,9 +34,9 @@ mod tests {
         let slow = attack_timing_for_mob(1);
         let fast = attack_timing_for_mob(250);
 
-        assert_eq!(slow.cooldown_ms, 2_000);
-        assert_eq!(slow.packet_duration_ms, 1_000);
-        assert_eq!(fast.cooldown_ms, 480);
-        assert_eq!(fast.packet_duration_ms, 240);
+        assert_eq!(slow.cooldown.as_millis(), 2_000);
+        assert_eq!(slow.packet_duration.get(), 1_000);
+        assert_eq!(fast.cooldown.as_millis(), 480);
+        assert_eq!(fast.packet_duration.get(), 240);
     }
 }

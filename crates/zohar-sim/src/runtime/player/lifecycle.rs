@@ -1,8 +1,10 @@
 use bevy::prelude::*;
 use zohar_domain::entity::player::PlayerId;
+use zohar_map_port::{ClientTimestamp, EnterMsg, Facing72, LeaveMsg, PlayerEvent};
 
-use crate::api::PlayerEvent;
-use crate::bridge::{EnterMsg, LeaveMsg};
+use crate::outbox::PlayerOutbox;
+use crate::runtime::net::replication::bootstrap_observer_snapshot;
+use crate::runtime::spawn_events::make_player_spawn_payload;
 
 use super::state::{
     ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovements, MapReplication,
@@ -105,7 +107,7 @@ pub(crate) fn on_player_removed(
     );
 }
 
-pub(crate) fn handle_player_enter(world: &mut World, mut msg: EnterMsg) {
+pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: PlayerOutbox) {
     if let Some(existing_entity) = world
         .resource::<PlayerIndex>()
         .0
@@ -115,30 +117,53 @@ pub(crate) fn handle_player_enter(world: &mut World, mut msg: EnterMsg) {
         let _ = world.despawn(existing_entity);
     }
 
-    msg.outbox.set_owner_player_id(msg.player_id);
-    world.spawn((
-        PlayerMarker {
-            player_id: msg.player_id,
-        },
-        NetEntityId {
-            net_id: msg.player_net_id,
-        },
-        LocalTransform {
-            pos: msg.initial_pos,
-            rot: 0,
-        },
-        PlayerMotion(PlayerMotionState {
-            segment_start_pos: msg.initial_pos,
-            segment_end_pos: msg.initial_pos,
-            segment_start_ts: 0,
-            segment_end_ts: 0,
-            last_client_ts: 0,
-        }),
-        PlayerAppearanceComp(msg.appearance.clone()),
-        PlayerOutboxComp(msg.outbox),
-        PlayerCommandQueue::default(),
-        ChatIntentQueue::default(),
-    ));
+    let initial_rot = Facing72::from_wrapped(0);
+    let (show, details) = make_player_spawn_payload(
+        msg.player_net_id,
+        msg.initial_pos,
+        initial_rot,
+        &msg.appearance,
+    );
+
+    outbox.set_owner_player_id(msg.player_id);
+    outbox.push_reliable(PlayerEvent::EntitySpawn {
+        show,
+        details: Some(details),
+    });
+    let player_entity = world
+        .spawn((
+            PlayerMarker {
+                player_id: msg.player_id,
+            },
+            NetEntityId {
+                net_id: msg.player_net_id,
+            },
+            LocalTransform {
+                pos: msg.initial_pos,
+                rot: initial_rot,
+            },
+            PlayerMotion(PlayerMotionState {
+                segment_start_pos: msg.initial_pos,
+                segment_end_pos: msg.initial_pos,
+                segment_start_ts: ClientTimestamp::ZERO,
+                segment_end_ts: ClientTimestamp::ZERO,
+                last_client_ts: ClientTimestamp::ZERO,
+            }),
+            PlayerAppearanceComp(msg.appearance.clone()),
+            PlayerOutboxComp(outbox),
+            PlayerCommandQueue::default(),
+            ChatIntentQueue::default(),
+        ))
+        .id();
+
+    bootstrap_observer_snapshot(world, msg.player_id, msg.player_net_id, msg.initial_pos);
+
+    if let Some(mut outbox) = world
+        .entity_mut(player_entity)
+        .get_mut::<PlayerOutboxComp>()
+    {
+        let _ = outbox.0.flush();
+    }
 
     world.resource_mut::<RuntimeState>().is_dirty = true;
 }

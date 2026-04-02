@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
+use std::time::Duration;
 
-use crate::bridge::InboundEvent;
+use crate::bridge::{InboundEvent, MapEventSender, inbound_channel};
 
 use super::action_pipeline::{ActionBuffer, process_actions};
 use super::aggro::{MobAggroDispatchBuffer, route_mob_aggro};
@@ -21,13 +22,13 @@ use super::state::{
     SharedConfig, SimSet,
 };
 
-pub struct ContentPlugin {
+pub(crate) struct ContentPlugin {
     shared: SharedConfig,
     map: MapConfig,
 }
 
 impl ContentPlugin {
-    pub fn new(shared: SharedConfig, map: MapConfig) -> Self {
+    fn new(shared: SharedConfig, map: MapConfig) -> Self {
         Self { shared, map }
     }
 }
@@ -45,12 +46,12 @@ impl Plugin for ContentPlugin {
     }
 }
 
-pub struct NetworkPlugin {
+pub(crate) struct NetworkPlugin {
     inbound_rx: Option<Receiver<InboundEvent>>,
 }
 
 impl NetworkPlugin {
-    pub fn new(inbound_rx: Receiver<InboundEvent>) -> Self {
+    fn new(inbound_rx: Receiver<InboundEvent>) -> Self {
         Self {
             inbound_rx: Some(inbound_rx),
         }
@@ -68,7 +69,62 @@ impl Plugin for NetworkPlugin {
     }
 }
 
-pub struct MapPlugin;
+pub fn build_map_app(
+    shared: SharedConfig,
+    map: MapConfig,
+    inbound_buffer: usize,
+) -> (App, MapEventSender) {
+    build_map_app_with_options(shared, map, inbound_buffer, true)
+}
+
+pub fn spawn_map_runtime(
+    shared: SharedConfig,
+    map: MapConfig,
+    inbound_buffer: usize,
+) -> MapEventSender {
+    let (map_events, inbound_rx) = inbound_channel(inbound_buffer);
+    std::thread::spawn(move || {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Time::<Fixed>::from_hz(25.0));
+        app.add_plugins((
+            ContentPlugin::new(shared, map),
+            NetworkPlugin::new(inbound_rx),
+            MapPlugin,
+            SimulationPlugin,
+            OutboxPlugin,
+        ));
+        loop {
+            app.update();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    map_events
+}
+
+pub(crate) fn build_map_app_with_options(
+    shared: SharedConfig,
+    map: MapConfig,
+    inbound_buffer: usize,
+    with_outbox: bool,
+) -> (App, MapEventSender) {
+    let (map_events, inbound_rx) = inbound_channel(inbound_buffer);
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(Time::<Fixed>::from_hz(25.0));
+    app.add_plugins((
+        ContentPlugin::new(shared, map),
+        NetworkPlugin::new(inbound_rx),
+        MapPlugin,
+        SimulationPlugin,
+    ));
+    if with_outbox {
+        app.add_plugins(OutboxPlugin);
+    }
+    (app, map_events)
+}
+
+pub(crate) struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
@@ -81,7 +137,7 @@ impl Plugin for MapPlugin {
     }
 }
 
-pub struct SimulationPlugin;
+pub(crate) struct SimulationPlugin;
 
 impl Plugin for SimulationPlugin {
     fn build(&self, app: &mut App) {
@@ -144,7 +200,7 @@ impl Plugin for SimulationPlugin {
     }
 }
 
-pub struct OutboxPlugin;
+pub(crate) struct OutboxPlugin;
 
 impl Plugin for OutboxPlugin {
     fn build(&self, app: &mut App) {

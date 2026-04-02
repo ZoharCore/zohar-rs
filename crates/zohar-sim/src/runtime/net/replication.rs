@@ -1,27 +1,25 @@
 use bevy::prelude::*;
 use std::collections::HashSet;
 use zohar_domain::Empire;
-use zohar_domain::appearance::{EntityDetails, EntityKind, PlayerAppearance, ShowEntity};
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::EntityId;
 use zohar_domain::entity::MovementKind;
-use zohar_domain::entity::mob::MobKind;
 use zohar_domain::entity::player::PlayerId;
+use zohar_map_port::{MovementEvent, PlayerEvent};
 
-use crate::api::PlayerEvent;
 use crate::replication::{InterestConfig, VisibilityDiff};
 use tracing::warn;
 
 use super::state::{
-    LocalTransform, MapEmpire, MapPendingLocalChats, MapPendingMovements, MapReplication,
-    MapSpatial, MobRef, NetEntityId, NetEntityIndex, PendingLocalChat, PendingMovement,
-    PlayerAppearanceComp, PlayerCount, PlayerIndex, PlayerMarker, PlayerOutboxComp, RuntimeState,
-    SharedConfig,
+    LocalTransform, MapPendingLocalChats, MapPendingMovements, MapReplication, MapSpatial,
+    NetEntityId, NetEntityIndex, PendingLocalChat, PendingMovement, PlayerAppearanceComp,
+    PlayerCount, PlayerIndex, PlayerMarker, PlayerOutboxComp, RuntimeState, SharedConfig,
 };
 use super::util::{
     format_talking_message, movement_kind_priority, obfuscate_cross_empire_talking_body,
     resolve_cross_empire_preserve_pct,
 };
+use crate::runtime::spawn_events::make_entity_spawn_payload;
 
 #[derive(Clone, Copy)]
 struct ObserverRecipient {
@@ -77,44 +75,45 @@ pub(crate) fn aoi_reconcile(world: &mut World) {
         return;
     }
 
-    {
-        if let Some(mut spatial) = world.entity_mut(map_entity).get_mut::<MapSpatial>() {
-            spatial.0.maintain();
-        }
-    }
+    maintain_spatial(world, map_entity);
 
     let interest_config = InterestConfig::default();
     for observer in collect_visibility_observers(world) {
-        let Some(spawn_candidates) = visibility_candidates(
-            world,
-            map_entity,
-            observer.pos,
-            interest_config.spawn_radius,
-            observer.net_id,
-        ) else {
-            continue;
-        };
-        let Some(retain_candidates) = visibility_candidates(
-            world,
-            map_entity,
-            observer.pos,
-            interest_config.despawn_radius,
-            observer.net_id,
-        ) else {
-            continue;
-        };
-
-        let diff = reconcile_visibility(
-            world,
-            map_entity,
-            observer,
-            &spawn_candidates,
-            &retain_candidates,
-        );
-        queue_visibility_diff(world, &shared, map_entity, observer, diff);
+        reconcile_one_observer(world, &shared, map_entity, observer, interest_config);
     }
 
     world.resource_mut::<RuntimeState>().is_dirty = false;
+}
+
+pub(crate) fn bootstrap_observer_snapshot(
+    world: &mut World,
+    observer_player_id: PlayerId,
+    observer_net_id: EntityId,
+    observer_pos: LocalPos,
+) {
+    let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
+        return;
+    };
+
+    let shared = world.resource::<SharedConfig>().clone();
+    maintain_spatial(world, map_entity);
+    reconcile_one_observer(
+        world,
+        &shared,
+        map_entity,
+        VisibilityObserver {
+            player_id: observer_player_id,
+            net_id: observer_net_id,
+            pos: observer_pos,
+        },
+        InterestConfig::default(),
+    );
+}
+
+fn maintain_spatial(world: &mut World, map_entity: Entity) {
+    if let Some(mut spatial) = world.entity_mut(map_entity).get_mut::<MapSpatial>() {
+        spatial.0.maintain();
+    }
 }
 
 fn collect_visibility_observers(world: &mut World) -> Vec<VisibilityObserver> {
@@ -144,6 +143,42 @@ fn visibility_candidates(
             .filter(|entity_id| *entity_id != observer_net_id)
             .collect(),
     )
+}
+
+fn reconcile_one_observer(
+    world: &mut World,
+    shared: &SharedConfig,
+    map_entity: Entity,
+    observer: VisibilityObserver,
+    interest_config: InterestConfig,
+) {
+    let Some(spawn_candidates) = visibility_candidates(
+        world,
+        map_entity,
+        observer.pos,
+        interest_config.spawn_radius,
+        observer.net_id,
+    ) else {
+        return;
+    };
+    let Some(retain_candidates) = visibility_candidates(
+        world,
+        map_entity,
+        observer.pos,
+        interest_config.despawn_radius,
+        observer.net_id,
+    ) else {
+        return;
+    };
+
+    let diff = reconcile_visibility(
+        world,
+        map_entity,
+        observer,
+        &spawn_candidates,
+        &retain_candidates,
+    );
+    queue_visibility_diff(world, shared, map_entity, observer, diff);
 }
 
 fn reconcile_visibility(
@@ -299,7 +334,10 @@ fn flush_pending_movements(
     pending_movements: Vec<PendingMovement>,
 ) {
     for movement in pending_movements {
-        let recipients = observer_recipients(world, map_entity, movement.entity_id, false);
+        let include_subject =
+            movement.mover_player_id.is_some() && matches!(movement.kind, MovementKind::Attack);
+        let recipients =
+            observer_recipients(world, map_entity, movement.entity_id, include_subject);
         for recipient in recipients {
             push_movement_event(world, recipient.entity, movement);
         }
@@ -311,43 +349,28 @@ fn push_movement_event(world: &mut World, recipient_entity: Entity, movement: Pe
     let Some(mut outbox) = recipient_ent.get_mut::<PlayerOutboxComp>() else {
         return;
     };
+    let movement_event = MovementEvent {
+        entity_id: movement.entity_id,
+        kind: movement.kind,
+        arg: movement.arg,
+        facing: movement.rot,
+        position: movement.new_pos,
+        client_ts: movement.ts,
+        duration: movement.duration,
+    };
 
     if movement.reliable {
-        outbox.0.push_reliable(PlayerEvent::EntityMove {
-            entity_id: movement.entity_id,
-            kind: movement.kind,
-            arg: movement.arg,
-            rot: movement.rot,
-            x: movement.new_pos.x,
-            y: movement.new_pos.y,
-            ts: movement.ts,
-            duration: movement.duration,
-        });
+        outbox
+            .0
+            .push_reliable(PlayerEvent::EntityMove(movement_event));
     } else if movement.mover_player_id.is_some()
         && matches!(movement.kind, MovementKind::Move | MovementKind::Wait)
     {
-        outbox.0.set_latest_movement_with_priority(
-            movement.entity_id,
-            movement.kind,
-            movement.arg,
-            movement.rot,
-            movement.new_pos.x,
-            movement.new_pos.y,
-            movement.ts,
-            movement.duration,
-            true,
-        );
+        outbox
+            .0
+            .set_latest_movement_with_priority(movement_event, true);
     } else {
-        outbox.0.push_remote_movement(
-            movement.entity_id,
-            movement.kind,
-            movement.arg,
-            movement.rot,
-            movement.new_pos.x,
-            movement.new_pos.y,
-            movement.ts,
-            movement.duration,
-        );
+        outbox.0.push_remote_movement(movement_event);
     }
 }
 
@@ -379,7 +402,8 @@ fn push_local_chat_event(
     };
 
     outbox.0.push_reliable(PlayerEvent::Chat {
-        kind: 0,
+        // TODO: only broadcast local speaking packets
+        channel: pending_chat.channel,
         sender_entity_id: Some(pending_chat.speaker_entity_id),
         empire: Some(pending_chat.speaker_empire),
         message,
@@ -407,111 +431,4 @@ fn local_chat_message_for(
     }
 
     message
-}
-
-pub(crate) fn make_entity_spawn_payload(
-    world: &World,
-    shared: &SharedConfig,
-    target_id: EntityId,
-) -> Option<(ShowEntity, Option<EntityDetails>)> {
-    let target_entity = world
-        .resource::<NetEntityIndex>()
-        .0
-        .get(&target_id)
-        .copied()?;
-    let target_ref = world.entity(target_entity);
-
-    if let (Some(_player), Some(net_id), Some(transform), Some(appearance)) = (
-        target_ref.get::<PlayerMarker>(),
-        target_ref.get::<NetEntityId>(),
-        target_ref.get::<LocalTransform>(),
-        target_ref.get::<super::state::PlayerAppearanceComp>(),
-    ) {
-        return Some((
-            make_player_show(net_id.net_id, transform.pos, &appearance.0, transform.rot),
-            Some(make_player_details(net_id.net_id, &appearance.0)),
-        ));
-    }
-
-    let mob_ref = target_ref.get::<MobRef>()?;
-    let transform = target_ref.get::<LocalTransform>()?;
-    let net_id = target_ref.get::<NetEntityId>()?;
-    let proto = shared.mobs.get(&mob_ref.mob_id)?;
-
-    let show = ShowEntity {
-        entity_id: net_id.net_id,
-        angle: transform.rot as f32 * 5.0,
-        pos: transform.pos,
-        kind: EntityKind::Mob {
-            mob_id: mob_ref.mob_id,
-            mob_kind: proto.mob_kind,
-        },
-        move_speed: proto.move_speed,
-        attack_speed: proto.attack_speed,
-        state_flags: 0,
-        buff_flags: 0,
-    };
-
-    let details = if proto.mob_kind == MobKind::Npc {
-        let map_empire = world
-            .resource::<RuntimeState>()
-            .map_entity
-            .and_then(|map_entity| world.entity(map_entity).get::<MapEmpire>())
-            .and_then(|emp| emp.0);
-
-        Some(EntityDetails {
-            entity_id: net_id.net_id,
-            name: format!("[{}] {}", mob_ref.mob_id.get(), proto.name),
-            body_part: 0,
-            wep_part: 0,
-            hair_part: 0,
-            empire: proto.empire.or(map_empire),
-            guild_id: 0,
-            level: 0,
-            rank_pts: 0,
-            pvp_mode: 0,
-            mount_id: 0,
-        })
-    } else {
-        None
-    };
-
-    Some((show, details))
-}
-
-fn make_player_show(
-    net_id: EntityId,
-    pos: LocalPos,
-    appearance: &PlayerAppearance,
-    rot: u8,
-) -> ShowEntity {
-    ShowEntity {
-        entity_id: net_id,
-        angle: rot as f32 * 5.0,
-        pos,
-        kind: EntityKind::Player {
-            class: appearance.class,
-            gender: appearance.gender,
-        },
-        move_speed: appearance.move_speed,
-        attack_speed: appearance.attack_speed,
-        state_flags: 0,
-        buff_flags: 0,
-    }
-}
-
-fn make_player_details(net_id: EntityId, appearance: &PlayerAppearance) -> EntityDetails {
-    EntityDetails {
-        entity_id: net_id,
-        name: appearance.name.clone(),
-        body_part: appearance.body_part,
-        wep_part: 0,
-        hair_part: 0,
-        empire: Some(appearance.empire),
-        guild_id: appearance.guild_id,
-        level: appearance.level,
-        rank_pts: 0,
-        pvp_mode: 0,
-        mount_id: 0,
-    }
 }

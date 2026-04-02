@@ -11,9 +11,10 @@ kube-resolver = ["dep:kube", "dep:k8s-openapi"]
 zohar-content = { path = "../zohar-content" }
 zohar-db = { path = "../zohar-db", default-features = false, features = ["db-game", "postgres-backend"] }
 zohar-domain = { path = "../zohar-domain" }
-zohar-sim = { path = "../zohar-sim" }
+zohar-map-port = { path = "../zohar-map-port" }
 zohar-net = { path = "../zohar-net", default-features = false, features = ["net-game"] }
 zohar-protocol = { path = "../zohar-protocol", default-features = false, features = ["game", "token"] }
+zohar-sim = { path = "../zohar-sim" }
 
 anyhow.workspace = true
 clap.workspace = true
@@ -40,3 +41,4 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 [[bin]]
 name = "zohar-chgw"
 path = "src/bin/chgw.rs"
+required-features = ["kube-resolver"]

@@ -1,0 +1,7 @@
+[package]
+name = "zohar-map-port"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zohar-domain = { path = "../zohar-domain" }

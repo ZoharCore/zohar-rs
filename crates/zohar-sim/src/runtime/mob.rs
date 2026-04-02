@@ -10,6 +10,8 @@ use zohar_domain::entity::EntityId;
 use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::spawn::SpawnRule;
 
+use crate::runtime::time::SimInstant;
+
 pub(crate) use crate::runtime::action as action_pipeline;
 pub(crate) use crate::runtime::common as state;
 pub(crate) use crate::runtime::player::lifecycle as players;
@@ -23,15 +25,15 @@ pub(crate) struct SpawnRuleState {
     pub(crate) rule: SpawnRule,
     pub(crate) active_instances: usize,
     pub(crate) entities: HashSet<EntityId>,
-    pub(crate) respawn_at_ms: Option<u64>,
+    pub(crate) respawn_at: Option<SimInstant>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MobMotionState {
     pub(crate) segment_start_pos: LocalPos,
     pub(crate) segment_end_pos: LocalPos,
-    pub(crate) segment_start_at_ms: u64,
-    pub(crate) segment_end_at_ms: u64,
+    pub(crate) segment_start_at: SimInstant,
+    pub(crate) segment_end_at: SimInstant,
 }
 
 #[derive(Component)]
@@ -72,11 +74,11 @@ pub(crate) enum MobAggro {
 pub(crate) struct MobBrainState {
     pub(crate) mode: MobBrainMode,
     pub(crate) target: Option<EntityId>,
-    pub(crate) next_attack_at_ms: u64,
-    pub(crate) attack_windup_until_ms: u64,
-    pub(crate) next_rethink_at_ms: u64,
-    pub(crate) wander_next_decision_at_ms: u64,
-    pub(crate) wander_wait_until_ms: Option<u64>,
+    pub(crate) next_attack_at: SimInstant,
+    pub(crate) attack_windup_until: SimInstant,
+    pub(crate) next_rethink_at: SimInstant,
+    pub(crate) wander_next_decision_at: SimInstant,
+    pub(crate) wander_wait_until: Option<SimInstant>,
 }
 
 #[derive(Component, Default)]
@@ -87,11 +89,11 @@ impl Default for MobBrainState {
         Self {
             mode: MobBrainMode::Idle,
             target: None,
-            next_attack_at_ms: 0,
-            attack_windup_until_ms: 0,
-            next_rethink_at_ms: 0,
-            wander_next_decision_at_ms: 0,
-            wander_wait_until_ms: None,
+            next_attack_at: SimInstant::ZERO,
+            attack_windup_until: SimInstant::ZERO,
+            next_rethink_at: SimInstant::ZERO,
+            wander_next_decision_at: SimInstant::ZERO,
+            wander_wait_until: None,
         }
     }
 }
@@ -106,12 +108,12 @@ impl MobBrainState {
         self.target
     }
 
-    pub(crate) const fn attack_windup_until_ms(&self) -> u64 {
-        self.attack_windup_until_ms
+    pub(crate) const fn attack_windup_until(&self) -> SimInstant {
+        self.attack_windup_until
     }
 }
 
 #[derive(Component)]
 pub(crate) struct MobChatState {
-    pub(crate) next_emit_at_ms: u64,
+    pub(crate) next_emit_at: SimInstant,
 }

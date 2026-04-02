@@ -1,3 +1,4 @@
+pub(crate) use crate::runtime::plugins::build_map_app_with_options;
 pub(crate) use crate::runtime::*;
 pub(crate) use crate::runtime::{aggro, players, state, util};
 
