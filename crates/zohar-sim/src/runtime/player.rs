@@ -16,21 +16,26 @@ pub(crate) use crate::runtime::common as state;
 pub(crate) use crate::runtime::mob::aggro;
 pub(crate) use crate::runtime::spatial as query;
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlayerMotionState {
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub(crate) segment_start_pos: LocalPos,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub(crate) segment_end_pos: LocalPos,
     pub(crate) segment_start_ts: ClientTimestamp,
     pub(crate) segment_end_ts: ClientTimestamp,
     pub(crate) last_client_ts: ClientTimestamp,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PlayerCommand {
     Move {
         kind: MovementKind,
         arg: MovementArg,
         rot: Facing72,
+        #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
         target: LocalPos,
         ts: ClientTimestamp,
     },
@@ -40,28 +45,39 @@ pub(crate) enum PlayerCommand {
     },
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone)]
 pub(crate) struct ChatIntent {
     pub(crate) channel: ChatChannel,
     pub(crate) message: Vec<u8>,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct PlayerMarker {
     pub(crate) player_id: PlayerId,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct PlayerMotion(pub(crate) PlayerMotionState);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct PlayerAppearanceComp(pub(crate) PlayerAppearance);
 
 #[derive(Component)]
 pub(crate) struct PlayerOutboxComp(pub(crate) PlayerOutbox);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct PlayerCommandQueue(pub(crate) Vec<PlayerCommand>);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct ChatIntentQueue(pub(crate) Vec<ChatIntent>);

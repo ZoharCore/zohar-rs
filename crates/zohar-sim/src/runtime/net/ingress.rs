@@ -1,3 +1,4 @@
+use bevy::ecs::world::DeferredWorld;
 use bevy::prelude::*;
 use zohar_map_port::{ChatChannel, ClientIntent, ClientIntentMsg, GlobalShoutMsg, PlayerEvent};
 
@@ -35,13 +36,15 @@ pub(crate) fn drain_inbound(world: &mut World) {
             }
             InboundEvent::PlayerEnter { msg, outbox } => handle_player_enter(world, msg, outbox),
             InboundEvent::PlayerLeave { msg } => handle_player_leave(world, msg),
-            InboundEvent::ClientIntent { msg } => handle_client_intent(world, msg),
+            InboundEvent::ClientIntent { msg } => {
+                handle_client_intent(DeferredWorld::from(&mut *world), msg)
+            }
             InboundEvent::GlobalShout { msg } => handle_global_shout(world, msg),
         }
     }
 }
 
-fn handle_client_intent(world: &mut World, msg: ClientIntentMsg) {
+pub(crate) fn handle_client_intent(mut world: DeferredWorld, msg: ClientIntentMsg) {
     let Some(player_entity) = world
         .resource::<PlayerIndex>()
         .0

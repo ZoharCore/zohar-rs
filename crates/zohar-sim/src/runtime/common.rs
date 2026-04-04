@@ -31,10 +31,12 @@ pub(crate) const MAX_CHAT_INTENTS_PER_TICK: usize = 16;
 pub(crate) const MAX_ATTACK_INTENTS_PER_TICK: usize = 16;
 pub(crate) const MAX_MOB_STIMULI_PER_TICK: usize = 16;
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PendingMovement {
     pub(crate) mover_player_id: Option<PlayerId>,
     pub(crate) entity_id: EntityId,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub(crate) new_pos: LocalPos,
     pub(crate) kind: MovementKind,
     pub(crate) reliable: bool,
@@ -44,6 +46,7 @@ pub(crate) struct PendingMovement {
     pub(crate) duration: PacketDuration,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone)]
 pub(crate) struct PendingLocalChat {
     pub(crate) speaker_player_id: PlayerId,
@@ -54,9 +57,13 @@ pub(crate) struct PendingLocalChat {
     pub(crate) message: Vec<u8>,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MapMarker;
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MapEmpire(pub(crate) Option<Empire>);
 
@@ -66,25 +73,38 @@ pub(crate) struct MapSpatial(pub(crate) SpatialIndex);
 #[derive(Component, Default)]
 pub(crate) struct MapReplication(pub(crate) ReplicationGraph);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MapSpawnRules {
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub(crate) rules: Vec<SpawnRuleState>,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub(crate) scheduled_spawns: BinaryHeap<Reverse<(SimInstant, usize)>>,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct MapPendingMovements(pub(crate) Vec<PendingMovement>);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct MapPendingLocalChats(pub(crate) Vec<PendingLocalChat>);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct NetEntityId {
     pub(crate) net_id: EntityId,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct LocalTransform {
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub(crate) pos: LocalPos,
     pub(crate) rot: Facing72,
 }

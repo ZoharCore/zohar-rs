@@ -12,6 +12,7 @@ use super::state::{MobBrainState, PlayerMotionState, SimDuration};
 #[derive(Resource, Default)]
 pub(crate) struct ActionBuffer(pub(crate) Vec<Action>);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) enum MobActionCompletion {
     #[default]

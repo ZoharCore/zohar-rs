@@ -1,6 +1,9 @@
 use bevy::prelude::Component;
+#[cfg(feature = "admin-brp")]
+use bevy::prelude::ReflectComponent;
 use zohar_domain::MapId;
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InstanceId(pub u64);
 
@@ -10,6 +13,8 @@ impl InstanceId {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MapInstanceKey {
     pub channel_id: u32,
@@ -17,6 +22,7 @@ pub struct MapInstanceKey {
     pub instance: MapInstanceKind,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MapInstanceKind {
     Shared,

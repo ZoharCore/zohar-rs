@@ -20,43 +20,62 @@ pub(crate) use crate::runtime::spatial as mob_motion;
 pub(crate) use crate::runtime::spatial as query;
 pub(crate) use crate::runtime::spatial as util;
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(from_reflect = false))]
 #[derive(Debug, Clone)]
 pub(crate) struct SpawnRuleState {
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub(crate) rule: SpawnRule,
     pub(crate) active_instances: usize,
     pub(crate) entities: HashSet<EntityId>,
     pub(crate) respawn_at: Option<SimInstant>,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MobMotionState {
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub(crate) segment_start_pos: LocalPos,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub(crate) segment_end_pos: LocalPos,
     pub(crate) segment_start_at: SimInstant,
     pub(crate) segment_end_at: SimInstant,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MobMotion(pub(crate) MobMotionState);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MobMarker;
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MobRef {
     pub(crate) mob_id: MobId,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct MobPackId {
     pub(crate) pack_id: u32,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Debug, Clone, Copy)]
 pub(crate) struct MobHomeAnchor {
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub(crate) pos: LocalPos,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MobBrainMode {
     Idle,
@@ -65,11 +84,14 @@ pub(crate) enum MobBrainMode {
     AttackWindup,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MobAggro {
     ProvokedBy { attacker: EntityId },
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MobBrainState {
     pub(crate) mode: MobBrainMode,
@@ -81,6 +103,8 @@ pub(crate) struct MobBrainState {
     pub(crate) wander_wait_until: Option<SimInstant>,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct MobAggroQueue(pub(crate) Vec<MobAggro>);
 
@@ -113,6 +137,8 @@ impl MobBrainState {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MobChatState {
     pub(crate) next_emit_at: SimInstant,

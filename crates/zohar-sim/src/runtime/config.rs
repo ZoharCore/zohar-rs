@@ -12,6 +12,7 @@ use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::MobPrototype;
 use zohar_domain::entity::mob::spawn::SpawnRule;
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone)]
 pub struct WanderConfig {
     pub decision_pause_idle_min: Duration,
@@ -37,19 +38,29 @@ impl Default for WanderConfig {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(from_reflect = false))]
 #[derive(Resource, Clone)]
 pub struct SharedConfig {
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub motion_speeds: Arc<EntityMotionSpeedTable>,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub mobs: Arc<HashMap<MobId, MobPrototype>>,
     pub wander: WanderConfig,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub mob_chat: Arc<MobChatContent>,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(from_reflect = false))]
 #[derive(Resource)]
 pub struct MapConfig {
     pub map_key: MapInstanceKey,
     pub empire: Option<Empire>,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalSizeReflect))]
     pub local_size: LocalSize,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub navigator: Option<Arc<MapNavigator>>,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub spawn_rules: Vec<SpawnRule>,
 }

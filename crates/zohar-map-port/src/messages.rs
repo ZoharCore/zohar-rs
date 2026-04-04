@@ -7,44 +7,52 @@ use zohar_domain::entity::{EntityId, MovementKind};
 
 use crate::values::{ChatChannel, ClientTimestamp, Facing72, MovementArg, PacketDuration};
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttackIntent {
     Basic,
     Skill(SkillId),
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttackTargetIntent {
     pub target: EntityId,
     pub attack: AttackIntent,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MoveIntent {
     pub kind: MovementKind,
     pub arg: MovementArg,
     pub facing: Facing72,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub target: LocalPos,
     pub client_ts: ClientTimestamp,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatIntent {
     pub channel: ChatChannel,
     pub message: Vec<u8>,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MovementEvent {
     pub entity_id: EntityId,
     pub kind: MovementKind,
     pub arg: MovementArg,
     pub facing: Facing72,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
     pub position: LocalPos,
     pub client_ts: ClientTimestamp,
     pub duration: PacketDuration,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientIntent {
     Move(MoveIntent),
@@ -52,6 +60,7 @@ pub enum ClientIntent {
     Attack(AttackTargetIntent),
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
     EntitySpawn {
@@ -70,6 +79,7 @@ pub enum PlayerEvent {
     },
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum MapEvent {

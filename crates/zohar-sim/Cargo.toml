@@ -3,6 +3,15 @@ name = "zohar-sim"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["admin-brp"]
+admin-brp = [
+    "bevy/bevy_remote",
+    "bevy/reflect_auto_register",
+    "zohar-domain/admin-brp",
+    "zohar-map-port/admin-brp",
+]
+
 [dependencies]
 zohar-domain = { path = "../zohar-domain" }
 zohar-map-port = { path = "../zohar-map-port" }

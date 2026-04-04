@@ -1,9 +1,11 @@
 use std::fmt;
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(transparent)]
 pub struct Facing72(u8);
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Facing72Error {
     value: u8,
@@ -58,6 +60,7 @@ impl From<Facing72> for u8 {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(transparent)]
 pub struct ClientTimestamp(u32);
@@ -112,6 +115,7 @@ impl PartialOrd<u32> for ClientTimestamp {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(transparent)]
 pub struct PacketDuration(u32);
@@ -166,6 +170,7 @@ impl std::ops::Div<u32> for PacketDuration {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct MovementArg(u8);
@@ -198,6 +203,7 @@ impl From<MovementArg> for u8 {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChatChannel {
     Speak,

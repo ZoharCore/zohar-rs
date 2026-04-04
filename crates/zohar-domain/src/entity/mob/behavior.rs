@@ -1,5 +1,5 @@
 bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct BehaviorFlags: u32 {
         const NO_MOVE = 1 << 0;
         const AGGRESSIVE = 1 << 1;

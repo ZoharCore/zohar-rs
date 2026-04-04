@@ -2,12 +2,14 @@ pub mod skill;
 
 use crate::DbId;
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerBaseAppearance {
     VariantA,
     VariantB,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerClass {
     Warrior,
@@ -16,12 +18,14 @@ pub enum PlayerClass {
     Shaman,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerGender {
     Male,
     Female,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerSlot {
     First,
@@ -30,11 +34,13 @@ pub enum PlayerSlot {
     Fourth,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlayerTag {}
 
 pub type PlayerId = DbId<PlayerTag>;
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerStats {
     pub stat_str: i32,
@@ -43,6 +49,7 @@ pub struct PlayerStats {
     pub stat_int: i32,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerSummary {
     pub id: PlayerId,

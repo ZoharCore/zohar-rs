@@ -12,6 +12,8 @@ use zohar_map_port::ClientTimestamp;
 
 use super::time::SimInstant;
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Resource))]
 #[derive(Resource, Default)]
 pub struct PlayerCount(pub u32);
 
@@ -29,6 +31,8 @@ impl StartupReadySignal {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(from_reflect = false))]
 #[derive(Resource)]
 pub(crate) struct RuntimeState {
     pub(crate) next_net_id: u32,
@@ -36,7 +40,9 @@ pub(crate) struct RuntimeState {
     pub(crate) map_entity: Option<Entity>,
     pub(crate) is_dirty: bool,
     pub(crate) sim_now: SimInstant,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub(crate) packet_time_start: Instant,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub(crate) rng: SmallRng,
 }
 
@@ -60,9 +66,13 @@ impl Default for RuntimeState {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Resource))]
 #[derive(Resource, Default)]
 pub(crate) struct PlayerIndex(pub(crate) HashMap<PlayerId, Entity>);
 
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Resource))]
 #[derive(Resource, Default)]
 pub(crate) struct NetEntityIndex(pub(crate) HashMap<EntityId, Entity>);
 

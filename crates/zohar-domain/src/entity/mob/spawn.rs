@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// One of the eight cardinal/diagonal directions.
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     North,
@@ -60,6 +61,7 @@ impl Direction {
 }
 
 /// How a spawned entity should face.
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FacingStrategy {
     /// Pick a random direction at spawn time.
@@ -69,10 +71,14 @@ pub enum FacingStrategy {
 }
 
 /// Spawn area with pre-computed bounding box.
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
 pub struct SpawnArea {
+    #[cfg_attr(feature = "admin-brp", reflect(remote = crate::coords::LocalPosReflect))]
     pub center: LocalPos,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = crate::coords::LocalSizeReflect))]
     pub extent: LocalSize,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = crate::coords::LocalBoxReflect))]
     pub bounds: LocalBox,
 }
 

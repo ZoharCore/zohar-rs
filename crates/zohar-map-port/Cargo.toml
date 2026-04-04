@@ -3,5 +3,10 @@ name = "zohar-map-port"
 version.workspace = true
 edition.workspace = true
 
+[features]
+admin-brp = ["bevy", "zohar-domain/admin-brp"]
+
 [dependencies]
 zohar-domain = { path = "../zohar-domain" }
+
+bevy = { workspace = true, optional = true }

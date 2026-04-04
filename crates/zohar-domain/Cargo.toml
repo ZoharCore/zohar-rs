@@ -3,7 +3,11 @@ name = "zohar-domain"
 version.workspace = true
 edition.workspace = true
 
+[features]
+admin-brp = ["bevy"]
+
 [dependencies]
+bevy = { workspace = true, optional = true }
 bitflags.workspace = true
 rand.workspace = true
 

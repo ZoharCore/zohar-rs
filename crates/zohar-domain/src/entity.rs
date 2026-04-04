@@ -1,6 +1,7 @@
 pub mod mob;
 pub mod player;
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EntityId(pub u32);
 
@@ -16,6 +17,7 @@ impl From<EntityId> for u32 {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MovementKind {
     Wait,

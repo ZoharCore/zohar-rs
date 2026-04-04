@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 pub use entity::mob::behavior::BehaviorFlags;
 pub use terrain::TerrainFlags;
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Empire {
     Red,
@@ -17,8 +18,12 @@ pub enum Empire {
 }
 
 #[repr(transparent)]
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct DbId<T>(i64, PhantomData<T>);
+pub struct DbId<T>(
+    i64,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))] PhantomData<T>,
+);
 
 impl<T> DbId<T> {
     pub const fn new_unchecked(raw: i64) -> Self {
@@ -43,8 +48,12 @@ impl<T> From<DbId<T>> for i64 {
 }
 
 #[repr(transparent)]
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct DefId<T>(u32, PhantomData<T>);
+pub struct DefId<T>(
+    u32,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))] PhantomData<T>,
+);
 
 impl<T> DefId<T> {
     pub const fn new(raw: u32) -> Self {
@@ -68,6 +77,7 @@ impl<T> From<DefId<T>> for u32 {
     }
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MapDefTag {}
 

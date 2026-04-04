@@ -5,6 +5,7 @@ use crate::entity::mob::{MobId, MobKind};
 use crate::entity::player::{PlayerClass, PlayerGender};
 
 /// Entity kind with variant-specific data for spawn packets.
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
 pub enum EntityKind {
     Player {
@@ -17,10 +18,12 @@ pub enum EntityKind {
     },
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
 pub struct ShowEntity {
     pub entity_id: EntityId,
     pub angle: f32,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = crate::coords::LocalPosReflect))]
     pub pos: LocalPos,
     pub kind: EntityKind,
     pub move_speed: u8,
@@ -29,6 +32,7 @@ pub struct ShowEntity {
     pub buff_flags: u64,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
 pub struct EntityDetails {
     pub entity_id: EntityId,
@@ -44,6 +48,7 @@ pub struct EntityDetails {
     pub mount_id: u32,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
 pub struct PlayerAppearance {
     pub name: String,

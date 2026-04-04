@@ -3,11 +3,13 @@ use std::sync::Arc;
 pub mod behavior;
 pub mod spawn;
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MobDefTag {}
 
 pub type MobId = DefId<MobDefTag>;
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MobKind {
     Monster,
@@ -16,6 +18,7 @@ pub enum MobKind {
     Portal,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MobBattleType {
     Melee,
@@ -28,6 +31,7 @@ pub enum MobBattleType {
     SuperTanker,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MobRank {
     Pawn,
@@ -38,6 +42,7 @@ pub enum MobRank {
     King,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug)]
 pub struct MobPrototypeDef {
     pub mob_id: MobId,
@@ -51,6 +56,7 @@ pub struct MobPrototypeDef {
     pub aggressive_sight: u16,
     pub attack_range: u16,
     pub combat_extent_m: f32,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub bhv_flags: BehaviorFlags,
     pub empire: Option<crate::Empire>,
 }

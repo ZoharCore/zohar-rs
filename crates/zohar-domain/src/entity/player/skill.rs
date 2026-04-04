@@ -1,27 +1,32 @@
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WarriorSkillBranch {
     Body,
     Mental,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NinjaSkillBranch {
     BladeFight,
     Archery,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuraSkillBranch {
     Weaponry,
     BlackMagic,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShamanSkillBranch {
     Dragon,
     Healing,
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillBranch {
     Warrior(WarriorSkillBranch),
@@ -30,6 +35,7 @@ pub enum SkillBranch {
     Shaman(ShamanSkillBranch),
 }
 
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SkillId {
     ThreeWayCut,

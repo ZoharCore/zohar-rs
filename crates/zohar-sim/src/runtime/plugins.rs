@@ -1,3 +1,5 @@
+#[cfg(feature = "admin-brp")]
+use super::admin::AdminPlugin;
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
 use std::time::Duration;
@@ -94,6 +96,8 @@ pub fn spawn_map_runtime(
             SimulationPlugin,
             OutboxPlugin,
         ));
+        #[cfg(feature = "admin-brp")]
+        app.add_plugins(AdminPlugin);
         loop {
             app.update();
             std::thread::sleep(Duration::from_millis(5));
@@ -121,6 +125,8 @@ pub(crate) fn build_map_app_with_options(
     if with_outbox {
         app.add_plugins(OutboxPlugin);
     }
+    #[cfg(feature = "admin-brp")]
+    app.add_plugins(AdminPlugin);
     (app, map_events)
 }
 
