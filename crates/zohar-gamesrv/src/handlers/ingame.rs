@@ -2,26 +2,33 @@
 //!
 //! Main game loop - handles movement, combat, chat, etc.
 
+use super::connection_id_string;
 use super::control::{ControlDecision, handle_session_control};
 use super::runtime::{
     PhaseEffects, base_phase_span, disconnect, make_heartbeat_interval, run_phase,
+    wait_for_server_drain,
 };
 use super::session_health::{SessionTick, SessionTracker};
-use super::types::{PhaseResult, SessionEnd};
-use crate::GameContext;
-use crate::adapters::ToProtocol;
+use super::types::{PhaseResult, SessionEnd, SessionLeaseAction};
+use crate::{GameContext, SERVER_DRAIN_GRACE_PERIOD};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
+use tokio::time::Instant as TokioInstant;
 use tracing::warn;
-use zohar_db::{GameDb, PlayersView, ProfilesView, SessionsView};
-use zohar_domain::appearance::PlayerAppearance;
+use uuid::Uuid;
+use zohar_db::{GameDb, SessionsView};
+use zohar_domain::entity::player::PlayerRuntimeSnapshot;
 use zohar_domain::{Empire as DomainEmpire, MapId};
 use zohar_map_port::{EnterMsg, LeaveMsg, PlayerEvent};
 use zohar_net::connection::NextConnection;
 use zohar_net::{Connection, ConnectionPhaseExt};
 use zohar_protocol::game_pkt::ControlS2c;
-use zohar_protocol::game_pkt::ingame::{InGameC2s, InGameS2c, system};
+use zohar_protocol::game_pkt::ingame::system::SystemS2c;
+use zohar_protocol::game_pkt::ingame::{InGameC2s, InGameS2c};
 use zohar_protocol::handshake::HandshakeState;
+use zohar_sim::{PlayerPersistenceQueueError, PlayerPersistenceResult};
 
 pub(super) mod chat;
 pub(super) mod combat;
@@ -38,37 +45,142 @@ pub(super) struct InGameCtx<'a> {
     handshake: &'a mut HandshakeState,
     session: &'a mut SessionTracker,
     pub(super) username: String,
+    pub(super) connection_id: String,
     pub(super) player_name: String,
     pub(super) player_id: zohar_domain::entity::player::PlayerId,
     pub(super) map_id: MapId,
     pub(super) player_empire: DomainEmpire,
 }
 
-const MAP_EVENT_BURST_LIMIT: usize = 32;
-
-async fn handle_enter(state: &mut InGameCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
-    let mut effects = PhaseEffects::empty();
-    let channel_id = state.ctx.channel_id.min(u8::MAX as u32) as u8;
-
-    effects.push(InGameS2c::System(system::SystemS2c::SetServerTime {
-        time: state.handshake.uptime_at(Instant::now()).into(),
-    }));
-    effects.push(InGameS2c::System(system::SystemS2c::SetChannelInfo {
-        channel_id,
-    }));
-    effects.push(
-        ControlS2c::RequestHandshake {
-            data: state.handshake.sync_data(Instant::now(), Duration::ZERO),
-        }
-        .into(),
-    );
-    Ok(effects)
+struct PreparedInGame<'a> {
+    conn: Connection<ThisPhase>,
+    state: InGameCtx<'a>,
+    map_rx: tokio::sync::mpsc::Receiver<PlayerEvent>,
+    entered_map: bool,
+    leave_msg: LeaveMsg,
 }
 
-async fn handle_tick(
-    now: Instant,
-    state: &mut InGameCtx<'_>,
-) -> PhaseResult<PhaseEffects<ThisPhase>> {
+const MAP_EVENT_BURST_LIMIT: usize = 32;
+const PLAYER_PERSISTENCE_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn player_persistence_timeout(ctx: &GameContext) -> Duration {
+    if ctx.drain.is_draining() {
+        SERVER_DRAIN_GRACE_PERIOD
+    } else {
+        PLAYER_PERSISTENCE_TIMEOUT
+    }
+}
+
+async fn await_persistence_result(
+    reply_rx: oneshot::Receiver<PlayerPersistenceResult>,
+    deadline: TokioInstant,
+    op_name: &'static str,
+) -> anyhow::Result<()> {
+    match tokio::time::timeout_at(deadline, reply_rx).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(error))) => Err(anyhow::anyhow!("{op_name} failed: {error}")),
+        Ok(Err(_)) => Err(anyhow::anyhow!("{op_name} reply channel dropped")),
+        Err(_) => Err(anyhow::anyhow!("{op_name} timed out")),
+    }
+}
+
+async fn run_persistence_op<F>(
+    enqueue: F,
+    timeout: Duration,
+    op_name: &'static str,
+) -> anyhow::Result<()>
+where
+    F: Future<
+        Output = Result<oneshot::Receiver<PlayerPersistenceResult>, PlayerPersistenceQueueError>,
+    >,
+{
+    let deadline = TokioInstant::now() + timeout;
+    let reply_rx = match tokio::time::timeout_at(deadline, enqueue).await {
+        Ok(Ok(reply_rx)) => reply_rx,
+        Ok(Err(error)) => {
+            return Err(anyhow::anyhow!("failed to enqueue {op_name}: {error}"));
+        }
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "{op_name} timed out while waiting for queue capacity"
+            ));
+        }
+    };
+
+    await_persistence_result(reply_rx, deadline, op_name).await
+}
+
+async fn leave_player_map_and_snapshot(
+    ctx: &GameContext,
+    leave_msg: LeaveMsg,
+) -> anyhow::Result<PlayerRuntimeSnapshot> {
+    ctx.map_events.leave_player_and_snapshot(leave_msg).await
+}
+
+async fn flush_player_snapshot(
+    ctx: &GameContext,
+    snapshot: PlayerRuntimeSnapshot,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    run_persistence_op(
+        ctx.player_persistence.schedule_flush(snapshot),
+        timeout,
+        "player snapshot flush",
+    )
+    .await
+}
+
+async fn finalize_player_disconnect(
+    ctx: &GameContext,
+    username: &str,
+    connection_id: &str,
+    snapshot: PlayerRuntimeSnapshot,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    run_persistence_op(
+        ctx.player_persistence.finalize_disconnect(
+            username,
+            ctx.server_id.clone(),
+            connection_id.to_string(),
+            snapshot,
+        ),
+        timeout,
+        "player disconnect finalization",
+    )
+    .await
+}
+
+fn session_end(username: impl Into<String>, lease_action: SessionLeaseAction) -> SessionEnd {
+    SessionEnd::AfterLogin {
+        username: username.into(),
+        lease_action,
+    }
+}
+
+fn disconnect_session_end(username: impl Into<String>) -> SessionEnd {
+    session_end(username, SessionLeaseAction::Release)
+}
+
+fn enter_packets(state: &mut InGameCtx<'_>) -> Vec<InGameS2c> {
+    let now = Instant::now();
+    vec![
+        SystemS2c::SetServerTime {
+            time: state.handshake.uptime_at(now).into(),
+        }
+        .into(),
+        SystemS2c::SetChannelInfo {
+            channel_id: state.ctx.channel_id.min(u8::MAX as u32) as u8,
+        }
+        .into(),
+        ControlS2c::RequestHandshake {
+            data: state.handshake.sync_data(now, Duration::ZERO),
+        }
+        .into(),
+    ]
+}
+
+async fn handle_session_tick(state: &mut InGameCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
+    let now = Instant::now();
     match state.session.on_tick(now) {
         Some(SessionTick::SendHeartbeat) => {
             // Keep active-session liveness on a coarse cadence, not per gameplay packet.
@@ -85,12 +197,13 @@ async fn handle_tick(
                     "Failed to update session heartbeat"
                 );
             }
-            let mut effects = PhaseEffects::empty();
-            effects.push(ControlS2c::RequestHeartbeat.into());
-            effects.push(InGameS2c::System(system::SystemS2c::SetServerTime {
-                time: state.handshake.uptime_at(now).into(),
-            }));
-            Ok(effects)
+            Ok(PhaseEffects::send_many([
+                ControlS2c::RequestHeartbeat.into(),
+                SystemS2c::SetServerTime {
+                    time: state.handshake.uptime_at(now).into(),
+                }
+                .into(),
+            ]))
         }
         Some(SessionTick::TimedOut) => Ok(PhaseEffects::disconnect("heartbeat timeout")),
         None => Ok(PhaseEffects::empty()),
@@ -99,17 +212,13 @@ async fn handle_tick(
 
 async fn handle_packet(
     packet: InGameC2s,
-    now: Instant,
     state: &mut InGameCtx<'_>,
 ) -> PhaseResult<PhaseEffects<ThisPhase>> {
+    let now = Instant::now();
     state.session.mark_rx(now);
     match packet {
         InGameC2s::Control(packet) => match handle_session_control(packet, now, state.handshake)? {
-            ControlDecision::Handled(outcome) => {
-                let mut effects = PhaseEffects::empty();
-                effects.extend(outcome.send);
-                Ok(effects)
-            }
+            ControlDecision::Handled(outcome) => Ok(PhaseEffects::send_many(outcome.send)),
             ControlDecision::Reject(reason) => Ok(PhaseEffects::disconnect(reason)),
         },
         InGameC2s::Chat(packet) => chat::handle_packet(packet, state).await,
@@ -141,7 +250,7 @@ fn map_event_to_packets(
     }
 }
 
-async fn apply_effects(
+async fn apply_runtime_effects(
     conn: &mut Connection<ThisPhase>,
     effects: PhaseEffects<ThisPhase>,
 ) -> PhaseResult<Option<()>> {
@@ -186,13 +295,16 @@ async fn drive_ingame(
     state: &mut InGameCtx<'_>,
     mut map_rx: tokio::sync::mpsc::Receiver<PlayerEvent>,
 ) -> PhaseResult<NextConnection<ThisPhase>> {
-    // Enter phase
-    let effects = handle_enter(state).await?;
-    if let Some(data) = apply_effects(&mut conn, effects).await? {
-        return Ok(conn.into_next_with_phase(data).await?);
+    if state.ctx.drain.is_draining() {
+        return Err(disconnect("server draining"));
+    }
+
+    for packet in enter_packets(state) {
+        send_outbound_packet(&mut conn, packet).await?;
     }
 
     let mut heartbeat = make_heartbeat_interval(state.ctx.heartbeat_interval);
+    let mut drain_rx = Some(state.ctx.drain.subscribe());
     heartbeat.tick().await;
 
     loop {
@@ -208,19 +320,19 @@ async fn drive_ingame(
         .await?;
 
         let effects = tokio::select! {
-            packet = conn.recv() => {
-                let packet = packet?.ok_or_else(|| disconnect("connection closed"))?;
-                let now = Instant::now();
-                handle_packet(packet, now, state).await?
+            _ = wait_for_server_drain(&mut drain_rx) => {
+                PhaseEffects::disconnect("server draining")
             }
             _ = heartbeat.tick() => {
-                let now = Instant::now();
-                handle_tick(now, state).await?
+                handle_session_tick(state).await?
             },
+            packet = conn.recv() => {
+                let packet = packet?.ok_or_else(|| disconnect("connection closed"))?;
+                handle_packet(packet, state).await?
+            }
             outbound = map_rx.recv() => {
                 if let Some(event) = outbound {
-                    let packets = map_event_to_packets(event, state.map_id, state.ctx.coords.as_ref());
-                    for packet in packets {
+                    for packet in map_event_to_packets(event, state.map_id, state.ctx.coords.as_ref()) {
                         send_outbound_packet(&mut conn, packet).await?;
                     }
                 }
@@ -228,65 +340,33 @@ async fn drive_ingame(
             }
         };
 
-        if let Some(data) = apply_effects(&mut conn, effects).await? {
+        if let Some(data) = apply_runtime_effects(&mut conn, effects).await? {
             return Ok(conn.into_next_with_phase(data).await?);
         }
     }
 }
 
-pub(crate) async fn run_ingame(
+fn prepare_ingame<'a>(
+    conn_id: Uuid,
     conn: Connection<ThisPhase>,
     ctx: &Arc<GameContext>,
-    handshake: &mut HandshakeState,
-    session: &mut SessionTracker,
-) -> Result<NextConnection<ThisPhase>, SessionEnd> {
-    // 1. Setup Identity variables
-    let username = conn.username().to_string();
-    let end_username = username.clone();
-    let player_name = conn.player_name().to_string();
-    let net_id = conn.net_id();
-    let player_id = conn.player_id();
-
-    // 2. Fetch player position from database
-    let player = ctx.db.players().find_by_id(player_id).await.ok().flatten();
-
-    // Compute spawn position from DB or empire default
-    let player_empire = ctx
-        .db
-        .profiles()
-        .find_by_username(&username)
-        .await
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(|profile| profile.empire)
-        // TODO: only fetch empire from DB for fallback when both map and coords are NULL in DB (or invalid / out of bounds)
-        .expect("need empire for fallback spawn");
-
-    let resolved_spawn = ctx
-        .coords
-        .resolve_spawn_for_player(player.as_ref(), player_empire);
-    if resolved_spawn.used_fallback {
-        warn!(
-            username = %username,
-            map_key = player.as_ref().and_then(|p| p.map_key.as_deref()),
-            local_x = player.as_ref().and_then(|p| p.local_x),
-            local_y = player.as_ref().and_then(|p| p.local_y),
-            empire = ?player_empire,
-            "Falling back to empire start spawn"
-        );
+    handshake: &'a mut HandshakeState,
+    session: &'a mut SessionTracker,
+) -> Result<PreparedInGame<'a>, SessionEnd> {
+    if ctx.drain.is_draining() {
+        return Err(disconnect_session_end(conn.username().to_string()));
     }
-    let map_id = resolved_spawn.map_id;
-    let initial_pos = resolved_spawn.local_pos;
-    let _spawn_pos = ctx
-        .coords
-        .local_to_world(map_id, initial_pos)
-        .expect("resolved local spawn position must map to world coordinates");
+
+    let username = conn.username().to_string();
+    let entry = conn.entry().clone();
+    let player_name = conn.player_name().to_string();
+    let player_id = conn.player_id();
+    let player_net_id = zohar_domain::entity::EntityId(entry.net_id.into());
+    let map_id = entry.map_id;
+    let player_empire = entry.appearance.empire;
 
     let Some(map_code) = ctx.coords.map_code_by_id(map_id) else {
-        return Err(SessionEnd::AfterLogin {
-            username: end_username.clone(),
-        });
+        return Err(disconnect_session_end(username));
     };
 
     // Validate we landed on the correct map core. Endpoint equality is not stable across
@@ -299,90 +379,182 @@ pub(crate) async fn run_ingame(
             channel_id = ctx.channel_id,
             "Player connected to wrong map core"
         );
-        return Err(SessionEnd::AfterLogin {
-            username: end_username.clone(),
-        });
+        return Err(disconnect_session_end(username));
     }
 
-    // 6. Build PlayerAppearance with pre-computed protocol values
-    let player_class = player
-        .as_ref()
-        .map(|p| p.class)
-        .unwrap_or(zohar_domain::entity::player::PlayerClass::Warrior);
-    let player_gender = player
-        .as_ref()
-        .map(|p| p.gender)
-        .unwrap_or(zohar_domain::entity::player::PlayerGender::Male);
-
-    let base_appearance = player
-        .as_ref()
-        .map(|p| p.appearance)
-        .unwrap_or(zohar_domain::entity::player::PlayerBaseAppearance::VariantA);
-
-    let appearance = PlayerAppearance {
-        name: player_name.clone(),
-        class: player_class,
-        gender: player_gender,
-        empire: player_empire,
-        body_part: base_appearance.to_protocol() as u16,
-        level: player.as_ref().map(|p| p.level as u32).unwrap_or(1),
-        move_speed: 100,
-        attack_speed: 100,
-        guild_id: 0,
-    };
-
-    // 7. Enter the Map
-    let map_rx = match ctx.map_events.enter_player(EnterMsg {
+    let (map_rx, entered_map) = match ctx.map_events.enter_player(EnterMsg {
         player_id,
-        player_net_id: zohar_domain::entity::EntityId(net_id.into()),
-        initial_pos,
-        appearance,
+        player_net_id,
+        initial_pos: entry.initial_pos,
+        appearance: entry.appearance.clone(),
     }) {
-        Ok(map_rx) => map_rx,
+        Ok(map_rx) => (map_rx, true),
         Err(err) => {
             warn!(error = ?err, "Failed to register player with map runtime");
             let (_tx, map_rx) = tokio::sync::mpsc::channel(1);
-            map_rx
+            (map_rx, false)
         }
     };
 
-    // 8. Prepare State
-    let mut state = InGameCtx {
-        ctx: Arc::clone(ctx),
-        handshake,
-        session,
-        username,
-        player_name,
-        player_id,
-        map_id,
-        player_empire,
-    };
+    Ok(PreparedInGame {
+        conn,
+        state: InGameCtx {
+            ctx: Arc::clone(ctx),
+            handshake,
+            session,
+            username,
+            connection_id: connection_id_string(conn_id),
+            player_name,
+            player_id,
+            map_id,
+            player_empire,
+        },
+        map_rx,
+        entered_map,
+        leave_msg: LeaveMsg {
+            player_id,
+            player_net_id,
+        },
+    })
+}
+
+async fn finalize_ingame_result(
+    state: &InGameCtx<'_>,
+    entered_map: bool,
+    leave_msg: LeaveMsg,
+    result: Result<NextConnection<ThisPhase>, SessionEnd>,
+) -> Result<NextConnection<ThisPhase>, SessionEnd> {
+    if !entered_map {
+        return result;
+    }
+
+    match result {
+        Ok(conn_next) => {
+            let persistence_timeout = player_persistence_timeout(&state.ctx);
+            let snapshot = match leave_player_map_and_snapshot(&state.ctx, leave_msg).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    warn!(
+                        username = %state.username,
+                        player_id = ?state.player_id,
+                        error = %error,
+                        "Failed to leave map and capture player snapshot during phase-select transition"
+                    );
+                    return Err(disconnect_session_end(state.username.clone()));
+                }
+            };
+
+            match flush_player_snapshot(&state.ctx, snapshot.clone(), persistence_timeout).await {
+                Ok(()) => Ok(conn_next),
+                Err(flush_error) => {
+                    warn!(
+                        username = %state.username,
+                        player_id = ?state.player_id,
+                        error = %flush_error,
+                        "Player snapshot flush failed during phase-select transition; finalizing disconnect instead"
+                    );
+                    match finalize_player_disconnect(
+                        &state.ctx,
+                        &state.username,
+                        &state.connection_id,
+                        snapshot,
+                        persistence_timeout,
+                    )
+                    .await
+                    {
+                        Ok(()) => Err(session_end(
+                            state.username.clone(),
+                            SessionLeaseAction::AlreadyReleased,
+                        )),
+                        Err(finalize_error) => {
+                            warn!(
+                                username = %state.username,
+                                player_id = ?state.player_id,
+                                error = %finalize_error,
+                                "Transactional disconnect finalization failed after phase-select flush error"
+                            );
+                            Err(session_end(
+                                state.username.clone(),
+                                SessionLeaseAction::RetainUntilStale,
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+        Err(SessionEnd::AfterLogin { username, .. }) => {
+            let lease_action = match leave_player_map_and_snapshot(&state.ctx, leave_msg).await {
+                Ok(snapshot) => match finalize_player_disconnect(
+                    &state.ctx,
+                    &username,
+                    &state.connection_id,
+                    snapshot,
+                    player_persistence_timeout(&state.ctx),
+                )
+                .await
+                {
+                    Ok(()) => SessionLeaseAction::AlreadyReleased,
+                    Err(error) => {
+                        warn!(
+                            username = %username,
+                            player_id = ?state.player_id,
+                            error = %error,
+                            "Transactional disconnect finalization failed after player left the map"
+                        );
+                        SessionLeaseAction::RetainUntilStale
+                    }
+                },
+                Err(error) => {
+                    warn!(
+                        username = %username,
+                        player_id = ?state.player_id,
+                        error = %error,
+                        "Failed to leave map and capture player snapshot while disconnecting player"
+                    );
+                    SessionLeaseAction::Release
+                }
+            };
+
+            Err(session_end(username, lease_action))
+        }
+        Err(end) => Err(end),
+    }
+}
+
+pub(crate) async fn run_ingame(
+    conn_id: Uuid,
+    conn: Connection<ThisPhase>,
+    ctx: &Arc<GameContext>,
+    handshake: &mut HandshakeState,
+    session: &mut SessionTracker,
+) -> Result<NextConnection<ThisPhase>, SessionEnd> {
+    let PreparedInGame {
+        conn,
+        mut state,
+        map_rx,
+        entered_map,
+        leave_msg,
+    } = prepare_ingame(conn_id, conn, ctx, handshake, session)?;
 
     let span = base_phase_span::<ThisPhase>();
     span.record("player", &conn.player_name());
 
-    // 9. Run the Phase Loop
     let result = run_phase(
         "Player disconnected from game",
-        SessionEnd::AfterLogin {
-            username: end_username,
-        },
+        disconnect_session_end(state.username.clone()),
         span,
         drive_ingame(conn, &mut state, map_rx),
     )
     .await;
 
-    // 10. Cleanup
-    let _ = ctx.map_events.send_player_leave(LeaveMsg {
-        player_id,
-        player_net_id: zohar_domain::entity::EntityId(net_id.into()),
-    });
-
-    result
+    finalize_ingame_result(&state, entered_map, leave_msg, result).await
 }
 
 #[cfg(test)]
 mod tests {
+    use super::run_persistence_op;
+    use std::future::pending;
+    use std::time::Duration;
     use tokio::sync::mpsc;
 
     #[tokio::test]
@@ -416,6 +588,24 @@ mod tests {
         assert!(
             saw_outbound,
             "outbound work must make progress even when inbound is continuously ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn persistence_timeout_covers_queue_admission() {
+        let error = run_persistence_op(
+            pending(),
+            Duration::from_millis(20),
+            "player snapshot flush",
+        )
+        .await
+        .expect_err("stalled queue admission should time out");
+
+        assert!(
+            error
+                .to_string()
+                .contains("timed out while waiting for queue capacity"),
+            "unexpected error: {error}"
         );
     }
 }

@@ -27,7 +27,11 @@ use zohar_net::{Connection, ShortId};
 use zohar_protocol::handshake::HandshakeState;
 
 use session_health::SessionTracker;
-use types::SessionEnd;
+use types::{SessionEnd, SessionLeaseAction};
+
+pub(super) fn connection_id_string(conn_id: Uuid) -> String {
+    conn_id.to_string()
+}
 
 /// Handle a game connection through all phases.
 ///
@@ -41,6 +45,12 @@ pub async fn handle_conn_core(
 ) {
     info!("New connection");
     enable_tcp_nodelay(&stream, "core");
+    let _conn_guard = ctx.drain.track_connection();
+
+    if ctx.drain.is_draining() {
+        info!("Rejecting connection because the server is draining");
+        return;
+    }
 
     // Start in Handshake state
     let conn = Connection::<Handshake>::new(stream);
@@ -48,8 +58,28 @@ pub async fn handle_conn_core(
     let mut handshake = HandshakeState::new(server_start, Instant::now());
     let res = run_core_connection(conn_id, &ctx, &mut handshake, conn).await;
 
-    if let Err(SessionEnd::AfterLogin { username }) = res {
-        on_session_end(&ctx, &username, conn_id).await;
+    if let Err(SessionEnd::AfterLogin {
+        username,
+        lease_action,
+    }) = res
+    {
+        match lease_action {
+            SessionLeaseAction::Release => on_session_end(&ctx, &username, conn_id).await,
+            SessionLeaseAction::AlreadyReleased => {
+                debug!(
+                    username,
+                    conn_id = %ShortId(conn_id),
+                    "Session lease was already released transactionally during disconnect finalize"
+                );
+            }
+            SessionLeaseAction::RetainUntilStale => {
+                debug!(
+                    username,
+                    conn_id = %ShortId(conn_id),
+                    "Retaining active session lease until stale-session recovery"
+                );
+            }
+        }
     }
 }
 
@@ -93,7 +123,12 @@ fn enable_tcp_nodelay(stream: &TcpStream, connection_role: &'static str) {
 }
 
 async fn on_session_end(ctx: &GameContext, username: &str, conn_id: Uuid) {
-    if let Err(error) = ctx.db.sessions().release(username, &ctx.server_id).await {
+    if let Err(error) = ctx
+        .db
+        .sessions()
+        .release(username, &ctx.server_id, &connection_id_string(conn_id))
+        .await
+    {
         debug!(
             username,
             conn_id = %ShortId(conn_id),
@@ -118,7 +153,8 @@ async fn run_core_connection(
     loop {
         let conn_loading = select::run_select_core(conn, ctx, handshake, &mut session).await?;
         let conn_ingame = loading::run_loading(conn_loading, ctx, handshake, &mut session).await?;
-        let conn_next = ingame::run_ingame(conn_ingame, ctx, handshake, &mut session).await?;
+        let conn_next =
+            ingame::run_ingame(conn_id, conn_ingame, ctx, handshake, &mut session).await?;
         conn = conn_next;
     }
 }
@@ -138,4 +174,19 @@ async fn run_gateway_connection(
     let mut session = SessionTracker::new(Instant::now(), ctx.heartbeat_interval);
     let conn = login::run_login_gateway(conn, ctx, handshake, &mut session).await?;
     select::run_select_gateway(conn, ctx, handshake, &mut session).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connection_id_string;
+    use uuid::Uuid;
+
+    #[test]
+    fn connection_id_string_uses_uuid_display_format() {
+        let conn_id = Uuid::parse_str("12345678-9abc-def0-1234-56789abcdef0").unwrap();
+        assert_eq!(
+            connection_id_string(conn_id),
+            "12345678-9abc-def0-1234-56789abcdef0"
+        );
+    }
 }

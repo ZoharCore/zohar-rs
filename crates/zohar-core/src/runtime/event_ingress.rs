@@ -44,8 +44,8 @@ mod tests {
     use zohar_domain::entity::EntityId;
     use zohar_domain::entity::player::PlayerId;
     use zohar_sim::{
-        EntityMotionSpeedTable, MapConfig, MapInstanceKey, SharedConfig, WanderConfig,
-        build_map_app,
+        EntityMotionSpeedTable, MapConfig, MapInstanceKey, PlayerPersistenceCoordinatorHandle,
+        SharedConfig, WanderConfig, build_map_app,
     };
 
     fn test_map_runtime() -> (bevy::prelude::App, MapEventSender) {
@@ -58,11 +58,13 @@ mod tests {
             },
             MapConfig {
                 map_key: MapInstanceKey::shared(1, zohar_domain::MapId::new(41)),
+                map_code: "test_map".to_string(),
                 empire: None,
                 local_size: LocalSize::new(16_384.0, 16_384.0),
                 navigator: None,
                 spawn_rules: Vec::new(),
             },
+            PlayerPersistenceCoordinatorHandle::disabled(),
             2,
         )
     }
@@ -99,15 +101,22 @@ mod tests {
         app.world_mut().run_schedule(bevy::prelude::FixedUpdate);
         app.world_mut().run_schedule(bevy::prelude::FixedPostUpdate);
 
-        let event = player_rx.try_recv().expect("chat event");
-        assert!(matches!(
-            event,
-            zohar_map_port::PlayerEvent::Chat {
-                channel: zohar_map_port::ChatChannel::Shout,
-                empire: Some(Empire::Yellow),
-                message,
-                ..
-            } if message == b"alice : hello\0"
-        ));
+        let mut saw_chat = false;
+        while let Ok(event) = player_rx.try_recv() {
+            if matches!(
+                event,
+                zohar_map_port::PlayerEvent::Chat {
+                    channel: zohar_map_port::ChatChannel::Shout,
+                    empire: Some(Empire::Yellow),
+                    message,
+                    ..
+                } if message == b"alice : hello\0"
+            ) {
+                saw_chat = true;
+                break;
+            }
+        }
+
+        assert!(saw_chat, "expected forwarded global shout chat event");
     }
 }

@@ -5,12 +5,13 @@
 use super::control::{ControlDecision, handle_session_control};
 use super::runtime::{
     PhaseEffects, base_phase_span, disconnect, make_heartbeat_interval, run_phase,
+    wait_for_server_drain,
 };
 use super::session_health::{SessionTick, SessionTracker};
-use super::types::{PhaseResult, SessionEnd};
+use super::types::{PhaseResult, SessionEnd, SessionLeaseAction};
 use crate::adapters::{PlayerEndpoint, ToDomain, ToProtocol, ToProtocolPlayer};
 use crate::infra::MapEndpointResolver;
-use crate::{ContentCoords, EmpireStartMaps, GameContext, GatewayContext};
+use crate::{ContentCoords, EmpireStartMaps, GameContext, GatewayContext, ServerDrainController};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
@@ -41,6 +42,7 @@ struct SelectCtx<'a> {
 struct SelectRuntime {
     db: Game,
     routing: SelectRouting,
+    drain: Option<ServerDrainController>,
     heartbeat_interval: std::time::Duration,
     channel_id: u32,
     map_resolver: Arc<MapEndpointResolver>,
@@ -105,11 +107,7 @@ async fn handle_packet(
     match packet {
         SelectC2s::Control(control) => match handle_session_control(control, now, state.handshake)?
         {
-            ControlDecision::Handled(outcome) => {
-                let mut effects = PhaseEffects::empty();
-                effects.extend(outcome.send);
-                Ok(effects)
-            }
+            ControlDecision::Handled(outcome) => Ok(PhaseEffects::send_many(outcome.send)),
             ControlDecision::Reject(reason) => Ok(PhaseEffects::disconnect(reason)),
         },
         SelectC2s::Specific(SelectC2sSpecific::SubmitEmpireChoice { empire }) => {
@@ -120,11 +118,12 @@ async fn handle_packet(
                 .profiles()
                 .update_empire(&state.username, empire)
                 .await?;
-            Ok(PhaseEffects::send(SelectS2c::Specific(
+            Ok(PhaseEffects::send(
                 SelectS2cSpecific::SetAccountEmpire {
                     empire: empire.to_protocol(),
-                },
-            )))
+                }
+                .into(),
+            ))
         }
         SelectC2s::Specific(SelectC2sSpecific::RequestCreatePlayer {
             slot,
@@ -140,60 +139,66 @@ async fn handle_packet(
             let name = decode_cstr(&name);
             if !NEW_PLAYER_NAME_VALID_LEN.contains(&name.len()) {
                 warn!(name = %name, "Invalid player name length");
-                return Ok(PhaseEffects::send(SelectS2c::Specific(
+                return Ok(PhaseEffects::send(
                     SelectS2cSpecific::CreatePlayerResultFail {
                         error: CreatePlayerError::GenericFailure,
-                    },
-                )));
+                    }
+                    .into(),
+                ));
             }
 
             let slot_index: u8 = slot.into();
             if slot_index >= MAX_PLAYER_SLOTS as u8 {
-                return Ok(PhaseEffects::send(SelectS2c::Specific(
+                return Ok(PhaseEffects::send(
                     SelectS2cSpecific::CreatePlayerResultFail {
                         error: CreatePlayerError::GenericFailure,
-                    },
-                )));
+                    }
+                    .into(),
+                ));
             }
 
             let stat_str: u8 = match stat_str.try_into() {
                 Ok(value) => value,
                 Err(_) => {
-                    return Ok(PhaseEffects::send(SelectS2c::Specific(
+                    return Ok(PhaseEffects::send(
                         SelectS2cSpecific::CreatePlayerResultFail {
                             error: CreatePlayerError::GenericFailure,
-                        },
-                    )));
+                        }
+                        .into(),
+                    ));
                 }
             };
             let stat_vit: u8 = match stat_vit.try_into() {
                 Ok(value) => value,
                 Err(_) => {
-                    return Ok(PhaseEffects::send(SelectS2c::Specific(
+                    return Ok(PhaseEffects::send(
                         SelectS2cSpecific::CreatePlayerResultFail {
                             error: CreatePlayerError::GenericFailure,
-                        },
-                    )));
+                        }
+                        .into(),
+                    ));
                 }
             };
             let stat_dex: u8 = match stat_dex.try_into() {
                 Ok(value) => value,
                 Err(_) => {
-                    return Ok(PhaseEffects::send(SelectS2c::Specific(
+                    return Ok(PhaseEffects::send(
                         SelectS2cSpecific::CreatePlayerResultFail {
                             error: CreatePlayerError::GenericFailure,
-                        },
-                    )));
+                        }
+                        .into(),
+                    ));
                 }
             };
             let stat_int: u8 = match stat_int.try_into() {
                 Ok(value) => value,
                 Err(_) => {
-                    return Ok(PhaseEffects::send(SelectS2c::Specific(
+                    return Ok(PhaseEffects::send(
                         SelectS2cSpecific::CreatePlayerResultFail {
                             error: CreatePlayerError::GenericFailure,
-                        },
-                    )));
+                        }
+                        .into(),
+                    ));
                 }
             };
 
@@ -239,27 +244,29 @@ async fn handle_packet(
                             unroutable_endpoint()
                         }
                     };
-                    Ok(PhaseEffects::send(SelectS2c::Specific(
+                    Ok(PhaseEffects::send(
                         SelectS2cSpecific::CreatePlayerResultOk {
                             slot,
                             new_player: player.to_domain().to_protocol_player(endpoint),
-                        },
-                    )))
+                        }
+                        .into(),
+                    ))
                 }
-                CreatePlayerOutcome::NameTaken => Ok(PhaseEffects::send(SelectS2c::Specific(
+                CreatePlayerOutcome::NameTaken => Ok(PhaseEffects::send(
                     SelectS2cSpecific::CreatePlayerResultFail {
                         error: CreatePlayerError::NameAlreadyExists,
-                    },
-                ))),
+                    }
+                    .into(),
+                )),
             }
         }
         SelectC2s::Specific(SelectC2sSpecific::RequestDeletePlayer { slot, code, .. }) => {
             let slot_index: u8 = slot.into();
             if slot_index >= 4 {
                 warn!(slot_index, "Player slot out of range");
-                return Ok(PhaseEffects::send(SelectS2c::Specific(
-                    SelectS2cSpecific::DeletePlayerResultFail,
-                )));
+                return Ok(PhaseEffects::send(
+                    SelectS2cSpecific::DeletePlayerResultFail.into(),
+                ));
             }
 
             let provided_code = decode_cstr(&code);
@@ -280,14 +287,14 @@ async fn handle_packet(
                         ));
                     }
                 };
-                Ok(PhaseEffects::send(SelectS2c::Specific(
-                    SelectS2cSpecific::DeletePlayerResultOk { slot },
-                )))
+                Ok(PhaseEffects::send(
+                    SelectS2cSpecific::DeletePlayerResultOk { slot }.into(),
+                ))
             } else {
                 info!(username = %state.username, slot_index, "Delete player failed");
-                Ok(PhaseEffects::send(SelectS2c::Specific(
-                    SelectS2cSpecific::DeletePlayerResultFail,
-                )))
+                Ok(PhaseEffects::send(
+                    SelectS2cSpecific::DeletePlayerResultFail.into(),
+                ))
             }
         }
         SelectC2s::Specific(SelectC2sSpecific::SubmitPlayerChoice { slot }) => {
@@ -338,6 +345,15 @@ async fn drive_select(
     mut conn: Connection<ThisPhase>,
     state: &mut SelectCtx<'_>,
 ) -> PhaseResult<NextConnection<ThisPhase>> {
+    if state
+        .runtime
+        .drain
+        .as_ref()
+        .is_some_and(ServerDrainController::is_draining)
+    {
+        return Err(disconnect("server draining"));
+    }
+
     // Enter phase
     let effects = handle_enter(state).await?;
     if let Some(data) = apply_effects(&mut conn, effects).await? {
@@ -345,11 +361,20 @@ async fn drive_select(
     }
 
     let mut heartbeat = make_heartbeat_interval(state.runtime.heartbeat_interval);
+    let mut drain_rx = state
+        .runtime
+        .drain
+        .as_ref()
+        .map(ServerDrainController::subscribe);
+    let drain_enabled = drain_rx.is_some();
     heartbeat.tick().await;
 
     loop {
         let now = Instant::now();
         let effects = tokio::select! {
+            _ = wait_for_server_drain(&mut drain_rx), if drain_enabled => {
+                PhaseEffects::disconnect("server draining")
+            }
             _ = heartbeat.tick() => handle_tick(now, state).await?,
             packet = conn.recv() => {
                 let packet = packet?.ok_or_else(|| disconnect("connection closed"))?;
@@ -377,6 +402,7 @@ pub(crate) async fn run_select_core(
             routing: SelectRouting::Core {
                 coords: Arc::clone(&ctx.coords),
             },
+            drain: Some(ctx.drain.clone()),
             heartbeat_interval: ctx.heartbeat_interval,
             channel_id: ctx.channel_id,
             map_resolver: Arc::clone(&ctx.map_resolver),
@@ -392,6 +418,7 @@ pub(crate) async fn run_select_core(
         "Disconnected during select",
         SessionEnd::AfterLogin {
             username: end_username,
+            lease_action: SessionLeaseAction::Release,
         },
         span,
         drive_select(conn, &mut state),
@@ -413,6 +440,7 @@ pub(crate) async fn run_select_gateway(
             routing: SelectRouting::Gateway {
                 empire_start_maps: ctx.empire_start_maps.clone(),
             },
+            drain: None,
             heartbeat_interval: ctx.heartbeat_interval,
             channel_id: ctx.channel_id,
             map_resolver: Arc::clone(&ctx.map_resolver),
@@ -428,6 +456,7 @@ pub(crate) async fn run_select_gateway(
         "Disconnected during select",
         SessionEnd::AfterLogin {
             username: end_username,
+            lease_action: SessionLeaseAction::Release,
         },
         span,
         drive_select(conn, &mut state),
@@ -437,6 +466,7 @@ pub(crate) async fn run_select_gateway(
     match result {
         Ok(_unexpected) => Err(SessionEnd::AfterLogin {
             username: state.username.clone(),
+            lease_action: SessionLeaseAction::Release,
         }),
         Err(end) => Err(end),
     }
@@ -477,11 +507,12 @@ async fn build_players_pkt(
     let guild_ids: [u32; 4] = [0; 4];
     let guild_names: [GuildName; MAX_PLAYER_SLOTS] = std::array::from_fn(|_| GuildName::default());
 
-    Ok(SelectS2c::Specific(SelectS2cSpecific::SetPlayerChoices {
+    Ok(SelectS2cSpecific::SetPlayerChoices {
         players,
         guild_ids,
         guild_names,
-    }))
+    }
+    .into())
 }
 
 fn unroutable_endpoint() -> PlayerEndpoint {

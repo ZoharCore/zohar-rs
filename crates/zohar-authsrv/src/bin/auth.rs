@@ -17,7 +17,7 @@ struct Cli {
     token_secret: String,
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..), default_value_t = 30)]
     token_window_secs: u64,
-    #[arg(long, default_value = "info,zohar_auth_server=info,zohar_db=info")]
+    #[arg(long, default_value = "info,zohar_authsrv=info,zohar_db=info")]
     log_filter: String,
 }
 

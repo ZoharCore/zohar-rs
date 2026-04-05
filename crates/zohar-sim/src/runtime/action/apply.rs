@@ -6,6 +6,7 @@ use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg, Packe
 
 use super::super::state::{MapPendingMovements, RuntimeState};
 use super::{Action, ActionBuffer};
+use crate::runtime::player::persistence::mark_player_dirty;
 
 pub(crate) fn process_actions(world: &mut World) {
     let actions = {
@@ -151,6 +152,7 @@ fn apply_player_motion(
     {
         spatial.0.update_position(entity_id, end_pos);
     }
+    mark_player_dirty(world, player_entity);
 
     Some(super::super::state::PendingMovement {
         mover_player_id: Some(player_id),

@@ -84,15 +84,18 @@ pub(super) fn encode_entity_move(
 
     let (x, y) = world_pos.to_protocol();
 
-    vec![InGameS2c::Move(MovementS2c::SyncEntityMovement {
-        x,
-        y,
-        kind: movement.kind.to_protocol(),
-        arg: movement.arg.get(),
-        rot: movement.facing.get(),
-        net_id: movement.entity_id.to_protocol(),
-        // Preserve source timestamp to match reference movement semantics.
-        ts: movement.client_ts.get().into(),
-        duration: movement.duration.get().into(),
-    })]
+    vec![
+        MovementS2c::SyncEntityMovement {
+            x,
+            y,
+            kind: movement.kind.to_protocol(),
+            arg: movement.arg.get(),
+            rot: movement.facing.get(),
+            net_id: movement.entity_id.to_protocol(),
+            // Preserve source timestamp to match reference movement semantics.
+            ts: movement.client_ts.get().into(),
+            duration: movement.duration.get().into(),
+        }
+        .into(),
+    ]
 }

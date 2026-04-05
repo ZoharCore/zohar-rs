@@ -17,6 +17,8 @@ use zohar_domain::entity::player::PlayerClass as DomainPlayerClass;
 use zohar_domain::entity::player::PlayerGender as DomainPlayerGender;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerId;
+#[cfg(feature = "db-game")]
+use zohar_domain::entity::player::PlayerRuntimeSnapshot;
 // =============================================================================
 // Response Types (Portable across backends)
 // =============================================================================
@@ -191,6 +193,11 @@ pub trait PlayersView: Send + Sync {
         slot: u8,
         delete_code: &str,
     ) -> impl Future<Output = DbResult<bool>> + Send;
+
+    fn save_runtime_state(
+        &self,
+        snapshot: &PlayerRuntimeSnapshot,
+    ) -> impl Future<Output = DbResult<()>> + Send;
 }
 
 /// View trait for session management operations.
@@ -241,6 +248,15 @@ pub trait SessionsView: Send + Sync {
         &self,
         username: &str,
         server_id: &str,
+        connection_id: &str,
+    ) -> impl Future<Output = DbResult<bool>> + Send;
+
+    fn finalize_disconnect(
+        &self,
+        username: &str,
+        server_id: &str,
+        connection_id: &str,
+        snapshot: &PlayerRuntimeSnapshot,
     ) -> impl Future<Output = DbResult<bool>> + Send;
 
     fn update_heartbeat(&self, username: &str) -> impl Future<Output = DbResult<()>> + Send;

@@ -56,6 +56,7 @@ pub struct SharedConfig {
 #[derive(Resource)]
 pub struct MapConfig {
     pub map_key: MapInstanceKey,
+    pub map_code: String,
     pub empire: Option<Empire>,
     #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalSizeReflect))]
     pub local_size: LocalSize,

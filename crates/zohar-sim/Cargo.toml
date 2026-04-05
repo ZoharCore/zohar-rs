@@ -17,6 +17,7 @@ zohar-domain = { path = "../zohar-domain" }
 zohar-map-port = { path = "../zohar-map-port" }
 
 anyhow.workspace = true
+thiserror.workspace = true
 bevy.workspace = true
 crossbeam-channel.workspace = true
 tokio.workspace = true

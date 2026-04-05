@@ -11,10 +11,12 @@ postgres:
 auth:
   service:
     type: LoadBalancer
+  logFilter: info,zohar_authsrv=info,zohar_db=info,sqlx::query=debug
 
 channelGateway:
   service:
     type: LoadBalancer
+  logFilter: info,zohar_gamesrv=info,zohar_db=info,sqlx::query=debug
 
 network:
   # For service-nodeport mode, set this to a LAN-routable host IPv4.
@@ -29,4 +31,4 @@ topology:
     - metin2_map_c1
 
 core:
-  logFilter: info,zohar_game_server=info,zohar_db=info,zohar_net=trace,zohar_sim=debug
+  logFilter: info,zohar_core=info,zohar_gamesrv=info,zohar_db=info,zohar_net=trace,zohar_sim=debug,sqlx::query=debug

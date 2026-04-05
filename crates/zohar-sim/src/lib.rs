@@ -6,6 +6,7 @@ pub mod chat;
 pub mod motion;
 pub mod navigation;
 mod outbox;
+pub mod persistence;
 mod replication;
 pub mod runtime;
 pub mod types;
@@ -17,6 +18,11 @@ pub use motion::{
     PlayerMotionProfileKey, PlayerMotionSpeedTable, PlayerMotionSpeeds,
 };
 pub use navigation::{GridCell, MapNavigator, NavPath, TerrainFlagsGrid};
+pub use persistence::{
+    CriticalPlayerOpRequest, PlayerPersistenceCoordinatorHandle, PlayerPersistenceQueueError,
+    PlayerPersistenceRequest, PlayerPersistenceResult, SnapshotSaveKind,
+    player_persistence_channel,
+};
 pub use runtime::{
     MapConfig, PlayerCount, SharedConfig, SimSet, StartupReadySignal, WanderConfig, build_map_app,
     spawn_map_runtime,

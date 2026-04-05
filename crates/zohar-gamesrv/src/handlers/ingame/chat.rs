@@ -26,28 +26,32 @@ pub(super) async fn handle_packet(
                     info!(kind = ?kind, "Returning to character select");
                     Ok(PhaseEffects::transition(()))
                 }
-                "/logout" => {
-                    let mut effects =
-                        PhaseEffects::send(InGameS2c::Chat(ChatS2c::NotifyChatMessage {
+                "/logout" => Ok(PhaseEffects {
+                    send: vec![
+                        ChatS2c::NotifyChatMessage {
                             kind: ChatKind::Info,
                             net_id: ZeroOpt::none(),
                             empire: ZeroOpt::none(),
                             message: b"Back to login window. Please wait.\0".to_vec(),
-                        }));
-                    effects.disconnect = Some("client requested logout");
-                    Ok(effects)
-                }
-                "/quit" => {
-                    let mut effects =
-                        PhaseEffects::send(InGameS2c::Chat(ChatS2c::NotifyChatMessage {
+                        }
+                        .into(),
+                    ],
+                    transition: None,
+                    disconnect: Some("client requested logout"),
+                }),
+                "/quit" => Ok(PhaseEffects {
+                    send: vec![
+                        ChatS2c::NotifyChatMessage {
                             kind: ChatKind::Command,
                             net_id: ZeroOpt::none(),
                             empire: ZeroOpt::none(),
                             message: b"quit\0".to_vec(),
-                        }));
-                    effects.disconnect = Some("client requested quit");
-                    Ok(effects)
-                }
+                        }
+                        .into(),
+                    ],
+                    transition: None,
+                    disconnect: Some("client requested quit"),
+                }),
                 _ => {
                     if kind == ChatKind::Shout {
                         let event = Arc::new(ClusterEvent::GlobalShout(GlobalShoutEvent {
@@ -84,10 +88,13 @@ pub(super) fn encode_chat_event(
     empire: Option<Empire>,
     message: Vec<u8>,
 ) -> Vec<InGameS2c> {
-    vec![InGameS2c::Chat(ChatS2c::NotifyChatMessage {
-        kind: channel.to_protocol(),
-        net_id: ZeroOpt::from(sender_entity_id.map(|id| id.to_protocol())),
-        empire: ZeroOpt::from(empire.map(|empire| empire.to_protocol())),
-        message,
-    })]
+    vec![
+        ChatS2c::NotifyChatMessage {
+            kind: channel.to_protocol(),
+            net_id: ZeroOpt::from(sender_entity_id.map(|id| id.to_protocol())),
+            empire: ZeroOpt::from(empire.map(|empire| empire.to_protocol())),
+            message,
+        }
+        .into(),
+    ]
 }

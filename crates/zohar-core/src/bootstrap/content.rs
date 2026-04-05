@@ -47,6 +47,7 @@ pub(crate) fn load_content(
     };
     let map_config = MapConfig {
         map_key,
+        map_code: config.map.clone(),
         empire: all_empires.get(&map_id).copied().flatten(),
         local_size: coords
             .map_local_size(map_id)

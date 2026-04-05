@@ -1,5 +1,6 @@
 allow_k8s_contexts('orbstack')
 update_settings(k8s_upsert_timeout_secs=300)
+ci_settings(readiness_timeout='15m')
 
 tenant = os.getenv('ZOHAR_TENANT', 'nightlysrv')
 profile = os.getenv('ZOHAR_PROFILE', 'dev')

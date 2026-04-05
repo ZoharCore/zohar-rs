@@ -13,6 +13,8 @@ use super::state::{
 };
 use tracing::{info, warn};
 
+use super::PlayerPersistenceState;
+
 pub(crate) fn on_player_added(
     add: On<Add, PlayerMarker>,
     player_query: Query<(&PlayerMarker, &NetEntityId, &LocalTransform)>,
@@ -108,6 +110,8 @@ pub(crate) fn on_player_removed(
 }
 
 pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: PlayerOutbox) {
+    let now = world.resource::<RuntimeState>().sim_now;
+
     if let Some(existing_entity) = world
         .resource::<PlayerIndex>()
         .0
@@ -130,6 +134,7 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
         show,
         details: Some(details),
     });
+
     let player_entity = world
         .spawn((
             PlayerMarker {
@@ -153,6 +158,7 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
             PlayerOutboxComp(outbox),
             PlayerCommandQueue::default(),
             ChatIntentQueue::default(),
+            PlayerPersistenceState::initial(msg.player_id, now),
         ))
         .id();
 

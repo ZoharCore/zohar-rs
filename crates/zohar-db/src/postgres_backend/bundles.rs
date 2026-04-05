@@ -20,6 +20,8 @@ use zohar_domain::entity::player::PlayerClass as DomainPlayerClass;
 use zohar_domain::entity::player::PlayerGender as DomainPlayerGender;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerId;
+#[cfg(feature = "db-game")]
+use zohar_domain::entity::player::PlayerRuntimeSnapshot;
 
 use crate::DbResult;
 
@@ -174,6 +176,10 @@ impl PlayersView for PgPlayersView<'_> {
     ) -> DbResult<bool> {
         queries::game::delete_player_with_code(self.pool, username, slot, delete_code).await
     }
+
+    async fn save_runtime_state(&self, snapshot: &PlayerRuntimeSnapshot) -> DbResult<()> {
+        queries::game::save_player_runtime_state(self.pool, snapshot).await
+    }
 }
 
 #[cfg(feature = "db-game")]
@@ -261,8 +267,24 @@ impl SessionsView for PgSessionsView<'_> {
         .await
     }
 
-    async fn release(&self, username: &str, server_id: &str) -> DbResult<bool> {
-        queries::game::release_session(self.pool, username, server_id).await
+    async fn release(
+        &self,
+        username: &str,
+        server_id: &str,
+        connection_id: &str,
+    ) -> DbResult<bool> {
+        queries::game::release_session(self.pool, username, server_id, connection_id).await
+    }
+
+    async fn finalize_disconnect(
+        &self,
+        username: &str,
+        server_id: &str,
+        connection_id: &str,
+        snapshot: &PlayerRuntimeSnapshot,
+    ) -> DbResult<bool> {
+        queries::game::finalize_disconnect(self.pool, username, server_id, connection_id, snapshot)
+            .await
     }
 
     async fn update_heartbeat(&self, username: &str) -> DbResult<()> {

@@ -1,5 +1,6 @@
 mod adapters;
 mod coords;
+pub mod drain;
 mod empire_start_maps;
 pub mod handlers;
 pub mod infra;
@@ -13,11 +14,14 @@ use tokio::sync::oneshot;
 use zohar_db::Game;
 use zohar_net::{listen, listen_on, listen_with_ready};
 use zohar_protocol::token::TokenSigner;
-use zohar_sim::MapEventSender;
+use zohar_sim::{MapEventSender, PlayerPersistenceCoordinatorHandle};
 
 pub use coords::{ContentCoords, PersistedPlayerPos, ResolvedSpawn};
+pub use drain::ServerDrainController;
 pub use empire_start_maps::EmpireStartMaps;
 pub use infra::{ChannelDirectory, ClusterEventBus, MapEndpointResolver};
+
+pub const SERVER_DRAIN_GRACE_PERIOD: Duration = Duration::from_secs(20);
 
 /// Shared context for all game server connections.
 #[derive(Clone)]
@@ -35,6 +39,8 @@ pub struct GameContext {
     pub map_code: String,
     pub map_resolver: Arc<MapEndpointResolver>,
     pub cluster_events: Arc<ClusterEventBus>,
+    pub player_persistence: PlayerPersistenceCoordinatorHandle,
+    pub drain: ServerDrainController,
 }
 
 /// Shared context for all channel-gateway connections.

@@ -4,7 +4,7 @@ use binrw::{BinRead, BinWrite, Endian};
 use std::io::Cursor;
 use zohar_protocol::control_pkt::ControlS2c;
 use zohar_protocol::game_pkt::handshake::HandshakeGameC2sSpecific;
-use zohar_protocol::game_pkt::ingame;
+use zohar_protocol::game_pkt::ingame::{self, Skill};
 use zohar_protocol::game_pkt::loading::{LoadingC2sSpecific, LoadingS2cSpecific};
 use zohar_protocol::game_pkt::login::{LoginC2sSpecific, LoginS2cSpecific};
 use zohar_protocol::game_pkt::select::{SelectC2sSpecific, SelectS2cSpecific};
@@ -139,7 +139,7 @@ fn ingame_routes_chat() {
 #[test]
 fn ingame_routes_attack() {
     let pkt = InGameC2s::Combat(ingame::combat::CombatC2s::InputAttack {
-        attack_type: game_pkt::ZeroOpt::some(Skill::Berserk),
+        attack_type: ZeroOpt::some(Skill::Berserk),
         target: NetId(0x0102_0304),
         _unknown: 0x1122,
     });
@@ -150,9 +150,9 @@ fn ingame_routes_attack() {
             target,
             _unknown,
         }) => {
-            assert_eq!(attack_type, game_pkt::ZeroOpt::some(Skill::Berserk));
+            assert_eq!(attack_type, ZeroOpt::some(Skill::Berserk));
             assert_eq!(target, NetId(0x0102_0304));
-            assert_eq!(unknown, 0x1122);
+            assert_eq!(_unknown, 0x1122);
         }
         other => panic!("unexpected packet: {other:?}"),
     }

@@ -9,9 +9,9 @@ use zohar_gamesrv::infra::{
     KubeAgonesMapResolver, MapEndpointResolver, MapResolverConfig, NatsClusterEventBusConfig,
     nats_cluster_event_bus, postgres_cluster_event_bus,
 };
-use zohar_gamesrv::{ContentCoords, GameContext};
+use zohar_gamesrv::{ContentCoords, GameContext, ServerDrainController};
 use zohar_protocol::token::TokenSigner;
-use zohar_sim::MapEventSender;
+use zohar_sim::{MapEventSender, PlayerPersistenceCoordinatorHandle};
 
 pub(crate) struct InfraWiring {
     pub(crate) listener: TcpListener,
@@ -25,6 +25,8 @@ pub(crate) fn wire_infra(
     token_signer: Arc<TokenSigner>,
     coords: Arc<ContentCoords>,
     map_events: MapEventSender,
+    player_persistence: PlayerPersistenceCoordinatorHandle,
+    drain: ServerDrainController,
 ) -> anyhow::Result<InfraWiring> {
     let listener = runtime.block_on(async { TcpListener::bind(&config.listen).await })?;
     let local_addr = listener.local_addr()?;
@@ -75,6 +77,8 @@ pub(crate) fn wire_infra(
         map_code: config.map.clone(),
         map_resolver,
         cluster_events,
+        player_persistence,
+        drain,
     });
 
     Ok(InfraWiring { listener, ctx })

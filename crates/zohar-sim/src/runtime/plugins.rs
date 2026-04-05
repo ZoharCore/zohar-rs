@@ -5,6 +5,7 @@ use crossbeam_channel::Receiver;
 use std::time::Duration;
 
 use crate::bridge::{InboundEvent, MapEventSender, inbound_channel};
+use crate::persistence::{PlayerPersistenceCoordinatorHandle, PlayerPersistencePort};
 
 use super::action_pipeline::{ActionBuffer, process_actions};
 use super::aggro::{MobAggroDispatchBuffer, route_mob_aggro};
@@ -14,6 +15,7 @@ use super::ingress::drain_inbound;
 use super::mob_ai::process_mob_ai;
 use super::mob_motion::sample_mob_motion;
 use super::outbox::outbox_flush;
+use super::player::persistence::enqueue_due_autosaves;
 use super::player_actions::process_player_actions;
 use super::players::{on_player_added, on_player_removed};
 use super::replication::{aoi_reconcile, replication_flush};
@@ -40,6 +42,7 @@ impl Plugin for ContentPlugin {
         app.insert_resource(self.shared.clone());
         app.insert_resource(MapConfig {
             map_key: self.map.map_key,
+            map_code: self.map.map_code.clone(),
             empire: self.map.empire,
             local_size: self.map.local_size,
             navigator: self.map.navigator.clone(),
@@ -74,14 +77,17 @@ impl Plugin for NetworkPlugin {
 pub fn build_map_app(
     shared: SharedConfig,
     map: MapConfig,
+    player_persistence: PlayerPersistenceCoordinatorHandle,
     inbound_buffer: usize,
 ) -> (App, MapEventSender) {
-    build_map_app_with_options(shared, map, inbound_buffer, true)
+    build_map_app_with_options(shared, map, player_persistence, inbound_buffer, true)
 }
 
+// TODO: test fixture, refactor this so we don't duplicate the app configs
 pub fn spawn_map_runtime(
     shared: SharedConfig,
     map: MapConfig,
+    player_persistence: PlayerPersistenceCoordinatorHandle,
     inbound_buffer: usize,
 ) -> MapEventSender {
     let (map_events, inbound_rx) = inbound_channel(inbound_buffer);
@@ -89,6 +95,7 @@ pub fn spawn_map_runtime(
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Time::<Fixed>::from_hz(25.0));
+        app.insert_resource(PlayerPersistencePort::new(player_persistence));
         app.add_plugins((
             ContentPlugin::new(shared, map),
             NetworkPlugin::new(inbound_rx),
@@ -96,8 +103,10 @@ pub fn spawn_map_runtime(
             SimulationPlugin,
             OutboxPlugin,
         ));
+
         #[cfg(feature = "admin-brp")]
         app.add_plugins(AdminPlugin);
+
         loop {
             app.update();
             std::thread::sleep(Duration::from_millis(5));
@@ -109,24 +118,29 @@ pub fn spawn_map_runtime(
 pub(crate) fn build_map_app_with_options(
     shared: SharedConfig,
     map: MapConfig,
+    player_persistence: PlayerPersistenceCoordinatorHandle,
     inbound_buffer: usize,
-    with_outbox: bool,
+    with_outbox: bool, // TODO: get rid of (or refactor) this bool
 ) -> (App, MapEventSender) {
     let (map_events, inbound_rx) = inbound_channel(inbound_buffer);
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.insert_resource(Time::<Fixed>::from_hz(25.0));
+    app.insert_resource(PlayerPersistencePort::new(player_persistence));
     app.add_plugins((
         ContentPlugin::new(shared, map),
         NetworkPlugin::new(inbound_rx),
         MapPlugin,
         SimulationPlugin,
     ));
+
     if with_outbox {
         app.add_plugins(OutboxPlugin);
     }
+
     #[cfg(feature = "admin-brp")]
     app.add_plugins(AdminPlugin);
+
     (app, map_events)
 }
 
@@ -167,7 +181,12 @@ impl Plugin for SimulationPlugin {
         )
         .configure_sets(
             FixedPostUpdate,
-            (SimSet::ReplicationFlush, SimSet::OutboxFlush).chain(),
+            (
+                SimSet::ReplicationFlush,
+                SimSet::OutboxFlush,
+                SimSet::Autosave,
+            )
+                .chain(),
         )
         .add_systems(Startup, bootstrap_map_runtime)
         .add_systems(PostStartup, signal_startup_ready)
@@ -200,6 +219,10 @@ impl Plugin for SimulationPlugin {
         .add_systems(
             FixedPostUpdate,
             replication_flush.in_set(SimSet::ReplicationFlush),
+        )
+        .add_systems(
+            FixedPostUpdate,
+            enqueue_due_autosaves.in_set(SimSet::Autosave),
         )
         .add_observer(on_player_removed)
         .add_observer(on_player_added);

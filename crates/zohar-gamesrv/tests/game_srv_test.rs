@@ -29,7 +29,9 @@ use zohar_gamesrv::infra::{
     ChannelDirectory, ClusterEventBus, MapEndpointResolver, StaticChannelDirectory,
     StaticMapResolver, in_process_cluster_event_bus,
 };
-use zohar_gamesrv::{ContentCoords, EmpireStartMaps, GameContext, GatewayContext};
+use zohar_gamesrv::{
+    ContentCoords, EmpireStartMaps, GameContext, GatewayContext, ServerDrainController,
+};
 use zohar_net::SimpleBinRwCodec;
 use zohar_protocol::game_pkt::handshake::{HandshakeGameC2s, HandshakeGameS2c};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
@@ -47,8 +49,8 @@ use zohar_protocol::handshake::{HandshakeSyncData, WireDeltaMillis, WireMillis32
 use zohar_protocol::phase::PhaseId;
 use zohar_protocol::token::TokenSigner;
 use zohar_sim::{
-    EntityMotionSpeedTable, MapConfig, MapInstanceKey, SharedConfig, WanderConfig,
-    spawn_map_runtime,
+    EntityMotionSpeedTable, MapConfig, MapInstanceKey, PlayerPersistenceCoordinatorHandle,
+    SharedConfig, WanderConfig, spawn_map_runtime,
 };
 
 const TEST_USERNAME_PREFIX: &str = "test_user";
@@ -76,11 +78,13 @@ fn spawn_test_map_runtime() -> zohar_sim::MapEventSender {
         },
         MapConfig {
             map_key: MapInstanceKey::shared(1, MapId::new(1)),
+            map_code: "zohar_map_a1".to_string(),
             empire: None,
             local_size: LocalSize::new(16_384.0, 16_384.0),
             navigator: None,
             spawn_rules: Vec::new(),
         },
+        PlayerPersistenceCoordinatorHandle::disabled(),
         256,
     )
 }
@@ -730,10 +734,12 @@ async fn setup_test_env_with_options_and_heartbeat(
         active_session_stale_threshold: Duration::from_secs(60),
         channel_id,
         map_events,
+        player_persistence: PlayerPersistenceCoordinatorHandle::disabled(),
         advertised_endpoint: addr,
         map_code,
         map_resolver,
         cluster_events,
+        drain: ServerDrainController::new(),
     });
 
     let server_ctx = ctx.clone();

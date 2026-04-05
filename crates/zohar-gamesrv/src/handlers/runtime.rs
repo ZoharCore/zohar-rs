@@ -3,6 +3,7 @@
 use super::types::{PhaseResult, SessionEnd};
 use std::future::Future;
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{Instrument, info, info_span};
 use zohar_net::ConnectionState;
@@ -57,6 +58,17 @@ impl<S: zohar_net::connection::NextState> PhaseEffects<S> {
         }
     }
 
+    pub fn send_many<I>(packets: I) -> Self
+    where
+        I: IntoIterator<Item = S::S2cPacket>,
+    {
+        Self {
+            send: packets.into_iter().collect(),
+            transition: None,
+            disconnect: None,
+        }
+    }
+
     pub fn transition(data: S::Data) -> Self {
         Self {
             send: Vec::new(),
@@ -71,17 +83,6 @@ impl<S: zohar_net::connection::NextState> PhaseEffects<S> {
             transition: None,
             disconnect: Some(reason),
         }
-    }
-
-    pub fn push(&mut self, packet: S::S2cPacket) {
-        self.send.push(packet);
-    }
-
-    pub fn extend<I>(&mut self, packets: I)
-    where
-        I: IntoIterator<Item = S::S2cPacket>,
-    {
-        self.send.extend(packets);
     }
 }
 
@@ -100,6 +101,17 @@ pub(crate) fn make_heartbeat_interval(interval: Duration) -> Interval {
     heartbeat
 }
 
+pub(crate) async fn wait_for_server_drain(drain_rx: &mut Option<watch::Receiver<bool>>) {
+    let Some(drain_rx) = drain_rx else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if *drain_rx.borrow_and_update() {
+        return;
+    }
+    let _ = drain_rx.changed().await;
+}
+
 pub(crate) async fn run_phase<T>(
     err_msg: &'static str,
     end: SessionEnd,
@@ -116,5 +128,26 @@ pub(crate) async fn run_phase<T>(
             }
             Err(end)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wait_for_server_drain;
+    use tokio::sync::watch;
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn wait_for_server_drain_returns_immediately_for_late_subscriber() {
+        let (tx, _rx) = watch::channel(false);
+        tx.send(true).expect("send drain");
+
+        let mut drain_rx = Some(tx.subscribe());
+        timeout(
+            Duration::from_millis(50),
+            wait_for_server_drain(&mut drain_rx),
+        )
+        .await
+        .expect("late subscriber should observe current drain state");
     }
 }

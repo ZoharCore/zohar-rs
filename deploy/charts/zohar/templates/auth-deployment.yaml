@@ -27,6 +27,7 @@ spec:
           args:
             - --listen=0.0.0.0:{{ .Values.auth.service.port }}
             - --token-window-secs={{ .Values.auth.tokenWindowSecs }}
+            - {{ printf "--log-filter=%s" .Values.auth.logFilter | quote }}
           ports:
             - name: auth
               containerPort: {{ .Values.auth.service.port }}

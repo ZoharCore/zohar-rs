@@ -4,8 +4,13 @@ mod bundles;
 pub mod migrations;
 pub mod queries;
 
+use std::str::FromStr;
+use std::time::Duration;
+
+use log::LevelFilter;
+use sqlx::ConnectOptions;
 use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use crate::{DbContext, DbResult};
 #[cfg(feature = "db-auth")]
@@ -42,9 +47,14 @@ pub async fn open_combined_db(database_url: &str) -> DbResult<(PgAuthDb, PgGameD
 }
 
 async fn open_pool(database_url: &str) -> DbResult<PgPool> {
+    let options = PgConnectOptions::from_str(database_url)
+        .db_ctx(format!("parse postgres database url {database_url}"))?
+        .log_statements(LevelFilter::Debug)
+        .log_slow_statements(LevelFilter::Warn, Duration::from_millis(250));
+
     PgPoolOptions::new()
         .max_connections(16)
-        .connect(database_url)
+        .connect_with(options)
         .await
         .db_ctx(format!("connect postgres database at {database_url}"))
 }

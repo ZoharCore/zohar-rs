@@ -2,6 +2,9 @@ use super::{NextState, sealed};
 use crate::{Connection, ConnectionState, SequencedBinRwCodec, SimpleBinRwCodec};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
+use zohar_domain::MapId;
+use zohar_domain::appearance::PlayerAppearance;
+use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::player::PlayerId;
 use zohar_protocol::game_pkt::{
     HandshakeGameC2s, HandshakeGameS2c, InGameC2s, InGameS2c, LoadingC2s, LoadingS2c, LoginC2s,
@@ -78,16 +81,16 @@ impl Connection<Loading> {
 
 impl NextState for Loading {
     type Next = InGame;
-    type Data = NetId;
+    type Data = LoadedPlayer;
 
-    fn transition(conn: Connection<Self>, net_id: Self::Data) -> Connection<Self::Next> {
+    fn transition(conn: Connection<Self>, loaded_player: Self::Data) -> Connection<Self::Next> {
         let mut conn = conn;
         let username = std::mem::take(&mut conn.state.username);
         let state = InGame {
             username,
             player_id: conn.state.player_id,
             player_name: conn.state.player_name.clone(),
-            net_id,
+            loaded_player,
         };
         super::transition_with_sequencer(conn, state)
     }
@@ -107,7 +110,11 @@ impl Connection<InGame> {
     }
 
     pub fn net_id(&self) -> NetId {
-        self.state.net_id
+        self.state.loaded_player.net_id
+    }
+
+    pub fn entry(&self) -> &LoadedPlayer {
+        &self.state.loaded_player
     }
 }
 
@@ -196,7 +203,7 @@ pub struct InGame {
     pub username: String,
     pub player_id: PlayerId,
     pub player_name: String,
-    pub net_id: NetId,
+    pub loaded_player: LoadedPlayer,
 }
 
 impl sealed::Sealed for InGame {}
@@ -253,6 +260,14 @@ pub trait HasPlayer: Authenticated {
 pub struct SelectedPlayer {
     pub player_id: PlayerId,
     pub player_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedPlayer {
+    pub net_id: NetId,
+    pub map_id: MapId,
+    pub initial_pos: LocalPos,
+    pub appearance: PlayerAppearance,
 }
 
 impl super::SetPhasePacket for HandshakeGameS2c {

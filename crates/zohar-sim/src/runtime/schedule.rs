@@ -15,6 +15,7 @@ pub enum SimSet {
     AoiReconcile,
     ReplicationFlush,
     OutboxFlush,
+    Autosave,
 }
 
 const ACTIVE_SIM_TIMESTEP: Duration = Duration::from_millis(40);

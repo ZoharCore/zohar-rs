@@ -4,6 +4,7 @@ use zohar_map_port::{ChatChannel, ClientIntent, ClientIntentMsg, GlobalShoutMsg,
 
 use crate::bridge::InboundEvent;
 
+use super::super::player::persistence::leave_player_and_snapshot;
 use super::players::{handle_player_enter, handle_player_leave, player_entities_on_map};
 use super::state::{
     ChatIntent, ChatIntentQueue, MAX_ATTACK_INTENTS_PER_TICK, MAX_CHAT_INTENTS_PER_TICK,
@@ -21,10 +22,6 @@ pub(crate) fn drain_inbound(world: &mut World) {
         }
     }
 
-    if events.is_empty() {
-        return;
-    }
-
     for event in events {
         match event {
             InboundEvent::ReserveNetId { reply } => {
@@ -36,6 +33,9 @@ pub(crate) fn drain_inbound(world: &mut World) {
             }
             InboundEvent::PlayerEnter { msg, outbox } => handle_player_enter(world, msg, outbox),
             InboundEvent::PlayerLeave { msg } => handle_player_leave(world, msg),
+            InboundEvent::PlayerLeaveAndSnapshot { msg, reply } => {
+                let _ = reply.send(leave_player_and_snapshot(world, msg));
+            }
             InboundEvent::ClientIntent { msg } => {
                 handle_client_intent(DeferredWorld::from(&mut *world), msg)
             }

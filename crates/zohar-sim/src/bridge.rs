@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tokio::sync::oneshot;
 use zohar_domain::entity::EntityId;
+use zohar_domain::entity::player::PlayerRuntimeSnapshot;
 use zohar_map_port::{ClientIntentMsg, EnterMsg, GlobalShoutMsg, LeaveMsg, PlayerEvent};
 
 use crate::outbox::PlayerOutbox;
@@ -10,11 +11,26 @@ const PLAYER_EVENT_BUFFER: usize = 256;
 
 #[derive(Debug)]
 pub(crate) enum InboundEvent {
-    ReserveNetId { reply: oneshot::Sender<EntityId> },
-    PlayerEnter { msg: EnterMsg, outbox: PlayerOutbox },
-    PlayerLeave { msg: LeaveMsg },
-    ClientIntent { msg: ClientIntentMsg },
-    GlobalShout { msg: GlobalShoutMsg },
+    ReserveNetId {
+        reply: oneshot::Sender<EntityId>,
+    },
+    PlayerEnter {
+        msg: EnterMsg,
+        outbox: PlayerOutbox,
+    },
+    PlayerLeave {
+        msg: LeaveMsg,
+    },
+    PlayerLeaveAndSnapshot {
+        msg: LeaveMsg,
+        reply: oneshot::Sender<anyhow::Result<PlayerRuntimeSnapshot>>,
+    },
+    ClientIntent {
+        msg: ClientIntentMsg,
+    },
+    GlobalShout {
+        msg: GlobalShoutMsg,
+    },
 }
 
 pub(crate) fn inbound_channel(buffer: usize) -> (MapEventSender, Receiver<InboundEvent>) {
@@ -30,6 +46,20 @@ pub struct MapEventSender {
 impl MapEventSender {
     pub fn send_player_leave(&self, msg: LeaveMsg) -> anyhow::Result<()> {
         self.enqueue(InboundEvent::PlayerLeave { msg })
+    }
+
+    pub async fn leave_player_and_snapshot(
+        &self,
+        msg: LeaveMsg,
+    ) -> anyhow::Result<PlayerRuntimeSnapshot> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.enqueue(InboundEvent::PlayerLeaveAndSnapshot {
+            msg,
+            reply: reply_tx,
+        })?;
+        reply_rx
+            .await
+            .map_err(|_| anyhow!("map runtime dropped player leave+snapshot reply"))?
     }
 
     pub fn try_send_client_intent(&self, msg: ClientIntentMsg) -> anyhow::Result<()> {
@@ -156,6 +186,41 @@ mod tests {
             panic!("expected PlayerEnter");
         };
         assert_eq!(msg.player_id, PlayerId::from(1));
+    }
+
+    #[test]
+    fn leave_player_and_snapshot_round_trips_reply() {
+        let (sender, rx) = inbound_channel(1);
+        let wait = std::thread::spawn({
+            let sender = sender.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                runtime.block_on(async {
+                    sender
+                        .leave_player_and_snapshot(LeaveMsg {
+                            player_id: PlayerId::from(1),
+                            player_net_id: EntityId(7),
+                        })
+                        .await
+                })
+            }
+        });
+
+        let InboundEvent::PlayerLeaveAndSnapshot { msg, reply } = rx.recv().expect("event") else {
+            panic!("expected PlayerLeaveAndSnapshot");
+        };
+        assert_eq!(msg.player_id, PlayerId::from(1));
+        let _ = reply.send(Ok(PlayerRuntimeSnapshot {
+            id: PlayerId::from(1),
+            map_key: "zohar_map_a1".to_string(),
+            local_pos: LocalPos::new(1.0, 2.0),
+        }));
+
+        let snapshot = wait.join().expect("join").expect("snapshot reply");
+        assert_eq!(snapshot.id, PlayerId::from(1));
     }
 
     #[test]

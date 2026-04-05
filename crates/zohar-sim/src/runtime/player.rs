@@ -1,6 +1,7 @@
 pub(crate) mod actions;
 pub(crate) mod chat;
 pub(crate) mod lifecycle;
+pub(crate) mod persistence;
 
 use crate::outbox::PlayerOutbox;
 use bevy::prelude::*;
@@ -81,3 +82,11 @@ pub(crate) struct PlayerCommandQueue(pub(crate) Vec<PlayerCommand>);
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct ChatIntentQueue(pub(crate) Vec<ChatIntent>);
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component)]
+pub(crate) struct PlayerPersistenceState {
+    pub(crate) dirty: bool,
+    pub(crate) next_autosave_at: crate::runtime::time::SimInstant,
+}

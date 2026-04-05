@@ -6807,6 +6807,7 @@ dependencies = [
 name = "zohar-db"
 version = "0.1.0"
 dependencies = [
+ "log",
  "sqlx",
  "strum",
  "strum_macros",
@@ -6897,6 +6898,7 @@ dependencies = [
  "flat_spatial",
  "pathfinding",
  "rand 0.10.0",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "zohar-domain",

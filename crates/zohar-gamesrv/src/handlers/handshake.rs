@@ -14,8 +14,7 @@ use zohar_net::{Connection, ConnectionPhaseExt, ConnectionState};
 use zohar_protocol::game_pkt::ControlC2s;
 use zohar_protocol::game_pkt::ControlS2c;
 use zohar_protocol::game_pkt::handshake::{
-    HandshakeGameC2s as HandshakeC2s, HandshakeGameC2sSpecific, HandshakeGameS2c as HandshakeS2c,
-    HandshakeGameS2cSpecific,
+    HandshakeGameC2s as HandshakeC2s, HandshakeGameC2sSpecific, HandshakeGameS2cSpecific,
 };
 use zohar_protocol::game_pkt::{ServerInfo, ServerStatus};
 use zohar_protocol::handshake::{HandshakeOutcome, HandshakeState};
@@ -27,20 +26,16 @@ struct HandshakeCtx<'a> {
 
 async fn handle_enter(ctx: &mut HandshakeCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
     let now = Instant::now();
-    let mut effects = PhaseEffects::empty();
-    effects.push(
+    Ok(PhaseEffects::send_many([
         ControlS2c::SetClientPhase {
             phase: <ThisPhase as ConnectionState>::PHASE_ID,
         }
         .into(),
-    );
-    effects.push(
         ControlS2c::RequestHandshake {
             data: ctx.handshake.initial_sync_data(now),
         }
         .into(),
-    );
-    Ok(effects)
+    ]))
 }
 
 async fn handle_packet(
@@ -102,12 +97,13 @@ async fn handle_packet(
                     true,
                 )
             };
-            Ok(PhaseEffects::send(HandshakeS2c::Specific(
+            Ok(PhaseEffects::send(
                 HandshakeGameS2cSpecific::ChannelListResponse {
                     statuses,
                     is_ok: is_ok.into(),
-                },
-            )))
+                }
+                .into(),
+            ))
         }
     }
 }

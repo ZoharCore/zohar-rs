@@ -20,6 +20,8 @@ use zohar_domain::entity::player::PlayerClass as DomainPlayerClass;
 use zohar_domain::entity::player::PlayerGender as DomainPlayerGender;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerId;
+#[cfg(feature = "db-game")]
+use zohar_domain::entity::player::PlayerRuntimeSnapshot;
 
 #[cfg(feature = "db-auth")]
 pub mod auth {
@@ -306,6 +308,35 @@ pub mod game {
             .db_ctx("read deleted outcome")
     }
 
+    pub async fn save_player_runtime_state(
+        pool: &PgPool,
+        snapshot: &PlayerRuntimeSnapshot,
+    ) -> DbResult<()> {
+        let result = sqlx::query(
+            "UPDATE game.players
+             SET map_key = $1,
+                 local_x = $2,
+                 local_y = $3
+             WHERE id = $4
+               AND deleted_at IS NULL",
+        )
+        .bind(&snapshot.map_key)
+        .bind(snapshot.local_pos.x)
+        .bind(snapshot.local_pos.y)
+        .bind(i64::from(snapshot.id))
+        .execute(pool)
+        .await
+        .db_ctx("save player runtime state")?;
+
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(crate::DbError::Invariant(
+                "active player should exist when saving runtime state",
+            ))
+        }
+    }
+
     pub async fn acquire_session(
         pool: &PgPool,
         username: &str,
@@ -520,19 +551,78 @@ pub mod game {
         Ok(())
     }
 
-    pub async fn release_session(pool: &PgPool, username: &str, server_id: &str) -> DbResult<bool> {
+    pub async fn release_session(
+        pool: &PgPool,
+        username: &str,
+        server_id: &str,
+        connection_id: &str,
+    ) -> DbResult<bool> {
         let result = sqlx::query(
             "UPDATE game.sessions
              SET server_id = NULL, connection_id = NULL, state = 'AUTHED'
-             WHERE username = $1 AND server_id = $2",
+             WHERE username = $1 AND server_id = $2 AND connection_id = $3",
         )
         .bind(username)
         .bind(server_id)
+        .bind(connection_id)
         .execute(pool)
         .await
         .db_ctx("release session")?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn finalize_disconnect(
+        pool: &PgPool,
+        username: &str,
+        server_id: &str,
+        connection_id: &str,
+        snapshot: &PlayerRuntimeSnapshot,
+    ) -> DbResult<bool> {
+        let mut tx = pool.begin().await.db_ctx("begin finalize disconnect")?;
+
+        let player_result = sqlx::query(
+            "UPDATE game.players
+             SET map_key = $1,
+                 local_x = $2,
+                 local_y = $3
+             WHERE id = $4
+               AND deleted_at IS NULL",
+        )
+        .bind(&snapshot.map_key)
+        .bind(snapshot.local_pos.x)
+        .bind(snapshot.local_pos.y)
+        .bind(i64::from(snapshot.id))
+        .execute(&mut *tx)
+        .await
+        .db_ctx("save player runtime state during disconnect finalize")?;
+
+        if player_result.rows_affected() != 1 {
+            return Err(crate::DbError::Invariant(
+                "active player should exist when finalizing disconnect",
+            ));
+        }
+
+        let session_result = sqlx::query(
+            "UPDATE game.sessions
+             SET server_id = NULL, connection_id = NULL, state = 'AUTHED'
+             WHERE username = $1 AND server_id = $2 AND connection_id = $3",
+        )
+        .bind(username)
+        .bind(server_id)
+        .bind(connection_id)
+        .execute(&mut *tx)
+        .await
+        .db_ctx("release session during disconnect finalize")?;
+
+        if session_result.rows_affected() != 1 {
+            return Err(crate::DbError::Invariant(
+                "active session should exist when finalizing disconnect",
+            ));
+        }
+
+        tx.commit().await.db_ctx("commit finalize disconnect")?;
+        Ok(true)
     }
 
     pub async fn update_session_heartbeat(pool: &PgPool, username: &str) -> DbResult<()> {

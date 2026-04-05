@@ -61,7 +61,7 @@ pub(crate) fn make_entity_spawn_payload(
 
         Some(EntityDetails {
             entity_id: net_id.net_id,
-            name: format!("[{}] {}", mob_ref.mob_id.get(), proto.name),
+            name: format!("[{}] {}", net_id.net_id.0, proto.name),
             body_part: 0,
             wep_part: 0,
             hair_part: 0,

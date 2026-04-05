@@ -1,6 +1,7 @@
 pub mod skill;
 
 use crate::DbId;
+use crate::coords::LocalPos;
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,4 +61,13 @@ pub struct PlayerSummary {
     pub appearance: PlayerBaseAppearance,
     pub level: i32,
     pub stats: PlayerStats,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerRuntimeSnapshot {
+    pub id: PlayerId,
+    pub map_key: String,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = crate::coords::LocalPosReflect))]
+    pub local_pos: LocalPos,
 }

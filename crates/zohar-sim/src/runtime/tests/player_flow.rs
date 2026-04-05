@@ -20,6 +20,7 @@ use super::state::{
 use super::util::sample_player_motion_at;
 use crate::MapEventSender;
 use crate::motion::EntityMotionSpeedTable;
+use crate::persistence::{PlayerPersistenceCoordinatorHandle, player_persistence_channel};
 use crate::types::MapInstanceKey;
 use zohar_domain::appearance::{EntityKind, PlayerAppearance};
 use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize};
@@ -71,6 +72,7 @@ fn test_configs(map_key: MapInstanceKey) -> (SharedConfig, MapConfig) {
         },
         MapConfig {
             map_key,
+            map_code: "test_map".to_string(),
             empire: None,
             local_size: LocalSize::new(16_384.0, 16_384.0),
             navigator: None,
@@ -156,7 +158,22 @@ fn build_runtime_app(
     map: MapConfig,
     with_outbox: bool,
 ) -> (App, MapEventSender) {
-    let (mut app, map_events) = build_map_app_with_options(shared, map, 64, with_outbox);
+    build_runtime_app_with_persistence(
+        shared,
+        map,
+        PlayerPersistenceCoordinatorHandle::disabled(),
+        with_outbox,
+    )
+}
+
+fn build_runtime_app_with_persistence(
+    shared: SharedConfig,
+    map: MapConfig,
+    player_persistence: PlayerPersistenceCoordinatorHandle,
+    with_outbox: bool,
+) -> (App, MapEventSender) {
+    let (mut app, map_events) =
+        build_map_app_with_options(shared, map, player_persistence, 64, with_outbox);
     app.update();
     (app, map_events)
 }
@@ -593,7 +610,13 @@ fn startup_ready_signal_fires_after_map_bootstrap() {
     let map_id = MapId::new(41);
     let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
     let (startup_tx, startup_rx) = tokio::sync::oneshot::channel();
-    let (mut app, _map_events) = build_map_app_with_options(shared, map, 16, false);
+    let (mut app, _map_events) = build_map_app_with_options(
+        shared,
+        map,
+        PlayerPersistenceCoordinatorHandle::disabled(),
+        16,
+        false,
+    );
     app.insert_resource(StartupReadySignal::new(startup_tx));
     app.update();
 
@@ -1484,6 +1507,57 @@ fn timer_only_mob_state_updates_do_not_mark_runtime_dirty() {
         !app.world().resource::<RuntimeState>().is_dirty,
         "timer-only state updates should not trigger AOI reconciliation"
     );
+}
+
+#[test]
+fn leave_player_and_snapshot_round_trips_without_later_inbound_traffic() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (persistence_handle, _persistence_rx) = player_persistence_channel(4);
+    let (mut app, inbound_tx) =
+        build_runtime_app_with_persistence(shared, map, persistence_handle, false);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_205);
+    let _player_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(20.0, 20.0),
+    );
+    advance_tick(&mut app);
+
+    let wait = std::thread::spawn({
+        let inbound_tx = inbound_tx.clone();
+        move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                inbound_tx
+                    .leave_player_and_snapshot(LeaveMsg {
+                        player_id,
+                        player_net_id,
+                    })
+                    .await
+            })
+        }
+    });
+
+    let snapshot = loop {
+        run_pre_update(&mut app);
+        match wait.is_finished() {
+            true => break wait.join().expect("join").expect("snapshot"),
+            false => std::thread::yield_now(),
+        }
+    };
+
+    assert!(
+        !map_has_players(app.world_mut()),
+        "leave+snapshot should complete on the next tick even when no new inbound traffic arrives"
+    );
+    assert_eq!(snapshot.id, player_id);
 }
 
 #[test]

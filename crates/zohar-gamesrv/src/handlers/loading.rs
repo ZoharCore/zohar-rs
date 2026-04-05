@@ -10,70 +10,66 @@
 use super::control::{ControlDecision, handle_session_control};
 use super::runtime::{
     PhaseEffects, base_phase_span, disconnect, make_heartbeat_interval, run_phase,
+    wait_for_server_drain,
 };
 use super::session_health::{SessionTick, SessionTracker};
-use super::types::{PhaseResult, SessionEnd};
+use super::types::{PhaseResult, SessionEnd, SessionLeaseAction};
 use crate::GameContext;
 use crate::adapters::ToProtocol;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
 use zohar_db::{GameDb, PlayersView, ProfilesView, SessionsView};
-use zohar_domain::Empire;
-use zohar_domain::coords::WorldPos;
+use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::entity::player::skill::SkillBranch;
 use zohar_net::connection::NextConnection;
+use zohar_net::connection::game_conn::LoadedPlayer;
 use zohar_net::connection::game_conn::Loading as ThisPhase;
 use zohar_net::{Connection, ConnectionPhaseExt};
 use zohar_protocol::decode_cstr;
 use zohar_protocol::game_pkt::ControlS2c;
-use zohar_protocol::game_pkt::NetId;
-use zohar_protocol::game_pkt::loading::{
-    LoadingC2s, LoadingC2sSpecific, LoadingS2c, LoadingS2cSpecific,
-};
+use zohar_protocol::game_pkt::loading::{LoadingC2s, LoadingC2sSpecific, LoadingS2cSpecific};
 
 struct LoadingCtx<'a> {
     ctx: Arc<GameContext>,
     handshake: &'a mut zohar_protocol::handshake::HandshakeState,
     session: &'a mut SessionTracker,
     username: String,
-    player_name: String,
     player_id: zohar_domain::entity::player::PlayerId,
-    net_id: NetId,
-    // Player data from DB
-    player_class: zohar_domain::entity::player::PlayerClass,
-    player_gender: zohar_domain::entity::player::PlayerGender,
-    player_empire: Empire,
-    spawn_pos: WorldPos,
+    entry: LoadedPlayer,
 }
 
 async fn handle_enter(state: &LoadingCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
+    let spawn_pos = state
+        .ctx
+        .coords
+        .local_to_world(state.entry.map_id, state.entry.initial_pos)
+        .expect("resolved local spawn position must map to world coordinates");
     info!(
         username = %state.username,
         player_id = ?state.player_id,
-        spawn_x = state.spawn_pos.x,
-        spawn_y = state.spawn_pos.y,
+        spawn_x = spawn_pos.x,
+        spawn_y = spawn_pos.y,
         "Loading player data"
     );
 
-    let mut effects = PhaseEffects::empty();
-
     // Convert meter float world coords into centimeter i32 world coords
-    let (x, y) = state.spawn_pos.to_protocol();
+    let (x, y) = spawn_pos.to_protocol();
 
-    effects.push(LoadingS2c::Specific(LoadingS2cSpecific::SetMainCharacter {
-        net_id: state.net_id,
-        class_gender: (state.player_class, state.player_gender).to_protocol(),
-        name: state.player_name.clone().into(),
-        x,
-        y,
-        empire: state.player_empire.to_protocol(),
-        skill_branch: None::<SkillBranch>.to_protocol(),
-    }));
-    effects.push(LoadingS2c::Specific(
-        LoadingS2cSpecific::SetMainCharacterStats { stats: [0; 255] },
-    ));
-    Ok(effects)
+    Ok(PhaseEffects::send_many([
+        LoadingS2cSpecific::SetMainCharacter {
+            net_id: state.entry.net_id,
+            class_gender: (state.entry.appearance.class, state.entry.appearance.gender)
+                .to_protocol(),
+            name: state.entry.appearance.name.clone().into(),
+            x,
+            y,
+            empire: state.entry.appearance.empire.to_protocol(),
+            skill_branch: None::<SkillBranch>.to_protocol(),
+        }
+        .into(),
+        LoadingS2cSpecific::SetMainCharacterStats { stats: [0; 255] }.into(),
+    ]))
 }
 
 async fn handle_tick(
@@ -111,11 +107,7 @@ async fn handle_packet(
     match packet {
         LoadingC2s::Control(control) => {
             match handle_session_control(control, now, state.handshake)? {
-                ControlDecision::Handled(outcome) => {
-                    let mut effects = PhaseEffects::empty();
-                    effects.extend(outcome.send);
-                    Ok(effects)
-                }
+                ControlDecision::Handled(outcome) => Ok(PhaseEffects::send_many(outcome.send)),
                 ControlDecision::Reject(reason) => Ok(PhaseEffects::disconnect(reason)),
             }
         }
@@ -133,7 +125,7 @@ async fn handle_packet(
         }
         LoadingC2s::Specific(LoadingC2sSpecific::SignalLoadingComplete) => {
             info!(username = %state.username, player_id = ?state.player_id, "Entering game");
-            Ok(PhaseEffects::transition(state.net_id))
+            Ok(PhaseEffects::transition(state.entry.clone()))
         }
     }
 }
@@ -141,7 +133,7 @@ async fn handle_packet(
 async fn apply_effects(
     conn: &mut Connection<ThisPhase>,
     effects: PhaseEffects<ThisPhase>,
-) -> PhaseResult<Option<NetId>> {
+) -> PhaseResult<Option<LoadedPlayer>> {
     for packet in effects.send {
         conn.send(packet).await?;
     }
@@ -155,6 +147,10 @@ async fn drive_loading(
     mut conn: Connection<ThisPhase>,
     state: &mut LoadingCtx<'_>,
 ) -> PhaseResult<NextConnection<ThisPhase>> {
+    if state.ctx.drain.is_draining() {
+        return Err(disconnect("server draining"));
+    }
+
     // Enter phase
     let effects = handle_enter(state).await?;
     if let Some(data) = apply_effects(&mut conn, effects).await? {
@@ -162,11 +158,15 @@ async fn drive_loading(
     }
 
     let mut heartbeat = make_heartbeat_interval(state.ctx.heartbeat_interval);
+    let mut drain_rx = Some(state.ctx.drain.subscribe());
     heartbeat.tick().await;
 
     loop {
         let now = Instant::now();
         let effects = tokio::select! {
+            _ = wait_for_server_drain(&mut drain_rx) => {
+                PhaseEffects::disconnect("server draining")
+            }
             _ = heartbeat.tick() => handle_tick(now, state).await?,
             packet = conn.recv() => {
                 let packet = packet?.ok_or_else(|| disconnect("connection closed"))?;
@@ -186,6 +186,13 @@ pub(crate) async fn run_loading(
     handshake: &mut zohar_protocol::handshake::HandshakeState,
     session: &mut SessionTracker,
 ) -> Result<NextConnection<ThisPhase>, SessionEnd> {
+    if ctx.drain.is_draining() {
+        return Err(SessionEnd::AfterLogin {
+            username: conn.username().to_string(),
+            lease_action: SessionLeaseAction::Release,
+        });
+    }
+
     let username = conn.username().to_string();
     let end_username = username.clone();
     let player_id = conn.player_id();
@@ -199,9 +206,11 @@ pub(crate) async fn run_loading(
         .await
         .map_err(|_e| SessionEnd::AfterLogin {
             username: username.clone(),
+            lease_action: SessionLeaseAction::Release,
         })?
         .ok_or_else(|| SessionEnd::AfterLogin {
             username: username.clone(),
+            lease_action: SessionLeaseAction::Release,
         })?;
 
     // Compute spawn position from DB or empire default
@@ -228,32 +237,39 @@ pub(crate) async fn run_loading(
             "Falling back to empire start spawn"
         );
     }
-    let spawn_pos = ctx
-        .coords
-        .local_to_world(resolved_spawn.map_id, resolved_spawn.local_pos)
-        .expect("resolved local spawn position must map to world coordinates");
-
     let entity_id = ctx
         .map_events
         .reserve_net_id()
         .await
         .map_err(|_e| SessionEnd::AfterLogin {
             username: username.clone(),
+            lease_action: SessionLeaseAction::Release,
         })?;
-    let net_id = entity_id.to_protocol();
+    let appearance = PlayerAppearance {
+        name: player_name.clone(),
+        class: player.class,
+        gender: player.gender,
+        empire: player_empire,
+        body_part: player.appearance.to_protocol() as u16,
+        level: player.level as u32,
+        move_speed: 100,
+        attack_speed: 100,
+        guild_id: 0,
+    };
+    let entry = LoadedPlayer {
+        net_id: entity_id.to_protocol(),
+        map_id: resolved_spawn.map_id,
+        initial_pos: resolved_spawn.local_pos,
+        appearance,
+    };
 
     let mut state = LoadingCtx {
         ctx: Arc::clone(ctx),
         handshake,
         session,
         username,
-        player_name,
         player_id,
-        net_id,
-        player_class: player.class,
-        player_gender: player.gender,
-        player_empire,
-        spawn_pos,
+        entry,
     };
 
     let span = base_phase_span::<ThisPhase>();
@@ -262,6 +278,7 @@ pub(crate) async fn run_loading(
         "Disconnected during loading",
         SessionEnd::AfterLogin {
             username: end_username,
+            lease_action: SessionLeaseAction::Release,
         },
         span,
         drive_loading(conn, &mut state),

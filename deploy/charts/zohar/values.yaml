@@ -67,7 +67,7 @@ auth:
     tag: latest
     pullPolicy: IfNotPresent
   replicas: 1
-  logFilter: info,zohar_auth_server=info,zohar_db=info
+  logFilter: info,zohar_authsrv=info,zohar_db=info
   service:
     type: LoadBalancer
     port: 11000
@@ -92,7 +92,7 @@ channelGateway:
     tag: latest
     pullPolicy: IfNotPresent
   replicas: 1
-  logFilter: info,zohar_game_server=info,zohar_db=info
+  logFilter: info,zohar_gamesrv=info,zohar_db=info
   containerPort: 13000
   heartbeatIntervalSecs: 30
   tokenWindowSecs: 30
@@ -130,7 +130,7 @@ core:
     tag: latest
     pullPolicy: IfNotPresent
   containerPort: 13000
-  logFilter: info,zohar_game_server=info,zohar_db=info
+  logFilter: info,zohar_core=info,zohar_gamesrv=info,zohar_db=info
   contentDbPath: /var/lib/zohar/content.db
   heartbeatIntervalSecs: 30
   sessionStaleSecs: 90
