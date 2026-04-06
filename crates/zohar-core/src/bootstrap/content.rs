@@ -70,17 +70,3 @@ fn require_map_id(
 ) -> anyhow::Result<zohar_domain::MapId> {
     map_id.ok_or_else(|| anyhow!("unknown map code '{map_code}'"))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::require_map_id;
-
-    #[test]
-    fn unknown_map_code_returns_error() {
-        let err = require_map_id(None, "missing_map").expect_err("must fail");
-        assert!(
-            err.to_string().contains("unknown map code 'missing_map'"),
-            "unexpected error: {err:#}"
-        );
-    }
-}

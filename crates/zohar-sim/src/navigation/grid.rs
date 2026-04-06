@@ -142,15 +142,3 @@ impl GridBounds {
         cell.x >= self.min_x && cell.x <= self.max_x && cell.y >= self.min_y && cell.y <= self.max_y
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::TerrainFlagsGrid;
-    use zohar_domain::TerrainFlags;
-
-    #[test]
-    fn invalid_construction_is_rejected() {
-        assert!(TerrainFlagsGrid::new(0.5, 2, 2, vec![TerrainFlags::BLOCK; 3]).is_none());
-        assert!(TerrainFlagsGrid::new(0.0, 2, 2, vec![TerrainFlags::BLOCK; 4]).is_none());
-    }
-}

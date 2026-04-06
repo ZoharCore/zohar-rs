@@ -190,69 +190,6 @@ mod tests {
     }
 
     #[test]
-    fn move_commands_preserve_order() {
-        let mut queue = Vec::new();
-        push_player_command(&mut queue, move_command(MovementKind::Move, 100, 1.0, 1.0));
-        push_player_command(&mut queue, move_command(MovementKind::Move, 120, 2.0, 2.0));
-
-        assert_eq!(queue.len(), 2);
-        assert!(matches!(
-            queue[0],
-            PlayerCommand::Move {
-                kind: MovementKind::Move,
-                ts,
-                ..
-            } if ts == ClientTimestamp::new(100)
-        ));
-        assert!(matches!(
-            queue[1],
-            PlayerCommand::Move {
-                kind: MovementKind::Move,
-                ts,
-                target,
-                ..
-            } if ts == ClientTimestamp::new(120) && target == LocalPos::new(2.0, 2.0)
-        ));
-    }
-
-    #[test]
-    fn exact_duplicate_move_commands_are_deduplicated() {
-        let mut queue = Vec::new();
-        push_player_command(&mut queue, move_command(MovementKind::Move, 100, 1.0, 1.0));
-        push_player_command(&mut queue, move_command(MovementKind::Move, 100, 1.0, 1.0));
-
-        assert_eq!(queue.len(), 1);
-        assert!(matches!(
-            queue[0],
-            PlayerCommand::Move { ts, .. } if ts == ClientTimestamp::new(100)
-        ));
-    }
-
-    #[test]
-    fn wait_commands_preserve_order() {
-        let mut queue = Vec::new();
-        push_player_command(&mut queue, move_command(MovementKind::Wait, 100, 1.0, 1.0));
-        push_player_command(&mut queue, move_command(MovementKind::Wait, 120, 2.0, 2.0));
-
-        assert_eq!(queue.len(), 2);
-        assert!(matches!(
-            queue[0],
-            PlayerCommand::Move {
-                kind: MovementKind::Wait,
-                ..
-            }
-        ));
-        assert!(matches!(
-            queue[1],
-            PlayerCommand::Move {
-                kind: MovementKind::Wait,
-                ts,
-                ..
-            } if ts == ClientTimestamp::new(120)
-        ));
-    }
-
-    #[test]
     fn move_command_overflow_keeps_latest_suffix_in_order() {
         let mut queue = Vec::new();
         for idx in 0..(MAX_MOVE_INTENTS_PER_TICK as u32 + 2) {

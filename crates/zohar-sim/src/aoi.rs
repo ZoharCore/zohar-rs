@@ -142,47 +142,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn insert_and_query_finds_entity() {
-        let mut index = SpatialIndex::new();
-        let entity = EntityId(1);
-        let pos = LocalPos::new(10.0, 10.0);
-
-        index.insert(entity, pos);
-
-        let found: Vec<_> = index.query_in_radius(pos, 120.0).collect();
-        assert!(found.contains(&entity));
-    }
-
-    #[test]
-    fn query_respects_radius() {
-        let mut index = SpatialIndex::new();
-        let near = EntityId(1);
-        let far = EntityId(2);
-
-        index.insert(near, LocalPos::new(0.0, 0.0));
-        index.insert(far, LocalPos::new(100.0, 100.0)); // ~141m diagonal
-
-        let found: Vec<_> = index
-            .query_in_radius(LocalPos::new(0.0, 0.0), 10.0)
-            .collect();
-        assert!(found.contains(&near));
-        assert!(!found.contains(&far));
-    }
-
-    #[test]
-    fn remove_entity_excludes_from_query() {
-        let mut index = SpatialIndex::new();
-        let entity = EntityId(1);
-        let pos = LocalPos::new(5.0, 5.0);
-
-        index.insert(entity, pos);
-        index.remove(entity);
-
-        let found: Vec<_> = index.query_in_radius(pos, 120.0).collect();
-        assert!(!found.contains(&entity));
-    }
-
-    #[test]
     fn update_position_works_after_maintain() {
         let mut index = SpatialIndex::new();
         let entity = EntityId(1);

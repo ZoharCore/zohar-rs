@@ -258,7 +258,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loads_none_payload_terrain_flags() {
+    async fn terrain_loader_codec_and_validation() {
+        // NONE codec loading
         let (_dir, pool) = setup_pool().await;
         let raw = vec![1u8; 1024 * 1280 * 4];
         sqlx::query(
@@ -278,59 +279,53 @@ mod tests {
         assert_eq!(grids[0].grid_width, 2048);
         assert_eq!(grids[0].grid_height, 2560);
         assert_eq!(grids[0].data, vec![TerrainFlags::BLOCK; raw.len()]);
-    }
 
-    #[tokio::test]
-    async fn loads_zstd_payload_terrain_flags() {
-        let (_dir, pool) = setup_pool().await;
-        let raw = vec![0x80u8; 2048 * 2560];
-        let compressed = zstd::stream::encode_all(raw.as_slice(), 3).expect("zstd");
+        // ZSTD codec loading (fresh pool)
+        let (_dir2, pool2) = setup_pool().await;
+        let raw_zstd = vec![0x80u8; 2048 * 2560];
+        let compressed = zstd::stream::encode_all(raw_zstd.as_slice(), 3).expect("zstd");
         sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
              VALUES (1, 0.5, 'ZSTD', ?1, ?2)",
         )
-        .bind(raw.len() as i64)
+        .bind(raw_zstd.len() as i64)
         .bind(compressed)
-        .execute(&pool)
+        .execute(&pool2)
         .await
         .expect("insert terrain_flags");
 
-        let grids = load_map_flag_grids(&pool, &maps_fixture())
+        let grids = load_map_flag_grids(&pool2, &maps_fixture())
             .await
             .expect("grids");
         assert_eq!(grids.len(), 1);
-        assert_eq!(grids[0].data, vec![TerrainFlags::OBJECT; raw.len()]);
-    }
+        assert_eq!(grids[0].data, vec![TerrainFlags::OBJECT; raw_zstd.len()]);
 
-    #[tokio::test]
-    async fn skips_non_integral_grid_dimensions() {
-        let (_dir, pool) = setup_pool_without_triggers().await;
+        // Non-integral grid dimensions (triggerless pool)
+        let (_dir3, pool3) = setup_pool_without_triggers().await;
         sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
              VALUES (1, 0.3, 'NONE', 4, X'01020304')",
         )
-        .execute(&pool)
+        .execute(&pool3)
         .await
         .expect("insert terrain_flags");
 
-        let grids = load_map_flag_grids(&pool, &maps_fixture())
+        let grids = load_map_flag_grids(&pool3, &maps_fixture())
             .await
             .expect("grids");
         assert!(grids.is_empty());
-    }
 
-    #[tokio::test]
-    async fn skips_raw_length_mismatch() {
-        let (_dir, pool) = setup_pool_without_triggers().await;
+        // Raw length mismatch (triggerless pool)
+        let (_dir4, pool4) = setup_pool_without_triggers().await;
         sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
              VALUES (1, 0.5, 'NONE', 3, X'01020304')",
         )
-        .execute(&pool)
+        .execute(&pool4)
         .await
         .expect("insert terrain_flags");
 
-        let grids = load_map_flag_grids(&pool, &maps_fixture())
+        let grids = load_map_flag_grids(&pool4, &maps_fixture())
             .await
             .expect("grids");
         assert!(grids.is_empty());

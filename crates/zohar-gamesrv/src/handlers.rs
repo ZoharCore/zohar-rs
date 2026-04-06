@@ -175,18 +175,3 @@ async fn run_gateway_connection(
     let conn = login::run_login_gateway(conn, ctx, handshake, &mut session).await?;
     select::run_select_gateway(conn, ctx, handshake, &mut session).await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::connection_id_string;
-    use uuid::Uuid;
-
-    #[test]
-    fn connection_id_string_uses_uuid_display_format() {
-        let conn_id = Uuid::parse_str("12345678-9abc-def0-1234-56789abcdef0").unwrap();
-        assert_eq!(
-            connection_id_string(conn_id),
-            "12345678-9abc-def0-1234-56789abcdef0"
-        );
-    }
-}

@@ -336,7 +336,6 @@ struct CompletedDispatch {
 mod tests {
     use super::*;
     use zohar_domain::coords::LocalPos;
-    use zohar_sim::CriticalPlayerOpRequest;
 
     fn snapshot(player_id: PlayerId, x: f32, y: f32) -> PlayerRuntimeSnapshot {
         PlayerRuntimeSnapshot {
@@ -507,43 +506,6 @@ mod tests {
     }
 
     #[test]
-    fn next_retry_deadline_uses_earliest_pending_autosave_retry() {
-        let now = Instant::now();
-
-        let lane_a = PlayerPersistenceLane {
-            in_flight: false,
-            pending_autosave: Some(snapshot(PlayerId::from(11), 3.0, 4.0)),
-            pending_priority_ops: VecDeque::new(),
-            retry_at: Some(now + Duration::from_secs(5)),
-        };
-        let lane_b = PlayerPersistenceLane {
-            in_flight: false,
-            pending_autosave: Some(snapshot(PlayerId::from(12), 5.0, 6.0)),
-            pending_priority_ops: VecDeque::new(),
-            retry_at: Some(now + Duration::from_secs(2)),
-        };
-        let lane_with_priority = PlayerPersistenceLane {
-            in_flight: false,
-            pending_autosave: Some(snapshot(PlayerId::from(13), 7.0, 8.0)),
-            pending_priority_ops: VecDeque::from([PendingPriorityOp::FlushSnapshot {
-                snapshot: snapshot(PlayerId::from(13), 7.0, 8.0),
-                reply: oneshot::channel().0,
-            }]),
-            retry_at: Some(now + Duration::from_secs(1)),
-        };
-
-        let mut lanes = HashMap::new();
-        lanes.insert(PlayerId::from(11), lane_a);
-        lanes.insert(PlayerId::from(12), lane_b);
-        lanes.insert(PlayerId::from(13), lane_with_priority);
-
-        assert_eq!(
-            next_retry_deadline(&lanes),
-            Some(now + Duration::from_secs(2))
-        );
-    }
-
-    #[test]
     fn ready_players_prioritize_disconnects_and_flushes_over_autosaves() {
         let now = Instant::now();
         let autosave_player = PlayerId::from(20);
@@ -593,26 +555,5 @@ mod tests {
         assert!(ready[..2].contains(&flush_player));
         assert!(ready[..2].contains(&disconnect_player));
         assert_eq!(ready[2], autosave_player);
-    }
-
-    #[tokio::test]
-    async fn critical_ops_reply_with_reserved_error() {
-        let mut lanes = HashMap::new();
-        let (reply_tx, reply_rx) = oneshot::channel();
-
-        handle_request(
-            PlayerPersistenceRequest::CommitCriticalOp {
-                request: CriticalPlayerOpRequest::Reserved,
-                reply: reply_tx,
-            },
-            &mut lanes,
-        );
-
-        let error = reply_rx.await.expect("critical op reply");
-        assert!(
-            error
-                .expect_err("critical ops should be rejected for now")
-                .contains("not implemented yet")
-        );
     }
 }

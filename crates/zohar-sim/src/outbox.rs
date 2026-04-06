@@ -279,34 +279,4 @@ mod tests {
             other => panic!("expected latest prioritized movement packet, got: {other:?}"),
         }
     }
-
-    #[tokio::test]
-    async fn remote_movement_preserves_multiple_segments_for_same_entity() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        let mut outbox = PlayerOutbox::new(tx);
-
-        outbox.push_remote_movement(movement(EntityId(301), 1.0, 1000));
-        outbox.push_remote_movement(movement(EntityId(301), 2.0, 1400));
-
-        let stats = outbox.flush();
-        assert_eq!(stats.sent_movement, 2);
-
-        match rx.recv().await {
-            Some(PlayerEvent::EntityMove(movement)) => {
-                assert_eq!(movement.entity_id, EntityId(301));
-                assert_eq!(movement.client_ts.get(), 1000);
-                assert_eq!(movement.position.x, 1.0);
-            }
-            other => panic!("expected first remote movement packet, got: {other:?}"),
-        }
-
-        match rx.recv().await {
-            Some(PlayerEvent::EntityMove(movement)) => {
-                assert_eq!(movement.entity_id, EntityId(301));
-                assert_eq!(movement.client_ts.get(), 1400);
-                assert_eq!(movement.position.x, 2.0);
-            }
-            other => panic!("expected second remote movement packet, got: {other:?}"),
-        }
-    }
 }

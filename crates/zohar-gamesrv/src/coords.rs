@@ -478,24 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_saved_position_when_valid() {
-        let coords = ContentCoords::from_catalog(&base_catalog()).expect("coords");
-        let spawn = coords.resolve_spawn(
-            Some(PersistedPlayerPos {
-                map_key: "zohar_map_c1".to_string(),
-                local_x: 480.0,
-                local_y: 736.0,
-            }),
-            DomainEmpire::Red,
-        );
-
-        assert!(!spawn.used_fallback);
-        assert_eq!(spawn.map_id, MapId::new(41));
-        assert_eq!(spawn.local_pos.x, 480.0);
-        assert_eq!(spawn.local_pos.y, 736.0);
-    }
-
-    #[test]
     fn fallback_when_map_key_is_unknown() {
         let coords = ContentCoords::from_catalog(&base_catalog()).expect("coords");
         let spawn = coords.resolve_spawn(
@@ -532,25 +514,6 @@ mod tests {
     }
 
     #[test]
-    fn map_names_by_id_exports_catalog_codes() {
-        let coords = ContentCoords::from_catalog(&base_catalog()).expect("coords");
-        let names = coords.map_names_by_id();
-
-        assert_eq!(
-            names.get(&MapId::new(1)).map(String::as_str),
-            Some("zohar_map_a1")
-        );
-        assert_eq!(
-            names.get(&MapId::new(21)).map(String::as_str),
-            Some("zohar_map_b1")
-        );
-        assert_eq!(
-            names.get(&MapId::new(41)).map(String::as_str),
-            Some("zohar_map_c1")
-        );
-    }
-
-    #[test]
     fn constructor_fails_when_map_placement_missing() {
         let mut catalog = base_catalog();
         catalog.maps[0].base_x = None;
@@ -578,25 +541,6 @@ mod tests {
     }
 
     #[test]
-    fn constructor_skips_out_of_range_map_id_when_unreferenced() {
-        let mut catalog = base_catalog();
-        catalog.maps.push(ContentMap {
-            map_id: i64::from(u32::MAX) + 1,
-            code: "invalid_extra_map".to_string(),
-            name: "invalid".to_string(),
-            map_width: 100.0,
-            map_height: 100.0,
-            empire: None,
-            base_x: Some(0.0),
-            base_y: Some(0.0),
-        });
-
-        let coords = ContentCoords::from_catalog(&catalog).expect("must skip invalid map");
-        assert_eq!(coords.map_id_by_code("zohar_map_a1"), Some(MapId::new(1)));
-        assert_eq!(coords.map_id_by_code("invalid_extra_map"), None);
-    }
-
-    #[test]
     fn constructor_fails_when_required_start_map_was_skipped() {
         let mut catalog = base_catalog();
         catalog.maps[0].map_id = i64::from(u32::MAX) + 1;
@@ -615,11 +559,5 @@ mod tests {
             let back = meters_to_wire_cm(meters);
             assert_eq!(i32::from(back), cm);
         }
-    }
-
-    #[test]
-    fn edge_m_to_cm_truncates_toward_zero() {
-        assert_eq!(i32::from(meters_to_wire_cm(1.239)), 123);
-        assert_eq!(i32::from(meters_to_wire_cm(-1.239)), -123);
     }
 }

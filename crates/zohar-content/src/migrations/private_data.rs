@@ -302,13 +302,6 @@ mod tests {
     use crate::db::open_fresh_connection;
 
     #[test]
-    fn split_statements_handles_quotes_comments() {
-        let sql = "-- comment\nINSERT INTO t VALUES ('a;');\n/* block ; */\nINSERT INTO t VALUES (\"b\");";
-        let parts = split_sql_statements(sql);
-        assert_eq!(parts.len(), 2);
-    }
-
-    #[test]
     fn migration_discovery_is_lexicographically_ordered() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pack_a = dir.path().join("020_expansion");

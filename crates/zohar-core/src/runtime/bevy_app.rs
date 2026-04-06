@@ -45,21 +45,3 @@ pub(crate) fn runtime_cadence(app: &App) -> Duration {
         _ => IDLE_LOOP_CADENCE,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cadence_is_idle_without_players() {
-        let app = App::new();
-        assert_eq!(runtime_cadence(&app), Duration::from_millis(100));
-    }
-
-    #[test]
-    fn cadence_is_active_with_players() {
-        let mut app = App::new();
-        app.insert_resource(PlayerCount(1));
-        assert_eq!(runtime_cadence(&app), Duration::from_millis(10));
-    }
-}

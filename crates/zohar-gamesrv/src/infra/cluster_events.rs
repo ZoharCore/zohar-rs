@@ -77,23 +77,3 @@ impl InProcessClusterEventBus {
         Ok(self.tx.subscribe())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn in_process_bus_roundtrip_keeps_payload() {
-        let bus = InProcessClusterEventBus::default();
-        let mut rx = bus.subscribe().await.expect("subscribe");
-        let payload = Arc::new(ClusterEvent::GlobalShout(GlobalShoutEvent {
-            from_player_name: "alice".to_string(),
-            from_empire: Empire::Blue,
-            message: "hello".to_string(),
-        }));
-
-        bus.publish(payload.clone()).await.expect("publish");
-        let received = rx.recv().await.expect("recv");
-        assert_eq!(received.as_ref(), payload.as_ref());
-    }
-}

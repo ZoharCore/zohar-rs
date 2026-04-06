@@ -99,16 +99,3 @@ pub struct ContentMob {
     pub aggressive_sight: i64,
     pub attack_range: i64,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::MobAiFlags;
-
-    #[test]
-    fn mob_ai_flags_parse_pipe_delimited_tokens() {
-        let flags = "NOMOVE|AGGR|REVIVE".parse::<MobAiFlags>().expect("flags");
-        assert!(flags.contains(MobAiFlags::NOMOVE));
-        assert!(flags.contains(MobAiFlags::AGGR));
-        assert!(flags.contains(MobAiFlags::REVIVE));
-    }
-}

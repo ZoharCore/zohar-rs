@@ -109,7 +109,8 @@ mod tests {
     use zohar_domain::Empire;
 
     #[test]
-    fn global_shout_roundtrip_codec() {
+    fn cluster_event_codec_happy_and_error_paths() {
+        // Roundtrip encoding/decoding
         let event = ClusterEvent::GlobalShout(GlobalShoutEvent {
             from_player_name: "alice".to_string(),
             from_empire: Empire::Yellow,
@@ -118,19 +119,15 @@ mod tests {
         let encoded = encode_event(&event).expect("encode");
         let decoded = decode_global_shout(&encoded).expect("decode");
         assert_eq!(decoded, event);
-    }
 
-    #[test]
-    fn invalid_payload_is_rejected() {
+        // Invalid payload (missing required fields)
         let err = decode_global_shout(r#"{"from_player_name":"a"}"#).expect_err("must fail");
         assert!(
             err.to_string().contains("missing"),
             "unexpected error: {err:#}"
         );
-    }
 
-    #[test]
-    fn invalid_empire_code_is_rejected() {
+        // Invalid empire code
         let payload = GlobalShoutPayload {
             from_player_name: "alice".to_string(),
             from_empire: 0,

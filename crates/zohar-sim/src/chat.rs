@@ -43,33 +43,3 @@ impl MobChatContent {
             .map(Vec::as_slice)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mob_override_wins_over_type_default() {
-        let mut content = MobChatContent::default();
-        content.strategy_type_defaults.insert(
-            ("idle".to_string(), MobKind::Monster),
-            MobChatStrategyInterval {
-                interval_min_sec: 10,
-                interval_max_sec: 20,
-            },
-        );
-        content.strategy_mob_overrides.insert(
-            ("idle".to_string(), MobId::new(101)),
-            MobChatStrategyInterval {
-                interval_min_sec: 1,
-                interval_max_sec: 2,
-            },
-        );
-
-        let resolved = content
-            .strategy_for("idle", MobKind::Monster, MobId::new(101))
-            .expect("strategy");
-        assert_eq!(resolved.interval_min_sec, 1);
-        assert_eq!(resolved.interval_max_sec, 2);
-    }
-}

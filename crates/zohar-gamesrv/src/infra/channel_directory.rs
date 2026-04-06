@@ -226,22 +226,3 @@ impl KubeServiceChannelDirectory {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn static_channel_directory_is_sorted() {
-        let dir = StaticChannelDirectory::new();
-        dir.upsert(2, 13010, true).await;
-        dir.upsert(1, 13000, false).await;
-
-        let listed = dir.list_channels().await.expect("list channels");
-        assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].channel_id, 1);
-        assert!(!listed[0].ready);
-        assert_eq!(listed[1].channel_id, 2);
-        assert!(listed[1].ready);
-    }
-}

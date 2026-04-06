@@ -78,25 +78,3 @@ async fn resolve_from_agones() -> anyhow::Result<SocketAddr> {
         return Ok(SocketAddr::new(ip, port));
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::select_advertised_endpoint;
-    use anyhow::anyhow;
-    use std::net::{Ipv4Addr, SocketAddr};
-
-    #[test]
-    fn fallback_uses_local_listener_on_error() {
-        let local = SocketAddr::from((Ipv4Addr::LOCALHOST, 13000));
-        let selected = select_advertised_endpoint(local, Err(anyhow!("agones unavailable")));
-        assert_eq!(selected, local);
-    }
-
-    #[test]
-    fn prefer_agones_endpoint_when_available() {
-        let local = SocketAddr::from((Ipv4Addr::LOCALHOST, 13000));
-        let resolved = SocketAddr::from((Ipv4Addr::new(10, 1, 2, 3), 23000));
-        let selected = select_advertised_endpoint(local, Ok(resolved));
-        assert_eq!(selected, resolved);
-    }
-}

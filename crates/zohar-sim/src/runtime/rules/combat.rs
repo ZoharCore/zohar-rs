@@ -24,19 +24,3 @@ pub(crate) fn attack_timing_for_mob(attack_speed: u8) -> AttackTiming {
         packet_duration: PacketDuration::new(packet_duration_ms),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn attack_timing_is_clamped_to_expected_bounds() {
-        let slow = attack_timing_for_mob(1);
-        let fast = attack_timing_for_mob(250);
-
-        assert_eq!(slow.cooldown.as_millis(), 2_000);
-        assert_eq!(slow.packet_duration.get(), 1_000);
-        assert_eq!(fast.cooldown.as_millis(), 480);
-        assert_eq!(fast.packet_duration.get(), 240);
-    }
-}

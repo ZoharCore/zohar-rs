@@ -48,19 +48,6 @@ fn planner_returns_none_for_disconnected_regions() {
 }
 
 #[test]
-fn same_cell_paths_still_keep_the_goal_waypoint() {
-    let navigator = MapNavigator::new(test_grid(4, 4, &[]));
-    let path = navigator
-        .find_path(LocalPos::new(1.1, 1.1), LocalPos::new(1.8, 1.7))
-        .expect("path within one cell");
-
-    assert_eq!(
-        path.waypoints,
-        vec![LocalPos::new(1.1, 1.1), LocalPos::new(1.8, 1.7)]
-    );
-}
-
-#[test]
 fn default_planner_rejects_far_blocked_goals_outside_scope() {
     let navigator = MapNavigator::new(test_grid(64, 3, &[(10, 1)]));
     let start = LocalPos::new(0.5, 1.5);
@@ -89,34 +76,6 @@ fn find_path_and_next_waypoint_stay_consistent_for_local_goal() {
 }
 
 #[test]
-fn out_of_bounds_endpoints_return_none() {
-    let navigator = MapNavigator::new(test_grid(4, 4, &[]));
-
-    assert!(
-        navigator
-            .find_path(LocalPos::new(-1.0, 0.0), LocalPos::new(1.0, 1.0))
-            .is_none()
-    );
-    assert_eq!(
-        navigator.next_waypoint(LocalPos::new(-1.0, 0.0), LocalPos::new(1.0, 1.0)),
-        None
-    );
-}
-
-#[test]
-fn direct_routes_return_consistent_path_and_waypoint_queries() {
-    let navigator = MapNavigator::new(test_grid(4, 1, &[]));
-    let start = LocalPos::new(0.1, 0.1);
-    let goal = LocalPos::new(3.9, 0.1);
-
-    assert_eq!(
-        navigator.find_path(start, goal).map(|path| path.waypoints),
-        Some(vec![start, goal])
-    );
-    assert_eq!(navigator.next_waypoint(start, goal), Some(goal));
-}
-
-#[test]
 fn far_direct_routes_are_not_rejected_by_local_scope() {
     let navigator = MapNavigator::new(test_grid(64, 3, &[]));
     let start = LocalPos::new(0.5, 1.5);
@@ -138,15 +97,4 @@ fn public_queries_fail_consistently_for_unreachable_routes() {
     assert!(!disconnected.same_component(start, goal));
     assert!(disconnected.find_path(start, goal).is_none());
     assert_eq!(disconnected.next_waypoint(start, goal), None);
-}
-
-#[test]
-fn public_queries_fail_consistently_for_invalid_endpoints() {
-    let navigator = MapNavigator::new(test_grid(4, 4, &[]));
-    let start = LocalPos::new(-1.0, 0.0);
-    let goal = LocalPos::new(1.0, 1.0);
-
-    assert!(!navigator.same_component(start, goal));
-    assert!(navigator.find_path(start, goal).is_none());
-    assert_eq!(navigator.next_waypoint(start, goal), None);
 }

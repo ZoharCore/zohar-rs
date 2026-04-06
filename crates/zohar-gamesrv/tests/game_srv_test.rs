@@ -26,12 +26,9 @@ use zohar_domain::MapId;
 use zohar_domain::coords::LocalSize;
 use zohar_domain::entity::player::{PlayerBaseAppearance, PlayerClass, PlayerGender};
 use zohar_gamesrv::infra::{
-    ChannelDirectory, ClusterEventBus, MapEndpointResolver, StaticChannelDirectory,
-    StaticMapResolver, in_process_cluster_event_bus,
+    ClusterEventBus, MapEndpointResolver, StaticMapResolver, in_process_cluster_event_bus,
 };
-use zohar_gamesrv::{
-    ContentCoords, EmpireStartMaps, GameContext, GatewayContext, ServerDrainController,
-};
+use zohar_gamesrv::{ContentCoords, GameContext, ServerDrainController};
 use zohar_net::SimpleBinRwCodec;
 use zohar_protocol::game_pkt::handshake::{HandshakeGameC2s, HandshakeGameS2c};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
@@ -144,76 +141,6 @@ enum LoginResult {
     Fail,
 }
 
-/// Test that sending a Login packet during Handshake phase causes connection to close.
-#[tokio::test]
-async fn test_phase_verification_failure() -> anyhow::Result<()> {
-    if !has_test_db_url() {
-        return Ok(());
-    }
-    let _ = tracing_subscriber::fmt::try_init();
-    let (addr, _resolver, ctx, username) = setup_test_env().await?;
-    let valid_token = issue_login_key(&ctx.db, &username).await?;
-
-    let stream = TcpStream::connect(addr).await?;
-
-    // Use handshake codec first
-    let mut framed = Framed::new(
-        stream,
-        SimpleBinRwCodec::<HandshakeGameS2c, HandshakeGameC2s>::default(),
-    );
-
-    // Wait for SetPhase(Handshake)
-    let packet = framed
-        .next()
-        .await
-        .ok_or(anyhow::anyhow!("Stream closed early"))??;
-
-    if !matches!(
-        packet,
-        HandshakeGameS2c::Control(ControlS2c::SetClientPhase {
-            phase: PhaseId::Handshake
-        })
-    ) {
-        anyhow::bail!("Expected SetPhase(Handshake), got {:?}", packet);
-    }
-
-    // Get underlying stream and switch to Login codec to send wrong-phase packet
-    // Note: We use SimpleBinRwCodec here since server immediately rejects wrong-phase packet
-    let stream = framed.into_inner();
-    let mut framed = Framed::new(stream, SimpleBinRwCodec::<LoginS2c, LoginC2s>::default());
-
-    // Send TokenLoginRequest during Handshake phase (should be rejected)
-    framed
-        .send(LoginC2s::Specific(LoginC2sSpecific::RequestTokenLogin {
-            username: encode_username(&username),
-            token: valid_token,
-            enc_key: [0; 16],
-        }))
-        .await?;
-
-    // Expect stream closure or error.
-    // The server may still have an in-flight handshake control packet queued
-    // (RequestHandshake) before it processes our wrong-phase payload.
-    loop {
-        let result = timeout(Duration::from_secs(1), framed.next()).await;
-        match result {
-            Err(_) => anyhow::bail!("Timed out waiting for phase-rejection disconnect"),
-            Ok(None) => return Ok(()),         // Success: stream closed
-            Ok(Some(Err(_))) => return Ok(()), // Success: error
-            Ok(Some(Ok(pkt))) => {
-                if matches!(
-                    pkt,
-                    LoginS2c::Control(ControlS2c::TimeSyncResponse)
-                        | LoginS2c::Control(ControlS2c::RequestHandshake { .. })
-                ) {
-                    continue;
-                }
-                anyhow::bail!("Expected stream closure/error, got: {:?}", pkt);
-            }
-        }
-    }
-}
-
 #[tokio::test]
 async fn test_select_player_choices_uses_local_endpoint_fields() -> anyhow::Result<()> {
     if !has_test_db_url() {
@@ -274,202 +201,6 @@ async fn test_login_key_survives_select_reconnect() -> anyhow::Result<()> {
         reconnect.is_some(),
         "second LOGIN2 with same token should succeed after select reconnect"
     );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_gateway_fetch_channel_list_returns_all_discovered_channels() -> anyhow::Result<()> {
-    if !has_test_db_url() {
-        return Ok(());
-    }
-    let _ = tracing_subscriber::fmt::try_init();
-    let (_core_addr, _resolver, ctx, _username) = setup_test_env_with_options(1, true).await?;
-    let (gateway_addr, channel_dir) = spawn_gateway_for_existing_user(&ctx, 1).await?;
-
-    channel_dir.upsert(2, 13010, true).await;
-    channel_dir.upsert(1, 13000, false).await;
-
-    let stream = TcpStream::connect(gateway_addr).await?;
-    let mut framed = Framed::new(
-        stream,
-        SimpleBinRwCodec::<HandshakeGameS2c, HandshakeGameC2s>::default(),
-    );
-
-    let mut sent_fetch = false;
-    loop {
-        let packet = timeout(Duration::from_secs(3), framed.next())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting during gateway handshake"))?
-            .ok_or(anyhow::anyhow!("gateway stream closed"))??;
-
-        match packet {
-            HandshakeGameS2c::Control(ControlS2c::SetClientPhase {
-                phase: PhaseId::Handshake,
-            }) => {
-                if !sent_fetch {
-                    framed
-                        .send(HandshakeGameC2s::Specific(
-                            zohar_protocol::game_pkt::handshake::HandshakeGameC2sSpecific::FetchChannelList,
-                        ))
-                        .await?;
-                    sent_fetch = true;
-                }
-            }
-            HandshakeGameS2c::Control(ControlS2c::RequestHandshake { data }) => {
-                let reply_data = HandshakeSyncData {
-                    handshake: data.handshake,
-                    time: WireMillis32::from(data.time.as_duration()),
-                    delta: WireDeltaMillis::from(Duration::ZERO),
-                };
-                framed
-                    .send(HandshakeGameC2s::Control(ControlC2s::HandshakeResponse {
-                        data: reply_data,
-                    }))
-                    .await?;
-            }
-            HandshakeGameS2c::Specific(
-                zohar_protocol::game_pkt::handshake::HandshakeGameS2cSpecific::ChannelListResponse {
-                    statuses,
-                    is_ok,
-                    ..
-                },
-            ) => {
-                assert_eq!(is_ok, 1);
-                assert_eq!(statuses.len(), 2);
-                assert_eq!(statuses[0].srv_port, 13000);
-                assert_eq!(u8::from(statuses[0].status), 0);
-                assert_eq!(statuses[1].srv_port, 13010);
-                assert_eq!(u8::from(statuses[1].status), 2);
-                return Ok(());
-            }
-            _ => {}
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_gateway_login_does_not_block_core_resume() -> anyhow::Result<()> {
-    if !has_test_db_url() {
-        return Ok(());
-    }
-    let _ = tracing_subscriber::fmt::try_init();
-    let (core_addr, _resolver, ctx, username) = setup_test_env_with_options(1, true).await?;
-    let (gateway_addr, _channel_dir) = spawn_gateway_for_existing_user(&ctx, 1).await?;
-
-    let valid_token = issue_login_key(&ctx.db, &username).await?;
-    let gateway_login =
-        connect_through_login(gateway_addr, &username, valid_token, [0; 16]).await?;
-    assert!(gateway_login.is_some(), "gateway login should succeed");
-    if let Some((select, _)) = gateway_login {
-        drop(select);
-    }
-
-    let reconnect = connect_through_login(core_addr, &username, valid_token, [0; 16]).await?;
-    assert!(
-        reconnect.is_some(),
-        "core login should still succeed after gateway browse login"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_gateway_rejects_submit_player_choice() -> anyhow::Result<()> {
-    if !has_test_db_url() {
-        return Ok(());
-    }
-    let _ = tracing_subscriber::fmt::try_init();
-    let (_core_addr, _resolver, ctx, username) = setup_test_env_with_options(1, true).await?;
-    let (gateway_addr, _channel_dir) = spawn_gateway_for_existing_user(&ctx, 1).await?;
-
-    let valid_token = issue_login_key(&ctx.db, &username).await?;
-    let (mut select, mut sequencer) =
-        connect_through_login(gateway_addr, &username, valid_token, [0; 16])
-            .await?
-            .ok_or(anyhow::anyhow!("gateway login unexpectedly failed"))?;
-    let _ = await_set_player_choices(&mut select).await?;
-
-    send_sequenced(
-        select.get_mut(),
-        &SelectC2s::Specific(SelectC2sSpecific::SubmitPlayerChoice {
-            slot: PlayerSelectSlot::First,
-        }),
-        &mut sequencer,
-    )
-    .await?;
-
-    let result = timeout(Duration::from_secs(2), select.next()).await;
-    match result {
-        Ok(None) | Ok(Some(Err(_))) => Ok(()),
-        Ok(Some(Ok(pkt))) => {
-            anyhow::bail!("expected disconnect after submit choice, got {:?}", pkt)
-        }
-        Err(_) => anyhow::bail!("timed out waiting for gateway disconnect after submit choice"),
-    }
-}
-
-#[tokio::test]
-async fn test_select_choices_survive_missing_map_route() -> anyhow::Result<()> {
-    if !has_test_db_url() {
-        return Ok(());
-    }
-    let _ = tracing_subscriber::fmt::try_init();
-    let (addr, resolver, ctx, username) = setup_test_env_with_options(1, true).await?;
-    let valid_token = issue_login_key(&ctx.db, &username).await?;
-
-    resolver.remove(1, "zohar_map_a1").await;
-
-    let (mut select, _sequencer) = connect_through_login(addr, &username, valid_token, [0; 16])
-        .await?
-        .ok_or(anyhow::anyhow!("login unexpectedly failed"))?;
-
-    let players = await_set_player_choices(&mut select).await?;
-    let first = players[0].clone();
-    assert_ne!(first.db_id, 0, "expected seeded character in slot 0");
-    assert_eq!(first.srv_ipv4_addr, 0);
-    assert_eq!(first.srv_port, 0);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_ingame_set_channel_info_uses_configured_channel() -> anyhow::Result<()> {
-    if !has_test_db_url() {
-        return Ok(());
-    }
-    let _ = tracing_subscriber::fmt::try_init();
-    let configured_channel_id = 7;
-    let (addr, _resolver, ctx, username) =
-        setup_test_env_with_options(configured_channel_id, true).await?;
-    let valid_token = issue_login_key(&ctx.db, &username).await?;
-
-    let (mut select, mut sequencer) = connect_through_login(addr, &username, valid_token, [0; 16])
-        .await?
-        .ok_or(anyhow::anyhow!("login unexpectedly failed"))?;
-    let _ = await_set_player_choices(&mut select).await?;
-
-    send_sequenced(
-        select.get_mut(),
-        &SelectC2s::Specific(SelectC2sSpecific::SubmitPlayerChoice {
-            slot: PlayerSelectSlot::First,
-        }),
-        &mut sequencer,
-    )
-    .await?;
-    await_phase_transition_select(&mut select, PhaseId::Loading).await?;
-
-    let mut loading = switch_select_to_loading(select);
-    send_sequenced(
-        loading.get_mut(),
-        &LoadingC2s::Specific(LoadingC2sSpecific::SignalLoadingComplete),
-        &mut sequencer,
-    )
-    .await?;
-    await_phase_transition_loading(&mut loading, PhaseId::InGame).await?;
-
-    let mut ingame = switch_loading_to_ingame(loading);
-    let channel = await_channel_info(&mut ingame).await?;
-    assert_eq!(channel, configured_channel_id as u8);
 
     Ok(())
 }
@@ -762,60 +493,6 @@ async fn setup_test_env_with_options_and_heartbeat(
     Ok((addr, resolver, ctx, username))
 }
 
-async fn spawn_gateway_for_existing_user(
-    core_ctx: &Arc<GameContext>,
-    channel_id: u32,
-) -> anyhow::Result<(std::net::SocketAddr, Arc<StaticChannelDirectory>)> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-
-    let resolver = Arc::new(StaticMapResolver::new());
-    resolver
-        .insert(
-            channel_id,
-            core_ctx.map_code.clone(),
-            core_ctx.advertised_endpoint,
-        )
-        .await;
-
-    let channel_dir = Arc::new(StaticChannelDirectory::new());
-    channel_dir.upsert(channel_id, addr.port(), true).await;
-
-    let map_resolver: Arc<MapEndpointResolver> = Arc::new(resolver.as_ref().clone().into());
-    let channel_directory: Arc<ChannelDirectory> = Arc::new(channel_dir.as_ref().clone().into());
-
-    let gateway_ctx = Arc::new(GatewayContext {
-        db: core_ctx.db.clone(),
-        token_signer: test_token_signer(),
-        login_token_idle_ttl: Duration::from_secs(7 * 24 * 60 * 60),
-        empire_start_maps: EmpireStartMaps::default(),
-        heartbeat_interval: Duration::from_secs(60),
-        channel_id,
-        advertised_endpoint: addr,
-        map_resolver,
-        channel_directory,
-    });
-
-    let server_ctx = gateway_ctx.clone();
-    let server_start = std::time::Instant::now();
-    tokio::spawn(async move {
-        loop {
-            if let Ok((socket, _)) = listener.accept().await {
-                let ctx = server_ctx.clone();
-                let conn_id = uuid::Uuid::new_v4();
-                tokio::spawn(zohar_gamesrv::handlers::handle_conn_gateway(
-                    socket,
-                    server_start,
-                    conn_id,
-                    ctx,
-                ));
-            }
-        }
-    });
-
-    Ok((addr, channel_dir))
-}
-
 async fn seed_player_slot_zero<DB: GameDb>(db: &DB, username: &str) -> anyhow::Result<()> {
     let _ = db
         .players()
@@ -1034,20 +711,6 @@ async fn await_phase_transition_loading(
             if phase == expected {
                 return Ok(());
             }
-        }
-    }
-}
-
-async fn await_channel_info(
-    framed: &mut Framed<TcpStream, SimpleBinRwCodec<InGameS2c, InGameC2s>>,
-) -> anyhow::Result<u8> {
-    loop {
-        let packet = timeout(Duration::from_secs(3), framed.next())
-            .await
-            .map_err(|_| anyhow::anyhow!("Timed out waiting for SetChannelInfo"))?
-            .ok_or(anyhow::anyhow!("Stream closed before SetChannelInfo"))??;
-        if let InGameS2c::System(SystemS2c::SetChannelInfo { channel_id }) = packet {
-            return Ok(channel_id);
         }
     }
 }

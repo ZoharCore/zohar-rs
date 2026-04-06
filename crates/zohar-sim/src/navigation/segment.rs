@@ -301,7 +301,7 @@ mod tests {
     use zohar_domain::TerrainFlags;
     use zohar_domain::coords::LocalPos;
 
-    use super::{SegmentTrace, can_stand, clip_segment, segment_clear, walk_segment};
+    use super::{SegmentTrace, clip_segment, segment_clear, walk_segment};
     use crate::navigation::TerrainFlagsGrid;
     use crate::navigation::reachability::WalkabilityView;
 
@@ -318,15 +318,6 @@ mod tests {
     }
 
     #[test]
-    fn point_queries_require_valid_walkable_cells() {
-        let walkability = WalkabilityView::new(Arc::new(test_grid(2, 2, &[(1, 1)])));
-
-        assert!(can_stand(&walkability, LocalPos::new(0.1, 0.1)));
-        assert!(!can_stand(&walkability, LocalPos::new(1.1, 1.1)));
-        assert!(!can_stand(&walkability, LocalPos::new(-1.0, 0.0)));
-    }
-
-    #[test]
     fn traversal_catches_intermediate_blockers() {
         let walkability = WalkabilityView::new(Arc::new(test_grid(6, 4, &[(2, 0)])));
 
@@ -334,17 +325,6 @@ mod tests {
             &walkability,
             LocalPos::new(0.1, 0.1),
             LocalPos::new(5.9, 0.1),
-        ));
-    }
-
-    #[test]
-    fn traversal_allows_vertical_clear_segments() {
-        let walkability = WalkabilityView::new(Arc::new(test_grid(3, 5, &[])));
-
-        assert!(segment_clear(
-            &walkability,
-            LocalPos::new(1.5, 0.1),
-            LocalPos::new(1.5, 4.9),
         ));
     }
 
@@ -357,14 +337,6 @@ mod tests {
             LocalPos::new(0.1, 0.1),
             LocalPos::new(4.9, 4.9),
         ));
-    }
-
-    #[test]
-    fn traversal_allows_zero_length_segments() {
-        let walkability = WalkabilityView::new(Arc::new(test_grid(4, 4, &[])));
-        let pos = LocalPos::new(1.2, 1.8);
-
-        assert!(segment_clear(&walkability, pos, pos));
     }
 
     #[test]

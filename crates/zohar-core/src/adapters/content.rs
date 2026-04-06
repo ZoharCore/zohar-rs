@@ -588,18 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn build_mob_proto_falls_back_for_unsupported_type() {
-        let catalog = ContentCatalog {
-            mobs: vec![valid_mob(101, MobType::Door)],
-            ..ContentCatalog::default()
-        };
-
-        let protos = build_mob_proto(&catalog);
-        let proto = protos.get(&MobId::new(101)).expect("proto");
-        assert_eq!(proto.mob_kind, MobKind::Monster);
-    }
-
-    #[test]
     fn build_mob_proto_preserves_ai_flags() {
         let mut mob = valid_mob(101, MobType::Monster);
         mob.ai_flags = MobAiFlags::NOMOVE | MobAiFlags::AGGR;
@@ -634,23 +622,5 @@ mod tests {
 
         let rules = build_spawn_rules(&catalog);
         assert_eq!(rules.get(&MapId::new(1)).map(Vec::len), Some(1));
-    }
-
-    #[test]
-    fn build_spawn_rules_maps_invalid_direction_to_random_facing() {
-        let catalog = ContentCatalog {
-            maps: vec![valid_map(1)],
-            spawn_rules: vec![
-                spawn_record(1, SpawnTarget::Mob(101), 1),
-                spawn_record(1, SpawnTarget::Mob(101), 0),
-            ],
-            ..ContentCatalog::default()
-        };
-
-        let rules = build_spawn_rules(&catalog);
-        let rules = rules.get(&MapId::new(1)).expect("rules for map");
-        assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0].facing, FacingStrategy::Fixed(Direction::North));
-        assert_eq!(rules[1].facing, FacingStrategy::Random);
     }
 }

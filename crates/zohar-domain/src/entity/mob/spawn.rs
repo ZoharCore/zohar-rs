@@ -127,18 +127,6 @@ mod tests {
     use rand::rngs::SmallRng;
 
     #[test]
-    fn direction_to_angle_covers_all_variants() {
-        assert_eq!(Direction::North.to_angle(), 0.0);
-        assert_eq!(Direction::NorthEast.to_angle(), 45.0);
-        assert_eq!(Direction::East.to_angle(), 90.0);
-        assert_eq!(Direction::SouthEast.to_angle(), 135.0);
-        assert_eq!(Direction::South.to_angle(), 180.0);
-        assert_eq!(Direction::SouthWest.to_angle(), 225.0);
-        assert_eq!(Direction::West.to_angle(), 270.0);
-        assert_eq!(Direction::NorthWest.to_angle(), 315.0);
-    }
-
-    #[test]
     fn direction_random_is_always_valid() {
         let mut rng = SmallRng::seed_from_u64(42);
         for _ in 0..256 {

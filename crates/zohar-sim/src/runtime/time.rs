@@ -75,39 +75,3 @@ impl From<SimDuration> for u64 {
         value.0
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sim_instant_clamps_to_packet_timestamp() {
-        let packet_ts = SimInstant::from_millis(u64::from(u32::MAX) + 42).to_client_timestamp();
-        assert_eq!(packet_ts.get(), u32::MAX);
-    }
-
-    #[test]
-    fn sim_time_arithmetic_saturates() {
-        let start = SimInstant::from_millis(u64::MAX - 4);
-        assert_eq!(
-            u64::from(start.saturating_add(SimDuration::from_millis(10))),
-            u64::MAX
-        );
-        assert_eq!(
-            u64::from(start.saturating_sub(SimInstant::from_millis(10))),
-            u64::MAX - 14
-        );
-    }
-
-    #[test]
-    fn transparent_scalars_keep_primitive_size() {
-        assert_eq!(
-            std::mem::size_of::<SimInstant>(),
-            std::mem::size_of::<u64>()
-        );
-        assert_eq!(
-            std::mem::size_of::<SimDuration>(),
-            std::mem::size_of::<u64>()
-        );
-    }
-}

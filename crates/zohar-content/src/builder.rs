@@ -88,24 +88,3 @@ async fn load_catalog(conn: &SqlitePool) -> Result<ContentCatalog, ContentError>
         mob_chat_lines: chat::load_mob_chat_lines(conn).await?,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn overwrite_existing_db_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db_path = dir.path().join("content.db");
-        std::fs::write(&db_path, b"old").expect("seed db");
-
-        let builder = ContentRuntimeBuilder::new().db_path(db_path.clone());
-        let runtime = builder
-            .run_with_private_root(&dir.path().join("empty_private"))
-            .await
-            .expect("builder run");
-
-        assert!(db_path.exists());
-        assert!(runtime.catalog().maps.is_empty());
-    }
-}

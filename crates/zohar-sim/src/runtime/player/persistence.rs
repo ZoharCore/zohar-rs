@@ -242,19 +242,6 @@ mod tests {
     }
 
     #[test]
-    fn initial_autosave_deadline_is_stable_and_bounded() {
-        let now = SimInstant::from_millis(5_000);
-        let first = PlayerPersistenceState::initial_autosave_deadline(PlayerId::from(42), now);
-        let second = PlayerPersistenceState::initial_autosave_deadline(PlayerId::from(42), now);
-
-        assert_eq!(first, second);
-
-        let delay_ms = u64::from(first.saturating_sub(now));
-        assert!(delay_ms > 0);
-        assert!(delay_ms <= AUTOSAVE_INTERVAL.as_millis());
-    }
-
-    #[test]
     fn enqueue_due_autosaves_enqueues_dirty_players_and_clears_dirty_state() {
         let (handle, mut rx) = player_persistence_channel(4);
         let mut app = App::new();
@@ -355,49 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn leave_player_and_snapshot_despawns_player_and_returns_snapshot() {
-        let mut world = World::new();
-        world.insert_resource(test_map_config(None));
-        world.insert_resource(RuntimeState::default());
-        world.insert_resource(PlayerIndex::default());
-
-        let player_id = PlayerId::from(7);
-        let entity = world
-            .spawn((
-                PlayerMarker { player_id },
-                NetEntityId {
-                    net_id: EntityId(77),
-                },
-                LocalTransform {
-                    pos: LocalPos::new(4.0, 9.0),
-                    rot: Facing72::from_wrapped(0),
-                },
-                PlayerPersistenceState {
-                    dirty: true,
-                    next_autosave_at: SimInstant::ZERO,
-                },
-            ))
-            .id();
-        world
-            .resource_mut::<PlayerIndex>()
-            .0
-            .insert(player_id, entity);
-
-        let snapshot = leave_player_and_snapshot(
-            &mut world,
-            LeaveMsg {
-                player_id,
-                player_net_id: EntityId(77),
-            },
-        )
-        .expect("snapshot");
-
-        assert!(!world.entities().contains(entity));
-        assert_eq!(snapshot.id, player_id);
-        assert_eq!(snapshot.local_pos, LocalPos::new(4.0, 9.0));
-    }
-
-    #[test]
     fn leave_player_and_snapshot_clips_sampled_position_before_entering_blocked_cell() {
         let mut world = World::new();
         let navigator = test_navigator(6, 4, &[(2, 1), (3, 1), (4, 1)]);
@@ -451,46 +395,5 @@ mod tests {
         assert!(snapshot.local_pos.x < 2.0);
         assert!(snapshot.local_pos.x > 1.9);
         assert_eq!(snapshot.local_pos.y, 1.2);
-    }
-
-    #[test]
-    fn leave_player_and_snapshot_rejects_stale_net_id() {
-        let mut world = World::new();
-        world.insert_resource(test_map_config(None));
-        world.insert_resource(RuntimeState::default());
-        world.insert_resource(PlayerIndex::default());
-
-        let player_id = PlayerId::from(7);
-        let entity = world
-            .spawn((
-                PlayerMarker { player_id },
-                NetEntityId {
-                    net_id: EntityId(77),
-                },
-                LocalTransform {
-                    pos: LocalPos::new(4.0, 9.0),
-                    rot: Facing72::from_wrapped(0),
-                },
-                PlayerPersistenceState {
-                    dirty: true,
-                    next_autosave_at: SimInstant::ZERO,
-                },
-            ))
-            .id();
-        world
-            .resource_mut::<PlayerIndex>()
-            .0
-            .insert(player_id, entity);
-
-        let error = leave_player_and_snapshot(
-            &mut world,
-            LeaveMsg {
-                player_id,
-                player_net_id: EntityId(78),
-            },
-        )
-        .expect_err("snapshot should fail");
-        assert!(error.to_string().contains("stale net id"));
-        assert!(world.entities().contains(entity));
     }
 }

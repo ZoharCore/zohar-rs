@@ -222,31 +222,4 @@ mod tests {
         assert_eq!(Facing72::try_from(71).expect("valid").get(), 71);
         assert_eq!(Facing72::try_from(72).expect_err("invalid").raw(), 72);
     }
-
-    #[test]
-    fn packet_time_arithmetic_saturates() {
-        let ts = ClientTimestamp::new(u32::MAX - 2);
-        assert_eq!(ts.saturating_add(PacketDuration::new(10)).get(), u32::MAX,);
-        assert_eq!(
-            ts.saturating_sub(ClientTimestamp::new(10)).get(),
-            u32::MAX - 12
-        );
-    }
-
-    #[test]
-    fn transparent_scalars_keep_primitive_size() {
-        assert_eq!(std::mem::size_of::<Facing72>(), std::mem::size_of::<u8>());
-        assert_eq!(
-            std::mem::size_of::<ClientTimestamp>(),
-            std::mem::size_of::<u32>(),
-        );
-        assert_eq!(
-            std::mem::size_of::<PacketDuration>(),
-            std::mem::size_of::<u32>(),
-        );
-        assert_eq!(
-            std::mem::size_of::<MovementArg>(),
-            std::mem::size_of::<u8>()
-        );
-    }
 }

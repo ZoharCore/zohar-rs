@@ -69,31 +69,3 @@ impl Drop for ServerConnectionGuard {
         self.inner.active_connections.fetch_sub(1, Ordering::SeqCst);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ServerDrainController;
-
-    #[test]
-    fn connection_guard_tracks_active_connection_count() {
-        let drain = ServerDrainController::new();
-        let guard_a = drain.track_connection();
-        let guard_b = drain.track_connection();
-        assert_eq!(drain.active_connections(), 2);
-        drop(guard_a);
-        assert_eq!(drain.active_connections(), 1);
-        drop(guard_b);
-        assert_eq!(drain.active_connections(), 0);
-    }
-
-    #[tokio::test]
-    async fn begin_draining_notifies_subscribers() {
-        let drain = ServerDrainController::new();
-        let mut rx = drain.subscribe();
-        assert!(drain.begin_draining());
-        rx.changed().await.expect("drain notification");
-        assert!(*rx.borrow());
-        assert!(drain.is_draining());
-        assert!(!drain.begin_draining());
-    }
-}

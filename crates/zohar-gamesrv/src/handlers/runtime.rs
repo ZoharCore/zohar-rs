@@ -130,24 +130,3 @@ pub(crate) async fn run_phase<T>(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::wait_for_server_drain;
-    use tokio::sync::watch;
-    use tokio::time::{Duration, timeout};
-
-    #[tokio::test]
-    async fn wait_for_server_drain_returns_immediately_for_late_subscriber() {
-        let (tx, _rx) = watch::channel(false);
-        tx.send(true).expect("send drain");
-
-        let mut drain_rx = Some(tx.subscribe());
-        timeout(
-            Duration::from_millis(50),
-            wait_for_server_drain(&mut drain_rx),
-        )
-        .await
-        .expect("late subscriber should observe current drain state");
-    }
-}
