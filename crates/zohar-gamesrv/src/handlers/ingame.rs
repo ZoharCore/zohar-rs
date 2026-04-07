@@ -537,7 +537,7 @@ pub(crate) async fn run_ingame(
     } = prepare_ingame(conn_id, conn, ctx, handshake, session)?;
 
     let span = base_phase_span::<ThisPhase>();
-    span.record("player", &conn.player_name());
+    span.record("player", conn.player_name());
 
     let result = run_phase(
         "Player disconnected from game",

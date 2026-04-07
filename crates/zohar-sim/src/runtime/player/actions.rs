@@ -105,10 +105,9 @@ pub(crate) fn process_player_actions(world: &mut World) {
         }
     }
 
-    if spatial_dirty {
-        if let Some(mut spatial) = world.entity_mut(map_entity).get_mut::<MapSpatial>() {
-            spatial.0.maintain();
-        }
+    if spatial_dirty && let Some(mut spatial) = world.entity_mut(map_entity).get_mut::<MapSpatial>()
+    {
+        spatial.0.maintain();
     }
     world
         .resource_mut::<MobAggroDispatchBuffer>()

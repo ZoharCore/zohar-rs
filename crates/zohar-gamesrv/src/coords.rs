@@ -269,7 +269,7 @@ impl ContentCoords {
                 bail!("duplicate map code '{}' in content catalog", map.code);
             }
             if maps_empires
-                .insert(map_id, map.empire.map(|e| map_content_empire(e)))
+                .insert(map_id, map.empire.map(map_content_empire))
                 .is_some()
             {
                 bail!("duplicate map_id {} in content catalog", map.map_id);
@@ -363,16 +363,15 @@ impl ContentCoords {
         persisted: Option<PersistedPlayerPos>,
         empire: DomainEmpire,
     ) -> ResolvedSpawn {
-        if let Some(saved) = persisted {
-            if let Some(map) = self.maps_by_code.get(saved.map_key.as_str()) {
-                if map.contains_local(saved.local_x, saved.local_y) {
-                    return ResolvedSpawn {
-                        map_id: map.map_id,
-                        local_pos: LocalPos::new(saved.local_x, saved.local_y),
-                        used_fallback: false,
-                    };
-                }
-            }
+        if let Some(saved) = persisted
+            && let Some(map) = self.maps_by_code.get(saved.map_key.as_str())
+            && map.contains_local(saved.local_x, saved.local_y)
+        {
+            return ResolvedSpawn {
+                map_id: map.map_id,
+                local_pos: LocalPos::new(saved.local_x, saved.local_y),
+                used_fallback: false,
+            };
         }
 
         // fallback to default empire start if position uninitialized or wiped

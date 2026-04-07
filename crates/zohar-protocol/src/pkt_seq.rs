@@ -9,7 +9,7 @@ pub struct PacketSequencer {
 }
 
 impl PacketSequencer {
-    pub fn next(&mut self) -> u8 {
+    pub fn next_byte(&mut self) -> u8 {
         let next_byte = self.seq_bytes[self.pos];
         self.pos += 1;
         if self.pos == self.seq_bytes.len() {
@@ -24,9 +24,9 @@ impl PacketSequencer {
     }
 
     pub fn check(&mut self, got: u8) -> bool {
-        let expected = self.next();
+        let expected = self.next_byte();
         let matches = got == expected;
-        self.last_mismatch = (!matches).then(|| SequenceMismatchError { expected, got });
+        self.last_mismatch = (!matches).then_some(SequenceMismatchError { expected, got });
         matches
     }
 

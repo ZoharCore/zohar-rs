@@ -554,10 +554,12 @@ fn player_enter_enqueues_self_spawn_with_details_once() {
     let player_id = PlayerId::from(1);
     let player_net_id = EntityId(5_101);
     let initial_pos = LocalPos::new(6_400.0, 6_400.0);
-    let mut appearance = PlayerAppearance::default();
-    appearance.name = "Alice".to_string();
-    appearance.guild_id = 42;
-    appearance.level = 37;
+    let appearance = PlayerAppearance {
+        name: "Alice".to_string(),
+        guild_id: 42,
+        level: 37,
+        ..Default::default()
+    };
 
     let mut map_rx = enter_player_with_appearance(
         &inbound_tx,

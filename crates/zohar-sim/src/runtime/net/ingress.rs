@@ -171,6 +171,34 @@ fn player_move_commands_match(lhs: &PlayerCommand, rhs: &PlayerCommand) -> bool 
     }
 }
 
+fn handle_global_shout(world: &mut World, msg: GlobalShoutMsg) {
+    let payload = format_global_shout(&msg.from_player_name, &msg.message_bytes).into_bytes();
+    let player_entities = player_entities_on_map(world);
+
+    for entity in player_entities {
+        let Some(appearance) = world
+            .entity(entity)
+            .get::<PlayerAppearanceComp>()
+            .map(|a| a.0.clone())
+        else {
+            continue;
+        };
+
+        if appearance.empire != msg.from_empire {
+            continue;
+        }
+
+        if let Some(mut outbox) = world.entity_mut(entity).get_mut::<PlayerOutboxComp>() {
+            outbox.0.push_reliable(PlayerEvent::Chat {
+                channel: ChatChannel::Shout,
+                sender_entity_id: None,
+                empire: Some(msg.from_empire),
+                message: payload.clone(),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,33 +273,5 @@ mod tests {
                 .count(),
             MAX_ATTACK_INTENTS_PER_TICK
         );
-    }
-}
-
-fn handle_global_shout(world: &mut World, msg: GlobalShoutMsg) {
-    let payload = format_global_shout(&msg.from_player_name, &msg.message_bytes).into_bytes();
-    let player_entities = player_entities_on_map(world);
-
-    for entity in player_entities {
-        let Some(appearance) = world
-            .entity(entity)
-            .get::<PlayerAppearanceComp>()
-            .map(|a| a.0.clone())
-        else {
-            continue;
-        };
-
-        if appearance.empire != msg.from_empire {
-            continue;
-        }
-
-        if let Some(mut outbox) = world.entity_mut(entity).get_mut::<PlayerOutboxComp>() {
-            outbox.0.push_reliable(PlayerEvent::Chat {
-                channel: ChatChannel::Shout,
-                sender_entity_id: None,
-                empire: Some(msg.from_empire),
-                message: payload.clone(),
-            });
-        }
     }
 }

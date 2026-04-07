@@ -1,7 +1,7 @@
 //! Integration tests for the game server handler chain.
 //!
 //! Tests use phase-specific packet types:
-//! - SimpleBinRwCodec for Handshake phase (no sequence bytes)  
+//! - SimpleBinRwCodec for Handshake phase (no sequence bytes)
 //! - For Login phase, tests manually append sequence bytes since SequencedBinRwCodec
 //!   only validates on decode, not encode (protocol asymmetry: C2s has seq, S2c doesn't)
 
@@ -544,7 +544,7 @@ where
     let mut buf = Cursor::new(Vec::new());
     packet.write_le(&mut buf)?;
     let mut bytes = buf.into_inner();
-    bytes.push(sequencer.next());
+    bytes.push(sequencer.next_byte());
     stream.write_all(&bytes).await?;
     Ok(())
 }
@@ -690,10 +690,10 @@ async fn await_phase_transition_select(
             .await
             .map_err(|_| anyhow::anyhow!("Timed out waiting for Select phase transition"))?
             .ok_or(anyhow::anyhow!("Stream closed before phase transition"))??;
-        if let SelectS2c::Control(ControlS2c::SetClientPhase { phase }) = packet {
-            if phase == expected {
-                return Ok(());
-            }
+        if let SelectS2c::Control(ControlS2c::SetClientPhase { phase }) = packet
+            && phase == expected
+        {
+            return Ok(());
         }
     }
 }
@@ -707,10 +707,10 @@ async fn await_phase_transition_loading(
             .await
             .map_err(|_| anyhow::anyhow!("Timed out waiting for Loading phase transition"))?
             .ok_or(anyhow::anyhow!("Stream closed before loading transition"))??;
-        if let LoadingS2c::Control(ControlS2c::SetClientPhase { phase }) = packet {
-            if phase == expected {
-                return Ok(());
-            }
+        if let LoadingS2c::Control(ControlS2c::SetClientPhase { phase }) = packet
+            && phase == expected
+        {
+            return Ok(());
         }
     }
 }

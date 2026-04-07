@@ -26,7 +26,6 @@ use crate::Sequenced;
 use crate::codec::SequencedBinRwCodec;
 use futures_util::{SinkExt, StreamExt};
 use std::fmt::Debug;
-use std::future::Future;
 use std::io;
 use std::net::IpAddr;
 use tokio::net::TcpStream;
@@ -219,27 +218,20 @@ pub trait SetPhasePacket {
 }
 
 pub trait ConnectionPhaseExt<S: NextState> {
-    fn into_next_with_phase(
-        self,
-        data: S::Data,
-    ) -> impl Future<Output = io::Result<Connection<S::Next>>>
+    #[allow(async_fn_in_trait)]
+    async fn into_next_with_phase(self, data: S::Data) -> io::Result<Connection<S::Next>>
     where
         S::S2cPacket: SetPhasePacket;
 }
 
 impl<S: NextState> ConnectionPhaseExt<S> for Connection<S> {
-    fn into_next_with_phase(
-        self,
-        data: S::Data,
-    ) -> impl Future<Output = io::Result<Connection<S::Next>>>
+    async fn into_next_with_phase(self, data: S::Data) -> io::Result<Connection<S::Next>>
     where
         S::S2cPacket: SetPhasePacket,
     {
-        async move {
-            let mut conn = self;
-            let next_phase = <S as NextState>::Next::PHASE_ID;
-            conn.send(S::S2cPacket::set_phase(next_phase)).await?;
-            Ok(conn.into_next(data))
-        }
+        let mut conn = self;
+        let next_phase = <S as NextState>::Next::PHASE_ID;
+        conn.send(S::S2cPacket::set_phase(next_phase)).await?;
+        Ok(conn.into_next(data))
     }
 }

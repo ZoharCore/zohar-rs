@@ -16,6 +16,7 @@ pub enum LoadingC2sSpecific {
 #[binrw]
 #[brw(little)]
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum LoadingS2cSpecific {
     #[brw(magic = 0x71_u8)]
     SetMainCharacter {

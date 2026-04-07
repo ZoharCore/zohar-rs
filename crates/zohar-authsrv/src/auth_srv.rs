@@ -259,14 +259,13 @@ async fn handle_auth(
                 }
                 let account_username = account_username.expect("account must exist after check");
 
-                if let Some(upgraded_hash) = check.upgraded_hash {
-                    if let Err(err) = auth_db
+                if let Some(upgraded_hash) = check.upgraded_hash
+                    && let Err(err) = auth_db
                         .accounts()
                         .update_password(&account_username, &upgraded_hash)
                         .await
-                    {
-                        warn!(error = %err, "Failed to upgrade password hash");
-                    }
+                {
+                    warn!(error = %err, "Failed to upgrade password hash");
                 }
 
                 // Auth is stateless, no session check. Session conflicts are handled by game server

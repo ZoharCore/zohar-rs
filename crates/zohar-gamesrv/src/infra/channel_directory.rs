@@ -173,7 +173,7 @@ impl KubeServiceChannelDirectory {
     pub async fn list_channels(&self) -> anyhow::Result<Vec<ChannelEntry>> {
         #[cfg(not(feature = "kube-resolver"))]
         {
-            return Err(anyhow!("kube resolver disabled for channel directory"));
+            Err(anyhow!("kube resolver disabled for channel directory"))
         }
 
         #[cfg(feature = "kube-resolver")]

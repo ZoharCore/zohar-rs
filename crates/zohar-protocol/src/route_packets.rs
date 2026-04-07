@@ -10,6 +10,7 @@ macro_rules! route_packets {
     ) => {
         $(#[$outer])*
         #[derive(Debug, Clone)]
+        #[allow(clippy::large_enum_variant)]
         pub enum $EnumName {
             $(
                 $Variant($SubEnum),

@@ -474,9 +474,13 @@ fn drain_mob_aggro(world: &mut World, mob_entity: Entity) -> Vec<MobAggro> {
 }
 
 fn latest_provoked_by(aggros: &[MobAggro]) -> Option<EntityId> {
-    aggros.iter().rev().find_map(|aggro| match aggro {
-        MobAggro::ProvokedBy { attacker } => Some(*attacker),
-    })
+    aggros
+        .iter()
+        .rev()
+        .map(|aggro| match aggro {
+            MobAggro::ProvokedBy { attacker } => *attacker,
+        })
+        .next()
 }
 
 fn sample_idle_wander_target(

@@ -273,7 +273,7 @@ pub(crate) async fn run_loading(
     };
 
     let span = base_phase_span::<ThisPhase>();
-    span.record("player", &conn.player_name());
+    span.record("player", conn.player_name());
     run_phase(
         "Disconnected during loading",
         SessionEnd::AfterLogin {

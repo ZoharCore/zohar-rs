@@ -209,7 +209,7 @@ async fn handle_packet(
                 .players()
                 .create(
                     &state.username,
-                    slot_index.into(),
+                    slot_index,
                     &name,
                     class,
                     gender,
@@ -476,10 +476,9 @@ async fn build_players_pkt(
     db_players: &[zohar_db::PlayerRow],
     state: &SelectCtx<'_>,
 ) -> PhaseResult<SelectS2c> {
-    let players: [Player; MAX_PLAYER_SLOTS] = std::array::from_fn(|_| Player::empty());
-    let mut players = players;
+    let mut players: [Player; MAX_PLAYER_SLOTS] = std::array::from_fn(|_| Player::empty());
 
-    for slot in 0..MAX_PLAYER_SLOTS {
+    for (slot, player) in players.iter_mut().enumerate() {
         let Some(db_player) = db_players.iter().find(|p| p.slot as usize == slot) else {
             continue;
         };
@@ -495,7 +494,7 @@ async fn build_players_pkt(
                 unroutable_endpoint()
             }
         };
-        players[slot] = db_player.to_domain().to_protocol_player(endpoint);
+        *player = db_player.to_domain().to_protocol_player(endpoint);
     }
 
     for p in db_players {

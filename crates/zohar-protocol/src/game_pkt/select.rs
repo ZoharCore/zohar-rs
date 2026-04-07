@@ -48,6 +48,7 @@ pub enum SelectC2sSpecific {
 #[bw(little)]
 #[br(little)]
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum SelectS2cSpecific {
     #[brw(magic = 0x5A_u8)]
     SetAccountEmpire { empire: game_pkt::Empire },

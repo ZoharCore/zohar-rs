@@ -3,16 +3,11 @@ use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 
 /// Shared locomotion mode used to select movement motion speeds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MotionMoveMode {
+    #[default]
     Run,
     Walk,
-}
-
-impl Default for MotionMoveMode {
-    fn default() -> Self {
-        Self::Run
-    }
 }
 
 /// Content-driven motion speeds for a single movement profile.
