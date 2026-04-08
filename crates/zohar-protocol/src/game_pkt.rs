@@ -17,6 +17,8 @@ pub use loading::{LoadingC2s, LoadingS2c};
 pub use login::{LoginC2s, LoginFailReason, LoginS2c};
 pub use select::{SelectC2s, SelectS2c};
 
+use std::net::{IpAddr, SocketAddr};
+
 pub const PLAYER_NAME_MAX_LENGTH: usize = 25;
 
 /// Type alias for player names (fixed 25-byte buffer).
@@ -307,6 +309,33 @@ impl From<i32> for WireWorldCm {
 impl From<WireWorldCm> for i32 {
     fn from(value: WireWorldCm) -> Self {
         value.0
+    }
+}
+
+#[binrw::binrw]
+#[brw(little)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireServerAddr {
+    pub srv_ipv4_addr: i32,
+    pub srv_port: u16,
+}
+
+impl WireServerAddr {
+    pub const UNROUTABLE: Self = Self {
+        srv_ipv4_addr: 0,
+        srv_port: 0,
+    };
+
+    pub fn from_socket_addr(endpoint: SocketAddr) -> Option<Self> {
+        let ip = match endpoint.ip() {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(ip) => ip.to_ipv4_mapped()?,
+        };
+
+        Some(Self {
+            srv_ipv4_addr: i32::from_le_bytes(ip.octets()),
+            srv_port: endpoint.port(),
+        })
     }
 }
 

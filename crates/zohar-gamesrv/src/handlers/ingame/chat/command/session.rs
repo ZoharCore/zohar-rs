@@ -5,8 +5,10 @@ use zohar_protocol::game_pkt::ChatKind;
 pub(in crate::handlers::ingame::chat) enum SessionCommand {
     #[command(name = "phase_select", about = "Go to character select, same channel.")]
     PhaseSelect,
+
     #[command(name = "logout", about = "Disconnect back to the login screen.")]
     Logout,
+
     #[command(name = "quit", about = "Disconnect and exit the game client.")]
     Quit,
 }
@@ -15,6 +17,7 @@ impl SessionCommand {
     pub(super) fn execute(self) -> InGamePhaseEffects {
         match self {
             Self::PhaseSelect => InGamePhaseEffects::transition(()),
+
             Self::Logout => InGamePhaseEffects::send(
                 ChatS2c::NotifyChatMessage {
                     kind: ChatKind::Info,
@@ -25,6 +28,7 @@ impl SessionCommand {
                 .into(),
             )
             .with_disconnect("client requested logout"),
+
             Self::Quit => InGamePhaseEffects::send(
                 ChatS2c::NotifyChatMessage {
                     kind: ChatKind::Command,

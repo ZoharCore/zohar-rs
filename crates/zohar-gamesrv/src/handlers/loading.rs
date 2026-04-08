@@ -137,8 +137,8 @@ async fn apply_effects(
     for packet in effects.send {
         conn.send(packet).await?;
     }
-    if let Some(reason) = effects.disconnect {
-        return Err(disconnect(reason));
+    if let Some(error) = effects.disconnect {
+        return Err(error);
     }
     Ok(effects.transition)
 }
@@ -259,6 +259,7 @@ pub(crate) async fn run_loading(
     let entry = LoadedPlayer {
         net_id: entity_id.to_protocol(),
         map_id: resolved_spawn.map_id,
+        runtime_epoch: player.runtime_epoch,
         initial_pos: resolved_spawn.local_pos,
         appearance,
     };

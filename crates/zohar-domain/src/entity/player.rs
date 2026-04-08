@@ -42,6 +42,41 @@ pub enum PlayerTag {}
 pub type PlayerId = DbId<PlayerTag>;
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PlayerRuntimeEpoch(i64);
+
+impl PlayerRuntimeEpoch {
+    pub const INITIAL: Self = Self(0);
+
+    pub const fn new(raw: i64) -> Self {
+        Self(raw)
+    }
+
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl Default for PlayerRuntimeEpoch {
+    fn default() -> Self {
+        Self::INITIAL
+    }
+}
+
+impl From<i64> for PlayerRuntimeEpoch {
+    fn from(raw: i64) -> Self {
+        Self(raw)
+    }
+}
+
+impl From<PlayerRuntimeEpoch> for i64 {
+    fn from(epoch: PlayerRuntimeEpoch) -> Self {
+        epoch.0
+    }
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerStats {
     pub stat_str: i32,
@@ -67,6 +102,7 @@ pub struct PlayerSummary {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerRuntimeSnapshot {
     pub id: PlayerId,
+    pub runtime_epoch: PlayerRuntimeEpoch,
     pub map_key: String,
     #[cfg_attr(feature = "admin-brp", reflect(remote = crate::coords::LocalPosReflect))]
     pub local_pos: LocalPos,

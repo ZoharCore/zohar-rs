@@ -10,11 +10,18 @@ pub use entity::mob::behavior::BehaviorFlags;
 pub use terrain::TerrainFlags;
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Empire {
     Red,
     Yellow,
     Blue,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerExitKind {
+    Disconnect,
+    Handoff,
 }
 
 #[repr(transparent)]

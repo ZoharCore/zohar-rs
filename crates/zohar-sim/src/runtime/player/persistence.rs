@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use bevy::prelude::*;
 use tracing::warn;
-use zohar_domain::entity::player::{PlayerId, PlayerRuntimeSnapshot};
+use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch, PlayerRuntimeSnapshot};
 use zohar_map_port::LeaveMsg;
 
 use crate::persistence::PlayerPersistencePort;
@@ -15,9 +15,14 @@ const AUTOSAVE_INTERVAL: SimDuration = SimDuration::from_millis(30_000);
 const AUTOSAVE_RETRY_DELAY: SimDuration = SimDuration::from_millis(1_000);
 
 impl PlayerPersistenceState {
-    pub(crate) fn initial(player_id: PlayerId, now: SimInstant) -> Self {
+    pub(crate) fn initial(
+        player_id: PlayerId,
+        runtime_epoch: PlayerRuntimeEpoch,
+        now: SimInstant,
+    ) -> Self {
         Self {
             dirty: false,
+            runtime_epoch,
             next_autosave_at: Self::initial_autosave_deadline(player_id, now),
         }
     }
@@ -70,6 +75,7 @@ pub(crate) fn enqueue_due_autosaves(
 
         let snapshot = PlayerRuntimeSnapshot {
             id: marker.player_id,
+            runtime_epoch: persistence.runtime_epoch,
             map_key: map.map_code.clone(),
             local_pos: snapshot_local_pos(&map, &state, transform, motion.map(|motion| motion.0)),
         };
@@ -132,6 +138,12 @@ pub(crate) fn leave_player_and_snapshot(
             msg.player_id
         ));
     };
+    let Some(persistence) = world.entity(entity).get::<PlayerPersistenceState>() else {
+        return Err(anyhow!(
+            "player {:?} is missing persistence state",
+            msg.player_id
+        ));
+    };
     let map_code = world.resource::<MapConfig>().map_code.clone();
     let snapshot_pos = snapshot_local_pos(
         world.resource::<MapConfig>(),
@@ -144,6 +156,7 @@ pub(crate) fn leave_player_and_snapshot(
     );
     let snapshot = PlayerRuntimeSnapshot {
         id: msg.player_id,
+        runtime_epoch: persistence.runtime_epoch,
         map_key: map_code,
         local_pos: snapshot_pos,
     };
@@ -265,6 +278,7 @@ mod tests {
                 },
                 PlayerPersistenceState {
                     dirty: true,
+                    runtime_epoch: Default::default(),
                     next_autosave_at: SimInstant::ZERO,
                 },
             ))
@@ -326,6 +340,7 @@ mod tests {
             }),
             PlayerPersistenceState {
                 dirty: true,
+                runtime_epoch: Default::default(),
                 next_autosave_at: SimInstant::ZERO,
             },
         ));
@@ -372,6 +387,7 @@ mod tests {
                 }),
                 PlayerPersistenceState {
                     dirty: true,
+                    runtime_epoch: Default::default(),
                     next_autosave_at: SimInstant::ZERO,
                 },
             ))

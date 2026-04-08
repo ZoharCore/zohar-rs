@@ -225,6 +225,7 @@ fn enter_player_with_appearance(
         .enter_player(EnterMsg {
             player_id,
             player_net_id,
+            runtime_epoch: Default::default(),
             initial_pos,
             appearance,
         })

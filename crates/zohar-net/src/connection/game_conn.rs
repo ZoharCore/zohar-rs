@@ -5,7 +5,7 @@ use tokio_util::codec::Framed;
 use zohar_domain::MapId;
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::LocalPos;
-use zohar_domain::entity::player::PlayerId;
+use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch};
 use zohar_protocol::game_pkt::{
     HandshakeGameC2s, HandshakeGameS2c, InGameC2s, InGameS2c, LoadingC2s, LoadingS2c, LoginC2s,
     LoginS2c, NetId, PhaseId, SelectC2s, SelectS2c,
@@ -266,6 +266,7 @@ pub struct SelectedPlayer {
 pub struct LoadedPlayer {
     pub net_id: NetId,
     pub map_id: MapId,
+    pub runtime_epoch: PlayerRuntimeEpoch,
     pub initial_pos: LocalPos,
     pub appearance: PlayerAppearance,
 }

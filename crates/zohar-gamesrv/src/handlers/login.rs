@@ -205,11 +205,10 @@ async fn handle_packet(
                 }
                 AuthDecision::Rejected { reason } => {
                     warn!("Missing or invalid login token");
-                    Ok(PhaseEffects {
-                        send: vec![LoginS2cSpecific::LoginResultFail { reason }.into()],
-                        transition: None,
-                        disconnect: Some("invalid login key"),
-                    })
+                    Ok(
+                        PhaseEffects::send(LoginS2cSpecific::LoginResultFail { reason }.into())
+                            .with_disconnect("invalid login key"),
+                    )
                 }
             }
         }
@@ -223,8 +222,8 @@ async fn apply_effects(
     for packet in effects.send {
         conn.send(packet).await?;
     }
-    if let Some(reason) = effects.disconnect {
-        return Err(disconnect(reason));
+    if let Some(error) = effects.disconnect {
+        return Err(error);
     }
     Ok(effects.transition)
 }

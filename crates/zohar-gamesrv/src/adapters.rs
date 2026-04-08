@@ -22,13 +22,9 @@ use zohar_protocol::game_pkt::ingame::movement::{
 };
 use zohar_protocol::game_pkt::ingame::world::EntityType;
 use zohar_protocol::game_pkt::select::{Player, PlayerBaseAppearance};
-use zohar_protocol::game_pkt::{Empire, NetId, PlayerClassGendered, SkillBranch, ZeroOpt};
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PlayerEndpoint {
-    pub(crate) srv_ipv4_addr: i32,
-    pub(crate) srv_port: u16,
-}
+use zohar_protocol::game_pkt::{
+    Empire, NetId, PlayerClassGendered, SkillBranch, WireServerAddr, ZeroOpt,
+};
 
 pub(crate) trait ToDomain<T> {
     fn to_domain(self) -> T;
@@ -241,7 +237,7 @@ impl ToDomain<PlayerSummary> for &PlayerRow {
 }
 
 pub(crate) trait ToProtocolPlayer {
-    fn to_protocol_player(&self, endpoint: PlayerEndpoint) -> Player;
+    fn to_protocol_player(&self, endpoint: WireServerAddr) -> Player;
 }
 
 impl ToProtocol<SkillBranch> for DomainSkillBranch {
@@ -446,7 +442,7 @@ where
 }
 
 impl ToProtocolPlayer for PlayerSummary {
-    fn to_protocol_player(&self, endpoint: PlayerEndpoint) -> Player {
+    fn to_protocol_player(&self, endpoint: WireServerAddr) -> Player {
         Player {
             db_id: u32::try_from(self.id.get()).unwrap_or(0),
             name: self.name.as_str().into(),
@@ -462,8 +458,7 @@ impl ToProtocolPlayer for PlayerSummary {
             hair_part: 0,
             pos_x: 0.into(),
             pos_y: 0.into(),
-            srv_ipv4_addr: endpoint.srv_ipv4_addr,
-            srv_port: endpoint.srv_port,
+            server_addr: endpoint,
             skill_branch: None::<DomainSkillBranch>.to_protocol(),
         }
     }

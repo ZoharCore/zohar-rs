@@ -19,8 +19,8 @@ use tokio::time::Instant as TokioInstant;
 use tracing::warn;
 use uuid::Uuid;
 use zohar_db::{GameDb, SessionsView};
-use zohar_domain::entity::player::PlayerRuntimeSnapshot;
-use zohar_domain::{Empire as DomainEmpire, MapId};
+use zohar_domain::entity::player::{PlayerRuntimeEpoch, PlayerRuntimeSnapshot};
+use zohar_domain::{Empire as DomainEmpire, MapId, PlayerExitKind};
 use zohar_map_port::{EnterMsg, LeaveMsg, PlayerEvent};
 use zohar_net::connection::NextConnection;
 use zohar_net::{Connection, ConnectionPhaseExt};
@@ -49,6 +49,7 @@ pub(super) struct InGameCtx<'a> {
     pub(super) connection_id: String,
     pub(super) player_name: String,
     pub(super) player_id: zohar_domain::entity::player::PlayerId,
+    pub(super) player_runtime_epoch: PlayerRuntimeEpoch,
     pub(super) map_id: MapId,
     pub(super) player_empire: DomainEmpire,
 }
@@ -57,8 +58,7 @@ struct PreparedInGame<'a> {
     conn: Connection<ThisPhase>,
     state: InGameCtx<'a>,
     map_rx: tokio::sync::mpsc::Receiver<PlayerEvent>,
-    entered_map: bool,
-    leave_msg: LeaveMsg,
+    source_map_leave: Option<LeaveMsg>,
 }
 
 const MAP_EVENT_BURST_LIMIT: usize = 32;
@@ -111,55 +111,40 @@ where
     await_persistence_result(reply_rx, deadline, op_name).await
 }
 
-async fn leave_player_map_and_snapshot(
-    ctx: &GameContext,
-    leave_msg: LeaveMsg,
-) -> anyhow::Result<PlayerRuntimeSnapshot> {
-    ctx.map_events.leave_player_and_snapshot(leave_msg).await
-}
-
 async fn flush_player_snapshot(
     ctx: &GameContext,
     snapshot: PlayerRuntimeSnapshot,
-    timeout: Duration,
 ) -> anyhow::Result<()> {
     run_persistence_op(
         ctx.player_persistence.schedule_flush(snapshot),
-        timeout,
+        player_persistence_timeout(ctx),
         "player snapshot flush",
     )
     .await
 }
 
-async fn finalize_player_disconnect(
+async fn commit_player_exit(
     ctx: &GameContext,
+    exit_kind: PlayerExitKind,
     username: &str,
     connection_id: &str,
     snapshot: PlayerRuntimeSnapshot,
-    timeout: Duration,
 ) -> anyhow::Result<()> {
     run_persistence_op(
-        ctx.player_persistence.finalize_disconnect(
+        ctx.player_persistence.commit_player_exit(
+            exit_kind,
             username,
             ctx.server_id.clone(),
             connection_id.to_string(),
             snapshot,
         ),
-        timeout,
-        "player disconnect finalization",
+        player_persistence_timeout(ctx),
+        match exit_kind {
+            PlayerExitKind::Disconnect => "player disconnect finalization",
+            PlayerExitKind::Handoff => "player handoff preparation",
+        },
     )
     .await
-}
-
-fn session_end(username: impl Into<String>, lease_action: SessionLeaseAction) -> SessionEnd {
-    SessionEnd::AfterLogin {
-        username: username.into(),
-        lease_action,
-    }
-}
-
-fn disconnect_session_end(username: impl Into<String>) -> SessionEnd {
-    session_end(username, SessionLeaseAction::Release)
 }
 
 fn enter_packets(state: &mut InGameCtx<'_>) -> Vec<InGameS2c> {
@@ -262,8 +247,8 @@ async fn apply_runtime_effects(
     for packet in effects.send {
         send_outbound_packet(conn, packet).await?;
     }
-    if let Some(reason) = effects.disconnect {
-        return Err(disconnect(reason));
+    if let Some(error) = effects.disconnect {
+        return Err(error);
     }
     Ok(effects.transition)
 }
@@ -358,11 +343,15 @@ fn prepare_ingame<'a>(
     handshake: &'a mut HandshakeState,
     session: &'a mut SessionTracker,
 ) -> Result<PreparedInGame<'a>, SessionEnd> {
+    let username = conn.username().to_string();
+
     if ctx.drain.is_draining() {
-        return Err(disconnect_session_end(conn.username().to_string()));
+        return Err(SessionEnd::AfterLogin {
+            username,
+            lease_action: SessionLeaseAction::Release,
+        });
     }
 
-    let username = conn.username().to_string();
     let entry = conn.entry().clone();
     let player_name = conn.player_name().to_string();
     let player_id = conn.player_id();
@@ -371,7 +360,10 @@ fn prepare_ingame<'a>(
     let player_empire = entry.appearance.empire;
 
     let Some(map_code) = ctx.coords.map_code_by_id(map_id) else {
-        return Err(disconnect_session_end(username));
+        return Err(SessionEnd::AfterLogin {
+            username,
+            lease_action: SessionLeaseAction::Release,
+        });
     };
 
     // Validate we landed on the correct map core. Endpoint equality is not stable across
@@ -384,12 +376,16 @@ fn prepare_ingame<'a>(
             channel_id = ctx.channel_id,
             "Player connected to wrong map core"
         );
-        return Err(disconnect_session_end(username));
+        return Err(SessionEnd::AfterLogin {
+            username,
+            lease_action: SessionLeaseAction::Release,
+        });
     }
 
     let (map_rx, entered_map) = match ctx.map_events.enter_player(EnterMsg {
         player_id,
         player_net_id,
+        runtime_epoch: entry.runtime_epoch,
         initial_pos: entry.initial_pos,
         appearance: entry.appearance.clone(),
     }) {
@@ -411,32 +407,35 @@ fn prepare_ingame<'a>(
             connection_id: connection_id_string(conn_id),
             player_name,
             player_id,
+            player_runtime_epoch: entry.runtime_epoch,
             map_id,
             player_empire,
         },
         map_rx,
-        entered_map,
-        leave_msg: LeaveMsg {
+        source_map_leave: entered_map.then_some(LeaveMsg {
             player_id,
             player_net_id,
-        },
+        }),
     })
 }
 
 async fn finalize_ingame_result(
     state: &InGameCtx<'_>,
-    entered_map: bool,
-    leave_msg: LeaveMsg,
+    source_map_leave: Option<LeaveMsg>,
     result: Result<NextConnection<ThisPhase>, SessionEnd>,
 ) -> Result<NextConnection<ThisPhase>, SessionEnd> {
-    if !entered_map {
+    let Some(leave_msg) = source_map_leave else {
         return result;
-    }
+    };
 
     match result {
         Ok(conn_next) => {
-            let persistence_timeout = player_persistence_timeout(&state.ctx);
-            let snapshot = match leave_player_map_and_snapshot(&state.ctx, leave_msg).await {
+            let snapshot = match state
+                .ctx
+                .map_events
+                .leave_player_and_snapshot(leave_msg)
+                .await
+            {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     warn!(
@@ -445,11 +444,14 @@ async fn finalize_ingame_result(
                         error = %error,
                         "Failed to leave map and capture player snapshot during phase-select transition"
                     );
-                    return Err(disconnect_session_end(state.username.clone()));
+                    return Err(SessionEnd::AfterLogin {
+                        username: state.username.clone(),
+                        lease_action: SessionLeaseAction::Release,
+                    });
                 }
             };
 
-            match flush_player_snapshot(&state.ctx, snapshot.clone(), persistence_timeout).await {
+            match flush_player_snapshot(&state.ctx, snapshot.clone()).await {
                 Ok(()) => Ok(conn_next),
                 Err(flush_error) => {
                     warn!(
@@ -458,19 +460,19 @@ async fn finalize_ingame_result(
                         error = %flush_error,
                         "Player snapshot flush failed during phase-select transition; finalizing disconnect instead"
                     );
-                    match finalize_player_disconnect(
+                    match commit_player_exit(
                         &state.ctx,
+                        PlayerExitKind::Disconnect,
                         &state.username,
                         &state.connection_id,
                         snapshot,
-                        persistence_timeout,
                     )
                     .await
                     {
-                        Ok(()) => Err(session_end(
-                            state.username.clone(),
-                            SessionLeaseAction::AlreadyReleased,
-                        )),
+                        Ok(()) => Err(SessionEnd::AfterLogin {
+                            username: state.username.clone(),
+                            lease_action: SessionLeaseAction::AlreadyReleased,
+                        }),
                         Err(finalize_error) => {
                             warn!(
                                 username = %state.username,
@@ -478,23 +480,41 @@ async fn finalize_ingame_result(
                                 error = %finalize_error,
                                 "Transactional disconnect finalization failed after phase-select flush error"
                             );
-                            Err(session_end(
-                                state.username.clone(),
-                                SessionLeaseAction::RetainUntilStale,
-                            ))
+                            Err({
+                                SessionEnd::AfterLogin {
+                                    username: state.username.clone(),
+                                    lease_action: SessionLeaseAction::RetainUntilStale,
+                                }
+                            })
                         }
                     }
                 }
             }
         }
+        Err(SessionEnd::Handoff { username }) => {
+            if let Err(error) = state.ctx.map_events.send_player_leave(leave_msg) {
+                warn!(
+                    username = %state.username,
+                    player_id = ?state.player_id,
+                    error = %error,
+                    "Failed to remove player from source map after handoff preparation"
+                );
+            }
+            Err(SessionEnd::Handoff { username })
+        }
         Err(SessionEnd::AfterLogin { username, .. }) => {
-            let lease_action = match leave_player_map_and_snapshot(&state.ctx, leave_msg).await {
-                Ok(snapshot) => match finalize_player_disconnect(
+            let lease_action = match state
+                .ctx
+                .map_events
+                .leave_player_and_snapshot(leave_msg)
+                .await
+            {
+                Ok(snapshot) => match commit_player_exit(
                     &state.ctx,
+                    PlayerExitKind::Disconnect,
                     &username,
                     &state.connection_id,
                     snapshot,
-                    player_persistence_timeout(&state.ctx),
                 )
                 .await
                 {
@@ -520,9 +540,12 @@ async fn finalize_ingame_result(
                 }
             };
 
-            Err(session_end(username, lease_action))
+            Err(SessionEnd::AfterLogin {
+                username,
+                lease_action,
+            })
         }
-        Err(end) => Err(end),
+        Err(SessionEnd::BeforeLogin) => Err(SessionEnd::BeforeLogin),
     }
 }
 
@@ -537,8 +560,7 @@ pub(crate) async fn run_ingame(
         conn,
         mut state,
         map_rx,
-        entered_map,
-        leave_msg,
+        source_map_leave,
     } = prepare_ingame(conn_id, conn, ctx, handshake, session)?;
 
     let span = base_phase_span::<ThisPhase>();
@@ -546,13 +568,16 @@ pub(crate) async fn run_ingame(
 
     let result = run_phase(
         "Player disconnected from game",
-        disconnect_session_end(state.username.clone()),
+        SessionEnd::AfterLogin {
+            username: state.username.clone(),
+            lease_action: SessionLeaseAction::Release,
+        },
         span,
         drive_ingame(conn, &mut state, map_rx),
     )
     .await;
 
-    finalize_ingame_result(&state, entered_map, leave_msg, result).await
+    finalize_ingame_result(&state, source_map_leave, result).await
 }
 
 #[cfg(test)]

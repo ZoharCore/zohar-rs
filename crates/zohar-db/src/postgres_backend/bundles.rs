@@ -8,10 +8,12 @@ use crate::traits::{AccountRow, AccountsView, AuthDb};
 #[cfg(feature = "db-game")]
 use crate::traits::{
     AcquireSessionResult, CreatePlayerOutcome, GameDb, PlayerRow, PlayersView, ProfileRow,
-    ProfilesView, SessionsView,
+    ProfilesView, RuntimeStateSaveOutcome, SessionsView,
 };
 #[cfg(feature = "db-game")]
 use zohar_domain::Empire as DomainEmpire;
+#[cfg(feature = "db-game")]
+use zohar_domain::PlayerExitKind;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerBaseAppearance as DomainAppearanceVariant;
 #[cfg(feature = "db-game")]
@@ -177,7 +179,10 @@ impl PlayersView for PgPlayersView<'_> {
         queries::game::delete_player_with_code(self.pool, username, slot, delete_code).await
     }
 
-    async fn save_runtime_state(&self, snapshot: &PlayerRuntimeSnapshot) -> DbResult<()> {
+    async fn save_runtime_state(
+        &self,
+        snapshot: &PlayerRuntimeSnapshot,
+    ) -> DbResult<RuntimeStateSaveOutcome> {
         queries::game::save_player_runtime_state(self.pool, snapshot).await
     }
 }
@@ -276,15 +281,23 @@ impl SessionsView for PgSessionsView<'_> {
         queries::game::release_session(self.pool, username, server_id, connection_id).await
     }
 
-    async fn finalize_disconnect(
+    async fn commit_player_exit(
         &self,
+        exit_kind: PlayerExitKind,
         username: &str,
         server_id: &str,
         connection_id: &str,
         snapshot: &PlayerRuntimeSnapshot,
-    ) -> DbResult<bool> {
-        queries::game::finalize_disconnect(self.pool, username, server_id, connection_id, snapshot)
-            .await
+    ) -> DbResult<()> {
+        queries::game::commit_player_exit(
+            self.pool,
+            exit_kind,
+            username,
+            server_id,
+            connection_id,
+            snapshot,
+        )
+        .await
     }
 
     async fn update_heartbeat(&self, username: &str) -> DbResult<()> {

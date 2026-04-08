@@ -2,6 +2,7 @@
 
 use binrw::{BinRead, BinWrite, Endian};
 use std::io::Cursor;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use zohar_protocol::control_pkt::ControlS2c;
 use zohar_protocol::game_pkt::handshake::HandshakeGameC2sSpecific;
 use zohar_protocol::game_pkt::ingame::{self, Skill};
@@ -155,6 +156,24 @@ fn s2c_packets_roundtrip() {
         decoded,
         InGameS2c::System(ingame::system::SystemS2c::SetChannelInfo { channel_id: 7 })
     ));
+
+    let pkt = InGameS2c::System(ingame::system::SystemS2c::InitServerHandoff {
+        destination_addr: WireServerAddr {
+            srv_ipv4_addr: i32::from_le_bytes([127, 0, 0, 1]),
+            srv_port: 13_000,
+        },
+    });
+    let decoded = round_trip(&pkt);
+    match decoded {
+        InGameS2c::System(ingame::system::SystemS2c::InitServerHandoff { destination_addr }) => {
+            assert_eq!(
+                destination_addr.srv_ipv4_addr,
+                i32::from_le_bytes([127, 0, 0, 1])
+            );
+            assert_eq!(destination_addr.srv_port, 13_000);
+        }
+        other => panic!("unexpected packet: {other:?}"),
+    }
 }
 
 #[test]
@@ -162,4 +181,27 @@ fn unknown_opcode_is_rejected() {
     let mut cursor = Cursor::new(vec![0x99]);
     let result = HandshakeGameC2s::read_options(&mut cursor, Endian::Little, ());
     assert!(result.is_err());
+}
+
+#[test]
+fn wire_server_addr_encodes_ipv4_and_mapped_ipv6() {
+    let addr = WireServerAddr::from_socket_addr(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        13_000,
+    ))
+    .expect("ipv4 address");
+    assert_eq!(addr.srv_ipv4_addr, i32::from_le_bytes([127, 0, 0, 1]));
+    assert_eq!(addr.srv_port, 13_000);
+
+    let mapped = WireServerAddr::from_socket_addr(SocketAddr::new(
+        IpAddr::V6(Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped()),
+        13_001,
+    ))
+    .expect("mapped ipv6 address");
+    assert_eq!(mapped.srv_ipv4_addr, i32::from_le_bytes([127, 0, 0, 1]));
+    assert_eq!(mapped.srv_port, 13_001);
+
+    let native_v6 =
+        WireServerAddr::from_socket_addr(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 13_002));
+    assert!(native_v6.is_none());
 }

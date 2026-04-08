@@ -2,7 +2,7 @@ use zohar_domain::Empire;
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::EntityId;
-use zohar_domain::entity::player::PlayerId;
+use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch};
 
 use crate::messages::ClientIntent;
 
@@ -10,6 +10,7 @@ use crate::messages::ClientIntent;
 pub struct EnterMsg {
     pub player_id: PlayerId,
     pub player_net_id: EntityId,
+    pub runtime_epoch: PlayerRuntimeEpoch,
     pub initial_pos: LocalPos,
     pub appearance: PlayerAppearance,
 }

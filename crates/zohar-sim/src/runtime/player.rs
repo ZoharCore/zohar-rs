@@ -7,7 +7,7 @@ use crate::outbox::PlayerOutbox;
 use bevy::prelude::*;
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::LocalPos;
-use zohar_domain::entity::player::PlayerId;
+use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch};
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 use zohar_map_port::{AttackIntent, ChatChannel, ClientTimestamp, Facing72, MovementArg};
 
@@ -94,5 +94,6 @@ pub(crate) struct ChatIntentQueue(pub(crate) Vec<ChatIntent>);
 #[derive(Component)]
 pub(crate) struct PlayerPersistenceState {
     pub(crate) dirty: bool,
+    pub(crate) runtime_epoch: PlayerRuntimeEpoch,
     pub(crate) next_autosave_at: crate::runtime::time::SimInstant,
 }

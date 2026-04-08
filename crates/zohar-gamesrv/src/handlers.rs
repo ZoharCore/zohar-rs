@@ -58,28 +58,38 @@ pub async fn handle_conn_core(
     let mut handshake = HandshakeState::new(server_start, Instant::now());
     let res = run_core_connection(conn_id, &ctx, &mut handshake, conn).await;
 
-    if let Err(SessionEnd::AfterLogin {
-        username,
-        lease_action,
-    }) = res
-    {
-        match lease_action {
-            SessionLeaseAction::Release => on_session_end(&ctx, &username, conn_id).await,
-            SessionLeaseAction::AlreadyReleased => {
+    match res {
+        Err(end) => match end {
+            SessionEnd::AfterLogin {
+                username,
+                lease_action,
+            } => match lease_action {
+                SessionLeaseAction::Release => on_session_end(&ctx, &username, conn_id).await,
+                SessionLeaseAction::AlreadyReleased => {
+                    debug!(
+                        username,
+                        conn_id = %ShortId(conn_id),
+                        "Session lease was already released transactionally during disconnect finalize"
+                    );
+                }
+                SessionLeaseAction::RetainUntilStale => {
+                    debug!(
+                        username,
+                        conn_id = %ShortId(conn_id),
+                        "Retaining active session lease until stale-session recovery"
+                    );
+                }
+            },
+            SessionEnd::Handoff { username } => {
                 debug!(
                     username,
                     conn_id = %ShortId(conn_id),
-                    "Session lease was already released transactionally during disconnect finalize"
+                    "Session lease was already released transactionally during player handoff"
                 );
             }
-            SessionLeaseAction::RetainUntilStale => {
-                debug!(
-                    username,
-                    conn_id = %ShortId(conn_id),
-                    "Retaining active session lease until stale-session recovery"
-                );
-            }
-        }
+            SessionEnd::BeforeLogin => {}
+        },
+        Ok(never) => match never {},
     }
 }
 

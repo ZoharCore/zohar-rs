@@ -145,8 +145,7 @@ pub struct Player {
     pub _reserved: u32,
     pub pos_x: game_pkt::WireWorldCm,
     pub pos_y: game_pkt::WireWorldCm,
-    pub srv_ipv4_addr: i32,
-    pub srv_port: u16,
+    pub server_addr: game_pkt::WireServerAddr,
     pub skill_branch: game_pkt::ZeroOpt<game_pkt::SkillBranch>,
 }
 
@@ -167,8 +166,7 @@ impl Player {
             hair_part: 0,
             pos_x: 0.into(),
             pos_y: 0.into(),
-            srv_ipv4_addr: 0,
-            srv_port: 0,
+            server_addr: game_pkt::WireServerAddr::UNROUTABLE,
             skill_branch: game_pkt::ZeroOpt::none(),
         }
     }

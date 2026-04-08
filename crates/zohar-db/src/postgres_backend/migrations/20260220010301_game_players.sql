@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS game.players (
     map_key TEXT,
     local_x REAL,
     local_y REAL,
+    runtime_epoch BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ,
     CHECK (class_name IN ('WARRIOR', 'NINJA', 'SURA', 'SHAMAN')),

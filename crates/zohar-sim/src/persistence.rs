@@ -1,7 +1,7 @@
 use bevy::prelude::Resource;
 
 use tokio::sync::{mpsc, oneshot};
-use zohar_domain::entity::player::PlayerRuntimeSnapshot;
+use zohar_domain::{PlayerExitKind, entity::player::PlayerRuntimeSnapshot};
 
 pub type PlayerPersistenceResult = Result<(), String>;
 
@@ -23,7 +23,8 @@ pub enum PlayerPersistenceRequest {
         kind: SnapshotSaveKind,
         reply: Option<oneshot::Sender<PlayerPersistenceResult>>,
     },
-    FinalizeDisconnect {
+    CommitPlayerExit {
+        exit_kind: PlayerExitKind,
         username: String,
         server_id: String,
         connection_id: String,
@@ -95,8 +96,9 @@ impl PlayerPersistenceCoordinatorHandle {
         Ok(reply_rx)
     }
 
-    pub async fn finalize_disconnect(
+    pub async fn commit_player_exit(
         &self,
+        exit_kind: PlayerExitKind,
         username: impl Into<String>,
         server_id: impl Into<String>,
         connection_id: impl Into<String>,
@@ -108,7 +110,8 @@ impl PlayerPersistenceCoordinatorHandle {
             return Ok(reply_rx);
         };
 
-        tx.send(PlayerPersistenceRequest::FinalizeDisconnect {
+        tx.send(PlayerPersistenceRequest::CommitPlayerExit {
+            exit_kind,
             username: username.into(),
             server_id: server_id.into(),
             connection_id: connection_id.into(),
@@ -179,6 +182,7 @@ mod tests {
     fn snapshot(player_id: PlayerId) -> PlayerRuntimeSnapshot {
         PlayerRuntimeSnapshot {
             id: player_id,
+            runtime_epoch: Default::default(),
             map_key: "zohar_map_a1".to_string(),
             local_pos: LocalPos::new(1.0, 2.0),
         }

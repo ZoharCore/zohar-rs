@@ -27,8 +27,6 @@ topology:
   channels:
     - id: 1
       entrypointPort: 13000
-  maps:
-    - metin2_map_c1
 
 core:
   logFilter: info,zohar_core=info,zohar_gamesrv=info,zohar_db=info,zohar_net=trace,zohar_sim=debug,sqlx::query=debug

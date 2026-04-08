@@ -103,6 +103,7 @@ pub struct ContentCoords {
     maps_by_code: HashMap<String, MapCoordMeta>,
     maps_by_id: HashMap<MapId, MapCoordMeta>,
     maps_empires: HashMap<MapId, Option<Empire>>,
+    town_spawns: HashMap<(MapId, DomainEmpire), LocalPos>,
     empire_starts: EmpireStarts,
 }
 
@@ -190,10 +191,51 @@ impl ContentCoords {
         )
     }
 
+    pub fn resolve_world_destination(&self, world_pos: WorldPos) -> Option<(MapId, LocalPos)> {
+        let mut resolved = None;
+
+        for (map_id, map) in &self.maps_by_id {
+            let Some(local_pos) = map.to_local(world_pos.x, world_pos.y) else {
+                continue;
+            };
+
+            if resolved.is_some() {
+                return None;
+            }
+
+            resolved = Some((*map_id, local_pos));
+        }
+
+        resolved
+    }
+
+    pub fn resolve_town_spawn(
+        &self,
+        map_id: MapId,
+        preferred_empire: DomainEmpire,
+    ) -> Option<LocalPos> {
+        if let Some(pos) = self.town_spawns.get(&(map_id, preferred_empire)).copied() {
+            return Some(pos);
+        }
+
+        let mut fallback = None;
+        for ((spawn_map_id, _), pos) in &self.town_spawns {
+            if *spawn_map_id != map_id {
+                continue;
+            }
+            if fallback.replace(*pos).is_some() {
+                return None;
+            }
+        }
+
+        fallback
+    }
+
     pub fn from_catalog(catalog: &ContentCatalog) -> Result<Self> {
         let mut maps_by_code = HashMap::with_capacity(catalog.maps.len());
         let mut maps_by_id = HashMap::with_capacity(catalog.maps.len());
         let mut maps_empires = HashMap::with_capacity(catalog.maps.len());
+        let mut town_spawns = HashMap::with_capacity(catalog.town_spawns.len());
 
         for map in &catalog.maps {
             let Some(map_id) = map_id_from_i64(map.map_id, "maps.map_id") else {
@@ -280,6 +322,39 @@ impl ContentCoords {
             bail!("content catalog does not define any maps");
         }
 
+        for spawn in &catalog.town_spawns {
+            let Some(map_id) = map_id_from_i64(spawn.map_id, "town_spawns.map_id") else {
+                continue;
+            };
+            let empire = map_content_empire(spawn.empire);
+            let local_pos = LocalPos::new(spawn.x, spawn.y);
+
+            let map = maps_by_id.get(&map_id).with_context(|| {
+                format!(
+                    "town spawn for empire {:?} references unknown map_id {}",
+                    empire, spawn.map_id
+                )
+            })?;
+
+            if !map.contains_local(local_pos.x, local_pos.y) {
+                bail!(
+                    "town spawn for empire {:?} on map_id {} is out of bounds at ({}, {})",
+                    empire,
+                    spawn.map_id,
+                    local_pos.x,
+                    local_pos.y
+                );
+            }
+
+            if town_spawns.insert((map_id, empire), local_pos).is_some() {
+                bail!(
+                    "duplicate town spawn for empire {:?} on map_id {}",
+                    empire,
+                    spawn.map_id
+                );
+            }
+        }
+
         let mut red: Option<EmpireStart> = None;
         let mut yellow: Option<EmpireStart> = None;
         let mut blue: Option<EmpireStart> = None;
@@ -354,6 +429,7 @@ impl ContentCoords {
             maps_by_code,
             maps_by_id,
             maps_empires,
+            town_spawns,
             empire_starts,
         })
     }
@@ -416,7 +492,7 @@ mod tests {
     use super::*;
     use zohar_content::types::ContentCatalog;
     use zohar_content::types::empires::{Empire as ContentEmpire, EmpireStartConfig};
-    use zohar_content::types::maps::ContentMap;
+    use zohar_content::types::maps::{ContentMap, MapTownSpawn};
 
     fn base_catalog() -> ContentCatalog {
         ContentCatalog {
@@ -450,6 +526,26 @@ mod tests {
                     empire: Some(ContentEmpire::Blue),
                     base_x: Some(9216.0),
                     base_y: Some(2048.0),
+                },
+            ],
+            town_spawns: vec![
+                MapTownSpawn {
+                    map_id: 1,
+                    empire: ContentEmpire::Red,
+                    x: 620.0,
+                    y: 700.0,
+                },
+                MapTownSpawn {
+                    map_id: 21,
+                    empire: ContentEmpire::Yellow,
+                    x: 560.0,
+                    y: 560.0,
+                },
+                MapTownSpawn {
+                    map_id: 41,
+                    empire: ContentEmpire::Blue,
+                    x: 490.0,
+                    y: 740.0,
                 },
             ],
             empire_start_configs: vec![
@@ -543,6 +639,7 @@ mod tests {
     fn constructor_fails_when_required_start_map_was_skipped() {
         let mut catalog = base_catalog();
         catalog.maps[0].map_id = i64::from(u32::MAX) + 1;
+        catalog.town_spawns.retain(|spawn| spawn.map_id != 1);
 
         let err = ContentCoords::from_catalog(&catalog).expect_err("must fail");
         assert!(
@@ -558,5 +655,40 @@ mod tests {
             let back = meters_to_wire_cm(meters);
             assert_eq!(i32::from(back), cm);
         }
+    }
+
+    #[test]
+    fn resolves_map_ids_from_exact_map_codes() {
+        let coords = ContentCoords::from_catalog(&base_catalog()).expect("coords");
+
+        assert_eq!(coords.map_id_by_code("zohar_map_a1"), Some(MapId::new(1)));
+        assert_eq!(coords.map_id_by_code("A1"), None);
+        assert_eq!(coords.map_id_by_code("#41"), None);
+    }
+
+    #[test]
+    fn resolves_world_destination_into_map_local_coordinates() {
+        let coords = ContentCoords::from_catalog(&base_catalog()).expect("coords");
+
+        let (map_id, local_pos) = coords
+            .resolve_world_destination(WorldPos::new(4096.0 + 12.5, 8960.0 + 34.25))
+            .expect("world destination");
+
+        assert_eq!(map_id, MapId::new(1));
+        assert_eq!(local_pos, LocalPos::new(12.5, 34.25));
+    }
+
+    #[test]
+    fn resolve_town_spawn_prefers_empire_specific_spawn() {
+        let coords = ContentCoords::from_catalog(&base_catalog()).expect("coords");
+
+        assert_eq!(
+            coords.resolve_town_spawn(MapId::new(21), DomainEmpire::Yellow),
+            Some(LocalPos::new(560.0, 560.0))
+        );
+        assert_eq!(
+            coords.resolve_town_spawn(MapId::new(21), DomainEmpire::Red),
+            Some(LocalPos::new(560.0, 560.0))
+        );
     }
 }

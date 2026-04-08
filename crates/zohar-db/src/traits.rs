@@ -10,15 +10,17 @@ use crate::DbResult;
 #[cfg(feature = "db-game")]
 use zohar_domain::Empire as DomainEmpire;
 #[cfg(feature = "db-game")]
+use zohar_domain::PlayerExitKind;
+#[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerBaseAppearance as DomainAppearanceVariant;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerClass as DomainPlayerClass;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerGender as DomainPlayerGender;
 #[cfg(feature = "db-game")]
-use zohar_domain::entity::player::PlayerId;
-#[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerRuntimeSnapshot;
+#[cfg(feature = "db-game")]
+use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch};
 // =============================================================================
 // Response Types (Portable across backends)
 // =============================================================================
@@ -60,6 +62,14 @@ pub struct PlayerRow {
     pub map_key: Option<String>,
     pub local_x: Option<f32>,
     pub local_y: Option<f32>,
+    pub runtime_epoch: PlayerRuntimeEpoch,
+}
+
+#[cfg(feature = "db-game")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeStateSaveOutcome {
+    Saved,
+    StaleOwner,
 }
 
 /// Outcome of a player creation attempt.
@@ -197,7 +207,7 @@ pub trait PlayersView: Send + Sync {
     fn save_runtime_state(
         &self,
         snapshot: &PlayerRuntimeSnapshot,
-    ) -> impl Future<Output = DbResult<()>> + Send;
+    ) -> impl Future<Output = DbResult<RuntimeStateSaveOutcome>> + Send;
 }
 
 /// View trait for session management operations.
@@ -251,13 +261,14 @@ pub trait SessionsView: Send + Sync {
         connection_id: &str,
     ) -> impl Future<Output = DbResult<bool>> + Send;
 
-    fn finalize_disconnect(
+    fn commit_player_exit(
         &self,
+        exit_kind: PlayerExitKind,
         username: &str,
         server_id: &str,
         connection_id: &str,
         snapshot: &PlayerRuntimeSnapshot,
-    ) -> impl Future<Output = DbResult<bool>> + Send;
+    ) -> impl Future<Output = DbResult<()>> + Send;
 
     fn update_heartbeat(&self, username: &str) -> impl Future<Output = DbResult<()>> + Send;
 }

@@ -27,7 +27,6 @@ use crate::codec::SequencedBinRwCodec;
 use futures_util::{SinkExt, StreamExt};
 use std::fmt::Debug;
 use std::io;
-use std::net::IpAddr;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use zohar_protocol::phase::PhaseId;
@@ -147,27 +146,6 @@ impl<S: ConnectionState> Connection<S> {
     /// Receive a packet - uses the state's codec type automatically.
     pub async fn recv(&mut self) -> io::Result<Option<S::C2sPacket>> {
         self.framed.next().await.transpose()
-    }
-
-    /// Get local address info (IP as i32 in little-endian, port).
-    pub fn local_addr_info(&self) -> io::Result<(i32, u16)> {
-        let stream = self.framed.get_ref();
-        let addr = stream.local_addr()?;
-
-        let srv_ipv4_addr = match addr.ip() {
-            IpAddr::V4(ip) => ip,
-            IpAddr::V6(ip) => ip.to_ipv4().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::AddrNotAvailable,
-                    "Connected via IPv6 but protocol requires IPv4",
-                )
-            })?,
-        };
-
-        let ip_int = i32::from_le_bytes(srv_ipv4_addr.octets());
-        let port = addr.port();
-
-        Ok((ip_int, port))
     }
 
     /// Get peer IP as a normalized string.

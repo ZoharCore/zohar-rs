@@ -157,8 +157,11 @@ async fn test_select_player_choices_uses_local_endpoint_fields() -> anyhow::Resu
     let players = await_set_player_choices(&mut select).await?;
     let first = players[0].clone();
     assert_ne!(first.db_id, 0, "expected seeded character in slot 0");
-    assert_eq!(first.srv_ipv4_addr, i32::from_le_bytes([127, 0, 0, 1]));
-    assert_eq!(first.srv_port, addr.port());
+    assert_eq!(
+        first.server_addr.srv_ipv4_addr,
+        i32::from_le_bytes([127, 0, 0, 1])
+    );
+    assert_eq!(first.server_addr.srv_port, addr.port());
 
     send_sequenced(
         select.get_mut(),

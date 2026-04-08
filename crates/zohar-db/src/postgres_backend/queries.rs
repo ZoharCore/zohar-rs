@@ -7,11 +7,15 @@ use crate::parse_enum;
 #[cfg(feature = "db-auth")]
 use crate::traits::AccountRow;
 #[cfg(feature = "db-game")]
-use crate::traits::{AcquireSessionResult, CreatePlayerOutcome, PlayerRow, ProfileRow};
+use crate::traits::{
+    AcquireSessionResult, CreatePlayerOutcome, PlayerRow, ProfileRow, RuntimeStateSaveOutcome,
+};
 use crate::{DbContext, DbResult, OptionDbExt};
 use sqlx::{PgPool, Row};
 #[cfg(feature = "db-game")]
 use zohar_domain::Empire as DomainEmpire;
+#[cfg(feature = "db-game")]
+use zohar_domain::PlayerExitKind;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerBaseAppearance as DomainAppearanceVariant;
 #[cfg(feature = "db-game")]
@@ -19,9 +23,9 @@ use zohar_domain::entity::player::PlayerClass as DomainPlayerClass;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerGender as DomainPlayerGender;
 #[cfg(feature = "db-game")]
-use zohar_domain::entity::player::PlayerId;
-#[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerRuntimeSnapshot;
+#[cfg(feature = "db-game")]
+use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch};
 
 #[cfg(feature = "db-auth")]
 pub mod auth {
@@ -188,10 +192,14 @@ pub mod game {
             local_y: row
                 .try_get::<Option<f32>, _>("local_y")
                 .db_ctx("read local_y")?,
+            runtime_epoch: PlayerRuntimeEpoch::from(
+                row.try_get::<i64, _>("runtime_epoch")
+                    .db_ctx("read runtime_epoch")?,
+            ),
         })
     }
 
-    const PLAYER_COLS: &str = "id, username, slot, name, level, class_name, gender, appearance, stat_str, stat_vit, stat_dex, stat_int, map_key, local_x, local_y";
+    const PLAYER_COLS: &str = "id, username, slot, name, level, class_name, gender, appearance, stat_str, stat_vit, stat_dex, stat_int, map_key, local_x, local_y, runtime_epoch";
 
     pub async fn list_players_for_user(pool: &PgPool, username: &str) -> DbResult<Vec<PlayerRow>> {
         let rows = sqlx::query(&format!(
@@ -311,29 +319,48 @@ pub mod game {
     pub async fn save_player_runtime_state(
         pool: &PgPool,
         snapshot: &PlayerRuntimeSnapshot,
-    ) -> DbResult<()> {
-        let result = sqlx::query(
-            "UPDATE game.players
-             SET map_key = $1,
-                 local_x = $2,
-                 local_y = $3
-             WHERE id = $4
-               AND deleted_at IS NULL",
+    ) -> DbResult<RuntimeStateSaveOutcome> {
+        let row = sqlx::query(
+            "WITH target AS (
+                SELECT 1
+                FROM game.players
+                WHERE id = $4
+                  AND deleted_at IS NULL
+            ),
+            updated AS (
+                UPDATE game.players
+                SET map_key = $1,
+                    local_x = $2,
+                    local_y = $3
+                WHERE id = $4
+                  AND deleted_at IS NULL
+                  AND runtime_epoch = $5
+                RETURNING 1
+            )
+            SELECT
+                EXISTS(SELECT 1 FROM target) AS player_exists,
+                EXISTS(SELECT 1 FROM updated) AS updated",
         )
         .bind(&snapshot.map_key)
         .bind(snapshot.local_pos.x)
         .bind(snapshot.local_pos.y)
         .bind(i64::from(snapshot.id))
-        .execute(pool)
+        .bind(i64::from(snapshot.runtime_epoch))
+        .fetch_one(pool)
         .await
         .db_ctx("save player runtime state")?;
 
-        if result.rows_affected() == 1 {
-            Ok(())
-        } else {
+        let player_exists = row
+            .try_get::<bool, _>("player_exists")
+            .db_ctx("read player_exists")?;
+        if !player_exists {
             Err(crate::DbError::Invariant(
                 "active player should exist when saving runtime state",
             ))
+        } else if row.try_get::<bool, _>("updated").db_ctx("read updated")? {
+            Ok(RuntimeStateSaveOutcome::Saved)
+        } else {
+            Ok(RuntimeStateSaveOutcome::StaleOwner)
         }
     }
 
@@ -572,40 +599,46 @@ pub mod game {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn finalize_disconnect(
+    pub async fn commit_player_exit(
         pool: &PgPool,
+        _exit_kind: PlayerExitKind,
         username: &str,
         server_id: &str,
         connection_id: &str,
         snapshot: &PlayerRuntimeSnapshot,
-    ) -> DbResult<bool> {
-        let mut tx = pool.begin().await.db_ctx("begin finalize disconnect")?;
+    ) -> DbResult<()> {
+        let mut tx = pool.begin().await.db_ctx("begin commit player exit")?;
 
         let player_result = sqlx::query(
             "UPDATE game.players
              SET map_key = $1,
                  local_x = $2,
-                 local_y = $3
+                 local_y = $3,
+                 runtime_epoch = runtime_epoch + 1
              WHERE id = $4
-               AND deleted_at IS NULL",
+               AND deleted_at IS NULL
+               AND runtime_epoch = $5",
         )
         .bind(&snapshot.map_key)
         .bind(snapshot.local_pos.x)
         .bind(snapshot.local_pos.y)
         .bind(i64::from(snapshot.id))
+        .bind(i64::from(snapshot.runtime_epoch))
         .execute(&mut *tx)
         .await
-        .db_ctx("save player runtime state during disconnect finalize")?;
+        .db_ctx("save player runtime state during player exit")?;
 
         if player_result.rows_affected() != 1 {
             return Err(crate::DbError::Invariant(
-                "active player should exist when finalizing disconnect",
+                "active player should exist and own the runtime version when committing player exit",
             ));
         }
 
         let session_result = sqlx::query(
             "UPDATE game.sessions
-             SET server_id = NULL, connection_id = NULL, state = 'AUTHED'
+             SET server_id = NULL,
+                 connection_id = NULL,
+                 state = 'AUTHED'
              WHERE username = $1 AND server_id = $2 AND connection_id = $3",
         )
         .bind(username)
@@ -613,16 +646,16 @@ pub mod game {
         .bind(connection_id)
         .execute(&mut *tx)
         .await
-        .db_ctx("release session during disconnect finalize")?;
+        .db_ctx("release session during player exit")?;
 
         if session_result.rows_affected() != 1 {
             return Err(crate::DbError::Invariant(
-                "active session should exist when finalizing disconnect",
+                "active session should exist when committing player exit",
             ));
         }
 
-        tx.commit().await.db_ctx("commit finalize disconnect")?;
-        Ok(true)
+        tx.commit().await.db_ctx("commit player exit")?;
+        Ok(())
     }
 
     pub async fn update_session_heartbeat(pool: &PgPool, username: &str) -> DbResult<()> {

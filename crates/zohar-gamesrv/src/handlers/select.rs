@@ -9,7 +9,7 @@ use super::runtime::{
 };
 use super::session_health::{SessionTick, SessionTracker};
 use super::types::{PhaseResult, SessionEnd, SessionLeaseAction};
-use crate::adapters::{PlayerEndpoint, ToDomain, ToProtocol, ToProtocolPlayer};
+use crate::adapters::{ToDomain, ToProtocol, ToProtocolPlayer};
 use crate::infra::MapEndpointResolver;
 use crate::{ContentCoords, EmpireStartMaps, GameContext, GatewayContext, ServerDrainController};
 use std::convert::Infallible;
@@ -22,11 +22,11 @@ use zohar_net::connection::NextConnection;
 use zohar_net::connection::game_conn::{Select as ThisPhase, SelectedPlayer};
 use zohar_net::{Connection, ConnectionPhaseExt};
 use zohar_protocol::decode_cstr;
-use zohar_protocol::game_pkt::ControlS2c;
 use zohar_protocol::game_pkt::select::{
     CreatePlayerError, GuildName, MAX_PLAYER_SLOTS, Player, PlayerSelectSlot, SelectC2s,
     SelectC2sSpecific, SelectS2c, SelectS2cSpecific,
 };
+use zohar_protocol::game_pkt::{ControlS2c, WireServerAddr};
 
 const NEW_PLAYER_NAME_VALID_LEN: std::ops::RangeInclusive<usize> = 2..=16; // TODO: configurable
 
@@ -196,7 +196,7 @@ async fn handle_packet(
                                 slot = slot_index,
                                 "Character map routing unavailable after create; advertising unroutable endpoint"
                             );
-                            unroutable_endpoint()
+                            WireServerAddr::UNROUTABLE
                         }
                     };
                     Ok(PhaseEffects::send(
@@ -290,8 +290,8 @@ async fn apply_effects(
     for packet in effects.send {
         conn.send(packet).await?;
     }
-    if let Some(reason) = effects.disconnect {
-        return Err(disconnect(reason));
+    if let Some(error) = effects.disconnect {
+        return Err(error);
     }
     Ok(effects.transition)
 }
@@ -446,7 +446,7 @@ async fn build_players_pkt(
                     slot = db_player.slot,
                     "Character map routing unavailable; advertising unroutable endpoint for slot"
                 );
-                unroutable_endpoint()
+                WireServerAddr::UNROUTABLE
             }
         };
         *player = db_player.to_domain().to_protocol_player(endpoint);
@@ -469,17 +469,10 @@ async fn build_players_pkt(
     .into())
 }
 
-fn unroutable_endpoint() -> PlayerEndpoint {
-    PlayerEndpoint {
-        srv_ipv4_addr: 0,
-        srv_port: 0,
-    }
-}
-
 async fn resolve_player_endpoint(
     player: &zohar_db::PlayerRow,
     state: &SelectCtx<'_>,
-) -> PhaseResult<PlayerEndpoint> {
+) -> PhaseResult<WireServerAddr> {
     let fallback_empire = state
         .runtime
         .db
@@ -509,17 +502,10 @@ async fn resolve_player_endpoint(
                 map_code
             )
         })?;
-    let ip = match endpoint.ip() {
-        std::net::IpAddr::V4(ip) => ip,
-        std::net::IpAddr::V6(ip) => ip
-            .to_ipv4_mapped()
-            .ok_or_else(|| anyhow::anyhow!("non-ipv4 endpoint for map routing"))?,
-    };
+    let endpoint = WireServerAddr::from_socket_addr(endpoint)
+        .ok_or_else(|| anyhow::anyhow!("non-ipv4 endpoint for map routing"))?;
 
-    Ok(PlayerEndpoint {
-        srv_ipv4_addr: i32::from_le_bytes(ip.octets()),
-        srv_port: endpoint.port(),
-    })
+    Ok(endpoint)
 }
 
 fn resolve_player_map_code(

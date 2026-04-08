@@ -115,8 +115,8 @@ async fn apply_effects(
     for packet in effects.send {
         conn.send(packet).await?;
     }
-    if let Some(reason) = effects.disconnect {
-        return Err(disconnect(reason));
+    if let Some(error) = effects.disconnect {
+        return Err(error);
     }
     Ok(effects.transition)
 }

@@ -169,7 +169,7 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
             PlayerOutboxComp(outbox),
             PlayerCommandQueue::default(),
             ChatIntentQueue::default(),
-            PlayerPersistenceState::initial(msg.player_id, now),
+            PlayerPersistenceState::initial(msg.player_id, msg.runtime_epoch, now),
         ))
         .id();
 

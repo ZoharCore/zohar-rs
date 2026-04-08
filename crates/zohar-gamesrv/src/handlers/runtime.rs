@@ -8,14 +8,31 @@ use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{Instrument, info, info_span};
 use zohar_net::ConnectionState;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisconnectDisposition {
+    Standard,
+    HandoffPrepared,
+}
+
 #[derive(Debug)]
 struct Disconnect {
     reason: &'static str,
+    disposition: DisconnectDisposition,
 }
 
 impl Disconnect {
     fn new(reason: &'static str) -> Self {
-        Self { reason }
+        Self {
+            reason,
+            disposition: DisconnectDisposition::Standard,
+        }
+    }
+
+    fn handoff(reason: &'static str) -> Self {
+        Self {
+            reason,
+            disposition: DisconnectDisposition::HandoffPrepared,
+        }
     }
 }
 
@@ -27,18 +44,18 @@ impl std::fmt::Display for Disconnect {
 
 impl std::error::Error for Disconnect {}
 
-pub(crate) fn is_disconnect(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<Disconnect>().is_some()
-}
-
 pub(crate) fn disconnect(reason: &'static str) -> anyhow::Error {
     anyhow::Error::new(Disconnect::new(reason))
+}
+
+pub(crate) fn handoff_disconnect(reason: &'static str) -> anyhow::Error {
+    anyhow::Error::new(Disconnect::handoff(reason))
 }
 
 pub(crate) struct PhaseEffects<S: zohar_net::connection::NextState> {
     pub send: Vec<S::S2cPacket>,
     pub transition: Option<S::Data>,
-    pub disconnect: Option<&'static str>,
+    pub disconnect: Option<anyhow::Error>,
 }
 
 impl<S: zohar_net::connection::NextState> PhaseEffects<S> {
@@ -81,13 +98,28 @@ impl<S: zohar_net::connection::NextState> PhaseEffects<S> {
         Self {
             send: Vec::new(),
             transition: None,
-            disconnect: Some(reason),
+            disconnect: Some(disconnect(reason)),
         }
     }
 
     pub fn with_disconnect(mut self, reason: &'static str) -> Self {
-        self.disconnect = Some(reason);
+        self.disconnect = Some(disconnect(reason));
         self
+    }
+
+    pub fn with_handoff_disconnect(mut self, reason: &'static str) -> Self {
+        self.disconnect = Some(handoff_disconnect(reason));
+        self
+    }
+}
+
+fn session_end_for_disconnect(end: SessionEnd, disposition: DisconnectDisposition) -> SessionEnd {
+    match disposition {
+        DisconnectDisposition::Standard => end,
+        DisconnectDisposition::HandoffPrepared => match end {
+            SessionEnd::AfterLogin { username, .. } => SessionEnd::Handoff { username },
+            other => other,
+        },
     }
 }
 
@@ -126,12 +158,13 @@ pub(crate) async fn run_phase<T>(
     match fut.instrument(span).await {
         Ok(conn) => Ok(conn),
         Err(err) => {
-            if is_disconnect(&err) {
-                info!(reason = %err, "{err_msg}");
+            if let Some(disconnect) = err.downcast_ref::<Disconnect>() {
+                info!(reason = %disconnect, "{err_msg}");
+                Err(session_end_for_disconnect(end, disconnect.disposition))
             } else {
                 info!(error = ?err, "{err_msg}");
+                Err(end)
             }
-            Err(end)
         }
     }
 }

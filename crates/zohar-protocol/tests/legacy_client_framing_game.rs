@@ -11,7 +11,8 @@ use zohar_protocol::game_pkt::ingame::world::{EntityType, WorldS2c};
 use zohar_protocol::game_pkt::select::{CreatePlayerError, Player};
 use zohar_protocol::game_pkt::{
     Empire, HandshakeGameC2s, HandshakeGameS2c, LoadingC2s, LoadingS2c, LoginC2s, LoginS2c, NetId,
-    SelectC2s, SelectS2c, ServerInfo, ServerStatus, WireMillis32, WireWorldCm, ZeroOpt,
+    SelectC2s, SelectS2c, ServerInfo, ServerStatus, WireMillis32, WireServerAddr, WireWorldCm,
+    ZeroOpt,
 };
 
 #[test]
@@ -264,6 +265,20 @@ fn loading_c2s_packets_keep_their_legacy_lengths() {
         ),
         0x0A,
         1,
+    );
+}
+
+#[test]
+fn ingame_warp_packet_keeps_its_legacy_length() {
+    assert_packet_frame(
+        &zohar_protocol::game_pkt::ingame::InGameS2c::System(SystemS2c::InitServerHandoff {
+            destination_addr: WireServerAddr {
+                srv_ipv4_addr: i32::from_le_bytes([127, 0, 0, 1]),
+                srv_port: 13_000,
+            },
+        }),
+        0x41,
+        15,
     );
 }
 

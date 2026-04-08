@@ -112,7 +112,8 @@ where
             "New connection established"
         );
 
-        let _ = tokio::spawn(handler(stream, server_start, conn_id));
+        let jh = tokio::spawn(handler(stream, server_start, conn_id));
+        drop(jh) // fire-and-forget
     }
 }
 

@@ -19,6 +19,7 @@ zohar-sim = { path = "../zohar-sim" }
 anyhow.workspace = true
 clap.workspace = true
 futures-util.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

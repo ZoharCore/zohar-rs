@@ -6,6 +6,7 @@ use zohar_map_port::{ClientIntent, ClientIntentMsg};
 
 mod prefs;
 mod session;
+mod teleport;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -20,24 +21,27 @@ struct SlashCommandLine {
     command: KnownCommand,
 }
 
-#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+#[derive(Subcommand, Debug, Clone, PartialEq)]
 pub(super) enum KnownCommand {
     #[command(flatten)]
     Session(session::SessionCommand),
     #[command(flatten)]
-    Movement(prefs::PreferencesCommand),
+    Preferences(prefs::PreferencesCommand),
+    #[command(flatten)]
+    Teleport(teleport::TeleportCommand),
 }
 
 impl KnownCommand {
-    fn execute(self, state: &mut InGameCtx<'_>) -> InGamePhaseEffects {
+    async fn execute(self, state: &mut InGameCtx<'_>) -> InGamePhaseEffects {
         match self {
             Self::Session(command) => command.execute(),
-            Self::Movement(command) => command.execute(state),
+            Self::Preferences(command) => command.execute(state),
+            Self::Teleport(command) => command.execute(state).await,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum ParsedCommand {
     Unknown { spelled: String },
     Feedback { message: String },
@@ -68,45 +72,49 @@ pub(super) fn parse(input: &str) -> Option<ParsedCommand> {
             Some(ParsedCommand::Unknown { spelled })
         }
         Err(err) => Some(ParsedCommand::Feedback {
-            message: err
-                .to_string()
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .unwrap_or("Invalid command.")
-                .to_string(),
+            message: format_clap_feedback(&spelled, &err),
         }),
     }
 }
 
-pub(super) fn execute(command: ParsedCommand, state: &mut InGameCtx<'_>) -> InGamePhaseEffects {
+pub(super) async fn execute(
+    command: ParsedCommand,
+    state: &mut InGameCtx<'_>,
+) -> InGamePhaseEffects {
     match command {
-        ParsedCommand::Known(command) => command.execute(state),
-        ParsedCommand::Feedback { message } => InGamePhaseEffects::send(
-            ChatS2c::NotifyChatMessage {
-                kind: ChatKind::Info,
-                message: format!("{message}\0").into_bytes(),
-                net_id: ZeroOpt::none(),
-                empire: ZeroOpt::none(),
-            }
-            .into(),
-        ),
-        ParsedCommand::Unknown { spelled } => InGamePhaseEffects::send(
-            ChatS2c::NotifyChatMessage {
-                kind: ChatKind::Info,
-                message: format!("Unimplemented command: `{spelled}`.\0").into_bytes(),
-                net_id: ZeroOpt::none(),
-                empire: ZeroOpt::none(),
-            }
-            .into(),
-        ),
+        ParsedCommand::Known(command) => command.execute(state).await,
+        ParsedCommand::Feedback { message } => info_feedback(message),
+        ParsedCommand::Unknown { spelled } => {
+            prefixed_info_feedback(&spelled, format!("Unimplemented command: `{spelled}`."))
+        }
     }
+}
+
+fn info_feedback(message: String) -> InGamePhaseEffects {
+    InGamePhaseEffects::send(
+        ChatS2c::NotifyChatMessage {
+            kind: ChatKind::Info,
+            message: format!("{message}\0").into_bytes(),
+            net_id: ZeroOpt::none(),
+            empire: ZeroOpt::none(),
+        }
+        .into(),
+    )
+}
+
+pub(super) fn prefixed_info_feedback(
+    command_name: &str,
+    message: impl AsRef<str>,
+) -> InGamePhaseEffects {
+    let command_name = normalize_command_name(command_name);
+    let message = collapse_to_one_line(message.as_ref());
+    info_feedback(format!("{command_name}: {message}"))
 }
 
 pub(super) fn try_send_client_intent(
     state: &mut InGameCtx<'_>,
     intent: ClientIntent,
-    action_name: &'static str,
+    command_name: &'static str,
 ) -> InGamePhaseEffects {
     if let Err(err) = state
         .ctx
@@ -120,19 +128,11 @@ pub(super) fn try_send_client_intent(
             player_id = ?state.player_id,
             map_id = state.map_id.get(),
             error = ?err,
-            action = action_name,
+            action = command_name,
             "Failed to enqueue client intent to map runtime"
         );
 
-        InGamePhaseEffects::send(
-            ChatS2c::NotifyChatMessage {
-                kind: ChatKind::Info,
-                message: b"Server is busy. Please try again.\0".to_vec(),
-                net_id: ZeroOpt::none(),
-                empire: ZeroOpt::none(),
-            }
-            .into(),
-        )
+        prefixed_info_feedback(command_name, "Server is busy. Please try again.")
     } else {
         InGamePhaseEffects::empty()
     }
@@ -147,7 +147,78 @@ fn command_summary(name: &str) -> Option<String> {
         .get_about()
         .map(|styled| styled.to_string())
         .unwrap_or_else(|| "No help available.".to_string());
-    Some(format!("/{name}: {about}"))
+    let usage = normalize_usage(sub.clone().render_usage().to_string());
+    Some(format!(
+        "{}: {} Usage: {}.",
+        normalize_command_name(name),
+        collapse_to_one_line(&about),
+        usage
+    ))
+}
+
+fn format_clap_feedback(spelled: &str, err: &clap::Error) -> String {
+    let mut details = Vec::new();
+    let mut usage = None;
+    let mut collecting_error_details = false;
+
+    for line in err
+        .to_string()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if let Some(rest) = line.strip_prefix("error:") {
+            details.push(rest.trim().to_string());
+            collecting_error_details = true;
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("Usage:") {
+            usage = Some(normalize_usage(rest.trim()));
+            collecting_error_details = false;
+            continue;
+        }
+
+        if line.starts_with("For more information") {
+            continue;
+        }
+
+        if collecting_error_details {
+            details.push(line.to_string());
+        }
+    }
+
+    let mut message = collapse_to_one_line(&details.join(" "));
+    if message.is_empty() {
+        message = "Invalid command.".to_string();
+    }
+    if let Some(usage) = usage {
+        message.push_str(" Usage: ");
+        message.push_str(&usage);
+        message.push('.');
+    }
+
+    format!("{}: {}", normalize_command_name(spelled), message)
+}
+
+fn normalize_command_name(command_name: &str) -> String {
+    if command_name.starts_with('/') {
+        command_name.to_string()
+    } else {
+        format!("/{command_name}")
+    }
+}
+
+fn normalize_usage(usage: impl AsRef<str>) -> String {
+    let usage = usage.as_ref().trim();
+    let usage = usage.strip_prefix("Usage:").unwrap_or(usage).trim();
+    let usage = usage.strip_prefix("chat-command ").unwrap_or(usage);
+    let usage = usage.strip_prefix('/').unwrap_or(usage);
+    format!("/{usage}")
+}
+
+fn collapse_to_one_line(message: &str) -> String {
+    message.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn tokenize(input: &str) -> Vec<String> {
@@ -202,8 +273,32 @@ mod tests {
         );
         assert_eq!(
             parse("/set_walk_mode"),
-            Some(ParsedCommand::Known(KnownCommand::Movement(
+            Some(ParsedCommand::Known(KnownCommand::Preferences(
                 prefs::PreferencesCommand::SetWalkMode,
+            )))
+        );
+        assert_eq!(
+            parse("/warp 512 768"),
+            Some(ParsedCommand::Known(KnownCommand::Teleport(
+                teleport::TeleportCommand::Warp { x: 512.0, y: 768.0 },
+            )))
+        );
+        assert_eq!(
+            parse("/goto a1"),
+            Some(ParsedCommand::Known(KnownCommand::Teleport(
+                teleport::TeleportCommand::Goto {
+                    target: "a1".to_string(),
+                    y: None,
+                },
+            )))
+        );
+        assert_eq!(
+            parse("/goto 512 768"),
+            Some(ParsedCommand::Known(KnownCommand::Teleport(
+                teleport::TeleportCommand::Goto {
+                    target: "512".to_string(),
+                    y: Some("768".to_string()),
+                },
             )))
         );
     }
@@ -254,18 +349,28 @@ mod tests {
 
     #[test]
     fn help_flag_returns_single_line_summary() {
-        assert_eq!(
-            parse("/logout --help"),
-            Some(ParsedCommand::Feedback {
-                message: "/logout: Disconnect back to the login screen.".to_string(),
-            })
-        );
-        assert_eq!(
-            parse("/set_walk_mode --help"),
-            Some(ParsedCommand::Feedback {
-                message: "/set_walk_mode: Switch your movement animation to walk.".to_string(),
-            })
-        );
+        let Some(ParsedCommand::Feedback { message }) = parse("/logout --help") else {
+            panic!("expected help feedback");
+        };
+        assert!(message.starts_with("/logout:"));
+        assert!(message.contains("Disconnect back to the login screen."));
+        assert!(message.contains("Usage: /logout."));
+        assert!(!message.contains('\n'));
+
+        let Some(ParsedCommand::Feedback { message }) = parse("/set_walk_mode --help") else {
+            panic!("expected help feedback");
+        };
+        assert!(message.starts_with("/set_walk_mode:"));
+        assert!(message.contains("Set movement animation to walking."));
+        assert!(message.contains("Usage: /set_walk_mode."));
+        assert!(!message.contains('\n'));
+
+        let Some(ParsedCommand::Feedback { message }) = parse("/goto --help") else {
+            panic!("expected help feedback");
+        };
+        assert!(message.starts_with("/goto:"));
+        assert!(message.contains("Usage: /goto <MAP_CODE_OR_LOCAL_X_M> [LOCAL_Y_M]."));
+        assert!(!message.contains('\n'));
     }
 
     #[test]
@@ -274,17 +379,27 @@ mod tests {
             panic!("expected invalid-usage feedback");
         };
 
+        assert!(message.starts_with("/logout:"));
         assert!(message.contains("unexpected argument"));
+        assert!(message.contains("Usage: /logout."));
+        assert!(!message.contains('\n'));
+    }
+
+    #[test]
+    fn missing_args_include_usage_on_one_line() {
+        let Some(ParsedCommand::Feedback { message }) = parse("/goto") else {
+            panic!("expected invalid-usage feedback");
+        };
+
+        assert!(message.starts_with("/goto:"));
+        assert!(message.contains("required arguments were not provided"));
+        assert!(message.contains("Usage: /goto <MAP_CODE_OR_LOCAL_X_M> [LOCAL_Y_M]."));
+        assert!(!message.contains('\n'));
     }
 
     #[test]
     fn unknown_commands_send_private_info_feedback() {
-        let effects = execute(
-            ParsedCommand::Unknown {
-                spelled: "/foobar".to_string(),
-            },
-            panic_state(),
-        );
+        let effects = prefixed_info_feedback("/foobar", "Unimplemented command: `/foobar`.");
 
         assert!(effects.transition.is_none());
         assert!(effects.disconnect.is_none());
@@ -304,10 +419,9 @@ mod tests {
         assert_eq!(*kind, ChatKind::Info);
         assert_eq!(*net_id, ZeroOpt::none());
         assert_eq!(*empire, ZeroOpt::none());
-        assert_eq!(message, &b"Unimplemented command `/foobar`\0".to_vec());
-    }
-
-    fn panic_state() -> &'static mut InGameCtx<'static> {
-        panic!("tests should not execute known commands")
+        assert_eq!(
+            message,
+            &b"/foobar: Unimplemented command: `/foobar`.\0".to_vec()
+        );
     }
 }

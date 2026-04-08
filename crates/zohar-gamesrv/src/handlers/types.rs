@@ -14,4 +14,7 @@ pub(crate) enum SessionEnd {
         username: String,
         lease_action: SessionLeaseAction,
     },
+    Handoff {
+        username: String,
+    },
 }
