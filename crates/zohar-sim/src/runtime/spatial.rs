@@ -14,7 +14,7 @@ use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::mob::spawn::{SpawnTemplate, WeightedGroupChoice};
 use zohar_domain::entity::mob::{MobBattleType, MobId};
-use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 #[cfg(test)]
 use zohar_map_port::MovementArg;
 use zohar_map_port::{ClientTimestamp, Facing72, PacketDuration};
@@ -169,6 +169,7 @@ pub(crate) fn clamp_step_towards(from: LocalPos, to: LocalPos, max_step: f32) ->
 pub(crate) fn calculate_move_duration_ms(
     motion_speeds: &EntityMotionSpeedTable,
     appearance: &PlayerAppearance,
+    animation: MovementAnimation,
     start_pos: LocalPos,
     target_pos: LocalPos,
 ) -> PacketDuration {
@@ -177,7 +178,13 @@ pub(crate) fn calculate_move_duration_ms(
         gender: appearance.gender,
     };
     let motion_speed = motion_speeds
-        .speed_for(MotionEntityKey::Player(profile_key), MotionMoveMode::Run)
+        .speed_for(
+            MotionEntityKey::Player(profile_key),
+            match animation {
+                MovementAnimation::Run => MotionMoveMode::Run,
+                MovementAnimation::Walk => MotionMoveMode::Walk,
+            },
+        )
         .unwrap_or(DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC);
     duration_from_motion_speed(motion_speed, appearance.move_speed, start_pos, target_pos)
 }

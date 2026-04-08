@@ -2,18 +2,19 @@ use bevy::prelude::*;
 use std::collections::HashSet;
 use zohar_domain::Empire;
 use zohar_domain::coords::LocalPos;
-use zohar_domain::entity::EntityId;
 use zohar_domain::entity::MovementKind;
 use zohar_domain::entity::player::PlayerId;
+use zohar_domain::entity::{EntityId, MovementAnimation};
 use zohar_map_port::{MovementEvent, PlayerEvent};
 
 use crate::replication::{InterestConfig, VisibilityDiff};
 use tracing::warn;
 
 use super::state::{
-    LocalTransform, MapPendingLocalChats, MapPendingMovements, MapReplication, MapSpatial,
-    NetEntityId, NetEntityIndex, PendingLocalChat, PendingMovement, PlayerAppearanceComp,
-    PlayerCount, PlayerIndex, PlayerMarker, PlayerOutboxComp, RuntimeState, SharedConfig,
+    LocalTransform, MapPendingLocalChats, MapPendingMovementAnimations, MapPendingMovements,
+    MapReplication, MapSpatial, NetEntityId, NetEntityIndex, PendingLocalChat, PendingMovement,
+    PendingMovementAnimation, PlayerAppearanceComp, PlayerCount, PlayerIndex, PlayerMarker,
+    PlayerMovementAnimation, PlayerOutboxComp, RuntimeState, SharedConfig,
 };
 use super::util::{
     format_talking_message, movement_kind_priority, obfuscate_cross_empire_talking_body,
@@ -37,6 +38,7 @@ struct VisibilityObserver {
 #[derive(Default)]
 struct PendingReplicationFlush {
     movements: Vec<PendingMovement>,
+    movement_animations: Vec<PendingMovementAnimation>,
     local_chats: Vec<PendingLocalChat>,
 }
 
@@ -54,9 +56,17 @@ impl PendingReplicationFlush {
                 .map(|mut chats| std::mem::take(&mut chats.0))
                 .unwrap_or_default()
         };
+        let movement_animations = {
+            let mut map_ent = world.entity_mut(map_entity);
+            map_ent
+                .get_mut::<MapPendingMovementAnimations>()
+                .map(|mut animations| std::mem::take(&mut animations.0))
+                .unwrap_or_default()
+        };
 
         Some(Self {
             movements,
+            movement_animations,
             local_chats,
         })
     }
@@ -225,21 +235,48 @@ fn queue_visibility_diff(
 
     rollback_entered_visibility(world, map_entity, observer.net_id, &failed_targets);
 
+    let entered_payloads: Vec<_> = entered_payloads
+        .into_iter()
+        .map(|(show, details)| {
+            let movement_animation = world
+                .resource::<NetEntityIndex>()
+                .0
+                .get(&show.entity_id)
+                .copied()
+                .and_then(|target_entity| {
+                    world
+                        .entity(target_entity)
+                        .get::<PlayerMovementAnimation>()
+                        .map(|animation| animation.0)
+                });
+            (show, details, movement_animation)
+        })
+        .collect();
+
     let mut observer_ent = world.entity_mut(observer_entity);
     let Some(mut observer_outbox) = observer_ent.get_mut::<PlayerOutboxComp>() else {
         let unsent_targets: Vec<_> = entered_payloads
             .iter()
-            .map(|(show, _)| show.entity_id)
+            .map(|(show, _, _)| show.entity_id)
             .collect();
         drop(observer_ent);
         rollback_entered_visibility(world, map_entity, observer.net_id, &unsent_targets);
         return;
     };
 
-    for (show, details) in entered_payloads {
+    for (show, details, movement_animation) in entered_payloads {
+        let entity_id = show.entity_id;
         observer_outbox
             .0
             .push_reliable(PlayerEvent::EntitySpawn { show, details });
+        if movement_animation == Some(MovementAnimation::Walk) {
+            observer_outbox
+                .0
+                .push_reliable(PlayerEvent::SetEntityMovementAnimation {
+                    entity_id,
+                    animation: MovementAnimation::Walk,
+                });
+        }
     }
     for target_id in diff.left {
         observer_outbox.0.push_reliable(PlayerEvent::EntityDespawn {
@@ -325,6 +362,7 @@ pub(crate) fn replication_flush(world: &mut World) {
     });
 
     flush_pending_movements(world, map_entity, pending.movements);
+    flush_pending_movement_animations(world, map_entity, pending.movement_animations);
     flush_pending_local_chats(world, map_entity, pending.local_chats);
 }
 
@@ -385,6 +423,28 @@ fn flush_pending_local_chats(
             observer_recipients(world, map_entity, pending_chat.speaker_entity_id, true);
         for recipient in recipients {
             push_local_chat_event(world, recipient, &pending_chat, preserve_pct);
+        }
+    }
+}
+
+fn flush_pending_movement_animations(
+    world: &mut World,
+    map_entity: Entity,
+    pending_animations: Vec<PendingMovementAnimation>,
+) {
+    for pending in pending_animations {
+        let recipients = observer_recipients(world, map_entity, pending.entity_id, true);
+        for recipient in recipients {
+            let mut recipient_ent = world.entity_mut(recipient.entity);
+            let Some(mut outbox) = recipient_ent.get_mut::<PlayerOutboxComp>() else {
+                continue;
+            };
+            outbox
+                .0
+                .push_reliable(PlayerEvent::SetEntityMovementAnimation {
+                    entity_id: pending.entity_id,
+                    animation: pending.animation,
+                });
         }
     }
 }

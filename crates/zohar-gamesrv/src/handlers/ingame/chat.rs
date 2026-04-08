@@ -22,7 +22,7 @@ pub(super) async fn handle_packet(
         ChatC2s::SubmitChatMessage { kind, message } => {
             let text = decode_cstr(&message);
             if let Some(cmd) = command::parse(text.trim()) {
-                return Ok(command::execute(cmd));
+                return Ok(command::execute(cmd, state));
             }
 
             if kind == ChatKind::Shout {

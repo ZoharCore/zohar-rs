@@ -31,7 +31,7 @@ crate::route_packets! {
     /// Server-to-client packets for in-game phase.
     pub enum InGameS2c {
         Control(ControlS2c) from 0x2C | 0xFF | 0xFC | 0xFD,
-        Move(movement::MovementS2c) from 0x03,
+        Move(movement::MovementS2c) from 0x03 | 0x6F,
         Chat(chat::ChatS2c) from 0x04,
         System(system::SystemS2c) from 0x6A | 0x79,
         World(world::WorldS2c) from 0x01 | 0x88,

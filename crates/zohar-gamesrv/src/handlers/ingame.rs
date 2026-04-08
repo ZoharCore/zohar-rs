@@ -241,6 +241,10 @@ fn map_event_to_packets(
             world::encode_entity_spawn(show, details, map_id, coords)
         }
         PlayerEvent::EntityMove(event) => movement::encode_entity_move(event, map_id, coords),
+        PlayerEvent::SetEntityMovementAnimation {
+            entity_id,
+            animation,
+        } => movement::encode_entity_movement_animation(entity_id, animation),
         PlayerEvent::EntityDespawn { entity_id } => world::encode_entity_despawn(entity_id),
         PlayerEvent::Chat {
             channel,

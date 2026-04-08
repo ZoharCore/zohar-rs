@@ -3,7 +3,7 @@ use zohar_domain::appearance::{EntityDetails, ShowEntity};
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::player::skill::SkillId;
-use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 
 use crate::values::{ChatChannel, ClientTimestamp, Facing72, MovementArg, PacketDuration};
 
@@ -56,6 +56,7 @@ pub struct MovementEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientIntent {
     Move(MoveIntent),
+    SetMovementAnimation(MovementAnimation),
     Chat(ChatIntent),
     Attack(AttackTargetIntent),
 }
@@ -68,6 +69,10 @@ pub enum PlayerEvent {
         details: Option<EntityDetails>,
     },
     EntityMove(MovementEvent),
+    SetEntityMovementAnimation {
+        entity_id: EntityId,
+        animation: MovementAnimation,
+    },
     EntityDespawn {
         entity_id: EntityId,
     },

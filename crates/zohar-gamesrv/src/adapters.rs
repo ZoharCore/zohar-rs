@@ -11,11 +11,15 @@ use zohar_domain::entity::player::{
     PlayerBaseAppearance as DomainPlayerAppearance, PlayerClass as DomainPlayerClass,
     PlayerGender as DomainPlayerGender, PlayerSlot, PlayerStats, PlayerSummary,
 };
-use zohar_domain::entity::{EntityId, MovementKind as DomainMovementKind};
+use zohar_domain::entity::{
+    EntityId, MovementAnimation as DomainMovementAnimation, MovementKind as DomainMovementKind,
+};
 use zohar_map_port::{AttackIntent as PortAttackIntent, ChatChannel};
 use zohar_protocol::game_pkt::ChatKind;
 use zohar_protocol::game_pkt::ingame::Skill;
-use zohar_protocol::game_pkt::ingame::movement::MovementKind;
+use zohar_protocol::game_pkt::ingame::movement::{
+    MovementAnimation as ProtocolMovementAnimation, MovementKind,
+};
 use zohar_protocol::game_pkt::ingame::world::EntityType;
 use zohar_protocol::game_pkt::select::{Player, PlayerBaseAppearance};
 use zohar_protocol::game_pkt::{Empire, NetId, PlayerClassGendered, SkillBranch, ZeroOpt};
@@ -64,6 +68,24 @@ impl ToProtocol<MovementKind> for DomainMovementKind {
             DomainMovementKind::Move => MovementKind::Move,
             DomainMovementKind::Attack => MovementKind::Attack,
             DomainMovementKind::Combo => MovementKind::Combo,
+        }
+    }
+}
+
+impl ToDomain<DomainMovementAnimation> for ProtocolMovementAnimation {
+    fn to_domain(self) -> DomainMovementAnimation {
+        match self {
+            ProtocolMovementAnimation::Run => DomainMovementAnimation::Run,
+            ProtocolMovementAnimation::Walk => DomainMovementAnimation::Walk,
+        }
+    }
+}
+
+impl ToProtocol<ProtocolMovementAnimation> for DomainMovementAnimation {
+    fn to_protocol(self) -> ProtocolMovementAnimation {
+        match self {
+            DomainMovementAnimation::Run => ProtocolMovementAnimation::Run,
+            DomainMovementAnimation::Walk => ProtocolMovementAnimation::Walk,
         }
     }
 }

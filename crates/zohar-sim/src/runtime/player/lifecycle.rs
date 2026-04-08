@@ -7,9 +7,10 @@ use crate::runtime::net::replication::bootstrap_observer_snapshot;
 use crate::runtime::spawn_events::make_player_spawn_payload;
 
 use super::state::{
-    ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovements, MapReplication,
-    MapSpatial, NetEntityId, NetEntityIndex, PlayerAppearanceComp, PlayerCommandQueue, PlayerCount,
-    PlayerIndex, PlayerMarker, PlayerMotion, PlayerMotionState, PlayerOutboxComp, RuntimeState,
+    ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovementAnimations,
+    MapPendingMovements, MapReplication, MapSpatial, NetEntityId, NetEntityIndex,
+    PlayerAppearanceComp, PlayerCommandQueue, PlayerCount, PlayerIndex, PlayerMarker, PlayerMotion,
+    PlayerMotionState, PlayerMovementAnimation, PlayerOutboxComp, RuntimeState,
 };
 use tracing::{info, warn};
 
@@ -56,6 +57,7 @@ pub(crate) fn on_player_removed(
         &mut MapSpatial,
         &mut MapReplication,
         &mut MapPendingLocalChats,
+        &mut MapPendingMovementAnimations,
         &mut MapPendingMovements,
     )>,
     mut outbox_query: Query<(Entity, &NetEntityId, &mut PlayerOutboxComp), With<PlayerMarker>>,
@@ -70,8 +72,13 @@ pub(crate) fn on_player_removed(
     };
 
     if let Some(map_entity) = state.map_entity
-        && let Ok((mut spatial, mut replication, mut pending_chats, mut pending)) =
-            map_query.get_mut(map_entity)
+        && let Ok((
+            mut spatial,
+            mut replication,
+            mut pending_chats,
+            mut pending_animations,
+            mut pending,
+        )) = map_query.get_mut(map_entity)
     {
         let _ = replication.0.remove_observer(net_id.net_id);
         let observers = replication.0.remove_target(net_id.net_id);
@@ -80,6 +87,9 @@ pub(crate) fn on_player_removed(
         pending_chats.0.retain(|chat| {
             chat.speaker_player_id != marker.player_id && chat.speaker_entity_id != net_id.net_id
         });
+        pending_animations
+            .0
+            .retain(|animation| animation.entity_id != net_id.net_id);
         pending.0.retain(|movement| {
             movement.entity_id != net_id.net_id
                 && movement.mover_player_id != Some(marker.player_id)
@@ -155,6 +165,7 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
                 last_client_ts: ClientTimestamp::ZERO,
             }),
             PlayerAppearanceComp(msg.appearance.clone()),
+            PlayerMovementAnimation::default(),
             PlayerOutboxComp(outbox),
             PlayerCommandQueue::default(),
             ChatIntentQueue::default(),

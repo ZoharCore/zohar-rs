@@ -72,6 +72,14 @@ pub(crate) fn handle_client_intent(mut world: DeferredWorld, msg: ClientIntentMs
                 );
             }
         }
+        ClientIntent::SetMovementAnimation(animation) => {
+            if let Some(mut queue) = world
+                .entity_mut(player_entity)
+                .get_mut::<PlayerCommandQueue>()
+            {
+                push_player_command(&mut queue.0, PlayerCommand::SetMovementAnimation(animation));
+            }
+        }
         ClientIntent::Chat(intent) => {
             if let Some(mut queue) = world.entity_mut(player_entity).get_mut::<ChatIntentQueue>() {
                 queue.0.push(ChatIntent {
@@ -110,6 +118,13 @@ fn push_player_command(queue: &mut Vec<PlayerCommand>, command: PlayerCommand) {
     {
         return;
     }
+    if matches!(command, PlayerCommand::SetMovementAnimation(_))
+        && queue
+            .last()
+            .is_some_and(|last| player_animation_commands_match(last, &command))
+    {
+        return;
+    }
 
     queue.push(command);
     match command {
@@ -117,6 +132,7 @@ fn push_player_command(queue: &mut Vec<PlayerCommand>, command: PlayerCommand) {
         PlayerCommand::Attack { .. } => {
             trim_player_commands(queue, MAX_ATTACK_INTENTS_PER_TICK, false)
         }
+        PlayerCommand::SetMovementAnimation(_) => {}
     }
 }
 
@@ -169,6 +185,16 @@ fn player_move_commands_match(lhs: &PlayerCommand, rhs: &PlayerCommand) -> bool 
         }
         _ => false,
     }
+}
+
+fn player_animation_commands_match(lhs: &PlayerCommand, rhs: &PlayerCommand) -> bool {
+    matches!(
+        (lhs, rhs),
+        (
+            PlayerCommand::SetMovementAnimation(lhs_animation),
+            PlayerCommand::SetMovementAnimation(rhs_animation),
+        ) if lhs_animation == rhs_animation
+    )
 }
 
 fn handle_global_shout(world: &mut World, msg: GlobalShoutMsg) {

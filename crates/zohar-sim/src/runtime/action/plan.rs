@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use zohar_domain::coords::LocalPos;
+use zohar_domain::entity::MovementAnimation;
 use zohar_domain::entity::MovementKind;
 use zohar_domain::entity::player::PlayerId;
 use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg, PacketDuration};
@@ -9,7 +10,7 @@ use super::super::query;
 use super::super::rules::movement;
 use super::super::state::{
     LocalTransform, NetEntityId, PlayerAppearanceComp, PlayerMotion, PlayerMotionState,
-    RuntimeState, SharedConfig,
+    PlayerMovementAnimation, RuntimeState, SharedConfig,
 };
 use super::super::util::{
     calculate_move_duration_ms, rotation_from_delta, sample_player_motion_state_at,
@@ -39,12 +40,23 @@ pub(crate) fn build_player_move_action(
         .entity(player_entity)
         .get::<PlayerAppearanceComp>()
         .map(|appearance| appearance.0.clone())?;
+    let movement_animation = world
+        .entity(player_entity)
+        .get::<PlayerMovementAnimation>()
+        .map(|animation| animation.0)
+        .unwrap_or(MovementAnimation::Run);
 
     let old_pos = sample_player_motion_state_at(transform.pos, player_motion.0, ts);
     let requested_pos = sanitize_packet_target(old_pos, target);
     let end_pos = movement::sanitize_player_target_to_map(requested_pos, map_size);
     let duration = if kind == MovementKind::Move {
-        calculate_move_duration_ms(&shared.motion_speeds, &appearance, old_pos, end_pos)
+        calculate_move_duration_ms(
+            &shared.motion_speeds,
+            &appearance,
+            movement_animation,
+            old_pos,
+            end_pos,
+        )
     } else {
         PacketDuration::ZERO
     };

@@ -1,8 +1,8 @@
 use super::state::{
-    LocalTransform, MapEmpire, MapMarker, MapPendingLocalChats, MapPendingMovements,
-    MapReplication, MapSpatial, MapSpawnRules, MobAggroQueue, MobBrainState, MobHomeAnchor,
-    MobMarker, MobMotion, MobMotionState, MobPackId, MobRef, NetEntityId, NetEntityIndex,
-    RuntimeState, SharedConfig, SpawnRuleState, StartupReadySignal,
+    LocalTransform, MapEmpire, MapMarker, MapPendingLocalChats, MapPendingMovementAnimations,
+    MapPendingMovements, MapReplication, MapSpatial, MapSpawnRules, MobAggroQueue, MobBrainState,
+    MobHomeAnchor, MobMarker, MobMotion, MobMotionState, MobPackId, MobRef, NetEntityId,
+    NetEntityIndex, RuntimeState, SharedConfig, SpawnRuleState, StartupReadySignal,
 };
 use super::util::{
     degrees_to_protocol_rot, expand_spawn_template, next_entity_id, random_duration_between_ms,
@@ -47,6 +47,7 @@ pub(crate) fn bootstrap_map_runtime(world: &mut World) {
                 scheduled_spawns,
             },
             MapPendingLocalChats::default(),
+            MapPendingMovementAnimations::default(),
             MapPendingMovements::default(),
         ))
         .id();

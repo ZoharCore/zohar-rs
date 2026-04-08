@@ -25,3 +25,11 @@ pub enum MovementKind {
     Attack,
     Combo,
 }
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MovementAnimation {
+    #[default]
+    Run,
+    Walk,
+}

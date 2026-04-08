@@ -4,12 +4,15 @@ use crate::ContentCoords;
 use crate::adapters::{ToDomain, ToProtocol};
 use tracing::warn;
 use zohar_domain::MapId;
+use zohar_domain::entity::{EntityId, MovementAnimation};
 use zohar_map_port::{
     ClientIntent, ClientIntentMsg, ClientTimestamp, Facing72, MoveIntent, MovementArg,
     MovementEvent,
 };
 use zohar_protocol::game_pkt::ingame::InGameS2c;
-use zohar_protocol::game_pkt::ingame::movement::{MovementC2s, MovementS2c};
+use zohar_protocol::game_pkt::ingame::movement::{
+    MovementAnimation as ProtocolMovementAnimation, MovementC2s, MovementS2c,
+};
 
 pub(super) async fn handle_packet(
     packet: MovementC2s,
@@ -95,6 +98,22 @@ pub(super) fn encode_entity_move(
             // Preserve source timestamp to match reference movement semantics.
             ts: movement.client_ts.get().into(),
             duration: movement.duration.get().into(),
+        }
+        .into(),
+    ]
+}
+
+pub(super) fn encode_entity_movement_animation(
+    entity_id: EntityId,
+    animation: MovementAnimation,
+) -> Vec<InGameS2c> {
+    vec![
+        MovementS2c::SetEntityMovementAnimation {
+            net_id: entity_id.to_protocol(),
+            animation: match animation {
+                MovementAnimation::Run => ProtocolMovementAnimation::Run,
+                MovementAnimation::Walk => ProtocolMovementAnimation::Walk,
+            },
         }
         .into(),
     ]

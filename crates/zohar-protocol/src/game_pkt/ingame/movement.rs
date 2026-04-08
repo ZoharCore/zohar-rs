@@ -36,6 +36,12 @@ pub enum MovementS2c {
         /// Movement duration in milliseconds
         duration: game_pkt::WireMillis32,
     },
+
+    #[brw(magic = 0x6F_u8)]
+    SetEntityMovementAnimation {
+        net_id: game_pkt::NetId,
+        animation: MovementAnimation,
+    },
 }
 
 #[binrw]
@@ -47,4 +53,13 @@ pub enum MovementKind {
     Move = 1,
     Attack = 2,
     Combo = 3,
+}
+
+#[binrw]
+#[brw(repr = u8)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovementAnimation {
+    Run = 0,
+    Walk = 1,
 }

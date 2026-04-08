@@ -2,24 +2,12 @@ use super::{ChatS2c, InGamePhaseEffects, ZeroOpt};
 use zohar_protocol::game_pkt::ChatKind;
 
 #[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SessionCommand {
-    #[command(
-        name = "phase_select",
-        alias = "phase_selec",
-        about = "Return to character select, remaining on the same channel."
-    )]
+pub(in crate::handlers::ingame::chat) enum SessionCommand {
+    #[command(name = "phase_select", about = "Go to character select, same channel.")]
     PhaseSelect,
-    #[command(
-        name = "logout",
-        alias = "logou",
-        about = "Disconnect back to the login screen."
-    )]
+    #[command(name = "logout", about = "Disconnect back to the login screen.")]
     Logout,
-    #[command(
-        name = "quit",
-        alias = "qui",
-        about = "Disconnect and exit the game client."
-    )]
+    #[command(name = "quit", about = "Disconnect and exit the game client.")]
     Quit,
 }
 

@@ -1,3 +1,5 @@
+pub use zohar_domain::entity::MovementAnimation;
+
 mod bridge;
 mod messages;
 mod values;

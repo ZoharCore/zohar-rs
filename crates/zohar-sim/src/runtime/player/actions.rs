@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use zohar_domain::entity::MovementAnimation;
 
 use super::action_pipeline::{
     Action, apply_action, build_player_attack_action, build_player_move_action,
@@ -6,8 +7,8 @@ use super::action_pipeline::{
 use super::aggro::{MobAggroDispatch, MobAggroDispatchBuffer};
 use super::query::validate_player_attack;
 use super::state::{
-    LocalTransform, MapSpatial, MobAggro, MobRef, NetEntityId, PlayerCommand, PlayerCommandQueue,
-    PlayerMarker, RuntimeState,
+    LocalTransform, MapPendingMovementAnimations, MapSpatial, MobAggro, MobRef, NetEntityId,
+    PlayerCommand, PlayerCommandQueue, PlayerMarker, PlayerMovementAnimation, RuntimeState,
 };
 
 pub(crate) fn process_player_actions(world: &mut World) {
@@ -66,6 +67,16 @@ pub(crate) fn process_player_actions(world: &mut World) {
                         apply_action(world, action);
                     }
                 }
+                PlayerCommand::SetMovementAnimation(animation) => {
+                    if set_player_movement_animation(world, map_entity, player_entity, animation) {
+                        queue_player_movement_animation(
+                            world,
+                            map_entity,
+                            attacker_net_id,
+                            animation,
+                        );
+                    }
+                }
                 PlayerCommand::Attack { target, attack } => {
                     let Some(attacker_pos) = world
                         .entity(player_entity)
@@ -113,4 +124,37 @@ pub(crate) fn process_player_actions(world: &mut World) {
         .resource_mut::<MobAggroDispatchBuffer>()
         .0
         .extend(dispatches);
+}
+
+fn set_player_movement_animation(
+    world: &mut World,
+    _map_entity: Entity,
+    player_entity: Entity,
+    animation: MovementAnimation,
+) -> bool {
+    let mut player_entity_ref = world.entity_mut(player_entity);
+    let Some(mut current) = player_entity_ref.get_mut::<PlayerMovementAnimation>() else {
+        return false;
+    };
+    if current.0 == animation {
+        return false;
+    }
+    current.0 = animation;
+    true
+}
+
+fn queue_player_movement_animation(
+    world: &mut World,
+    map_entity: Entity,
+    entity_id: zohar_domain::entity::EntityId,
+    animation: MovementAnimation,
+) {
+    let mut map_entity_ref = world.entity_mut(map_entity);
+    let Some(mut pending) = map_entity_ref.get_mut::<MapPendingMovementAnimations>() else {
+        return;
+    };
+    pending.0.push(super::state::PendingMovementAnimation {
+        entity_id,
+        animation,
+    });
 }

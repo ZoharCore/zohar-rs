@@ -6,7 +6,7 @@ use std::collections::BinaryHeap;
 use zohar_domain::Empire;
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::player::PlayerId;
-use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 
 pub(crate) use crate::runtime::config::{MapConfig, SharedConfig};
 pub(crate) use crate::runtime::mob::{
@@ -15,7 +15,7 @@ pub(crate) use crate::runtime::mob::{
 };
 pub(crate) use crate::runtime::player::{
     ChatIntent, ChatIntentQueue, PlayerAppearanceComp, PlayerCommand, PlayerCommandQueue,
-    PlayerMarker, PlayerMotion, PlayerMotionState, PlayerOutboxComp,
+    PlayerMarker, PlayerMotion, PlayerMotionState, PlayerMovementAnimation, PlayerOutboxComp,
 };
 pub(crate) use crate::runtime::resources::{
     NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, RuntimeState, StartupReadySignal,
@@ -58,6 +58,13 @@ pub(crate) struct PendingLocalChat {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingMovementAnimation {
+    pub(crate) entity_id: EntityId,
+    pub(crate) animation: MovementAnimation,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MapMarker;
@@ -92,6 +99,11 @@ pub(crate) struct MapPendingMovements(pub(crate) Vec<PendingMovement>);
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct MapPendingLocalChats(pub(crate) Vec<PendingLocalChat>);
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component, Default)]
+pub(crate) struct MapPendingMovementAnimations(pub(crate) Vec<PendingMovementAnimation>);
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]

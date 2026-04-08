@@ -18,7 +18,7 @@ use super::state::{
 };
 use super::util::sample_player_motion_at;
 use crate::MapEventSender;
-use crate::motion::EntityMotionSpeedTable;
+use crate::motion::{EntityMotionSpeedTable, MotionMoveMode, PlayerMotionProfileKey};
 use crate::persistence::PlayerPersistenceCoordinatorHandle;
 use crate::types::MapInstanceKey;
 use zohar_domain::appearance::{EntityKind, PlayerAppearance};
@@ -29,7 +29,7 @@ use zohar_domain::entity::mob::spawn::{
 use zohar_domain::entity::mob::{MobBattleType, MobId, MobKind, MobPrototypeDef, MobRank};
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::player::skill::SkillId;
-use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 use zohar_domain::{BehaviorFlags, MapId, TerrainFlags};
 use zohar_map_port::{
     AttackIntent, AttackTargetIntent, ChatChannel, ChatIntent as PortChatIntent, ClientIntent,
@@ -275,6 +275,19 @@ fn _send_chat(map_events: &MapEventSender, player_id: PlayerId, message: &[u8]) 
         .expect("chat intent");
 }
 
+fn set_movement_animation(
+    map_events: &MapEventSender,
+    player_id: PlayerId,
+    animation: MovementAnimation,
+) {
+    map_events
+        .try_send_client_intent(ClientIntentMsg {
+            player_id,
+            intent: ClientIntent::SetMovementAnimation(animation),
+        })
+        .expect("movement animation intent");
+}
+
 fn drain_player_events(rx: &mut Receiver<PlayerEvent>) -> Vec<PlayerEvent> {
     let mut events = Vec::new();
     while let Ok(event) = rx.try_recv() {
@@ -288,6 +301,19 @@ fn movement_events(events: &[PlayerEvent]) -> Vec<(EntityId, MovementKind)> {
         .iter()
         .filter_map(|event| match event {
             PlayerEvent::EntityMove(movement) => Some((movement.entity_id, movement.kind)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn movement_animation_events(events: &[PlayerEvent]) -> Vec<(EntityId, MovementAnimation)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::SetEntityMovementAnimation {
+                entity_id,
+                animation,
+            } => Some((*entity_id, *animation)),
             _ => None,
         })
         .collect()
@@ -729,6 +755,68 @@ fn player_move_ignores_navigation_blockers_in_pre_alpha_policy() {
         .get::<LocalTransform>()
         .expect("transform");
     assert_eq!(transform.pos, LocalPos::new(5.0, 0.0));
+}
+
+#[test]
+fn movement_animation_change_replicates_and_affects_player_move_duration() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, map) = test_configs(map_key);
+    Arc::make_mut(&mut shared.motion_speeds).upsert_speed(
+        crate::motion::MotionEntityKey::Player(PlayerMotionProfileKey {
+            class: zohar_domain::entity::player::PlayerClass::Warrior,
+            gender: zohar_domain::entity::player::PlayerGender::Male,
+        }),
+        MotionMoveMode::Run,
+        4.5,
+    );
+    Arc::make_mut(&mut shared.motion_speeds).upsert_speed(
+        crate::motion::MotionEntityKey::Player(PlayerMotionProfileKey {
+            class: zohar_domain::entity::player::PlayerClass::Warrior,
+            gender: zohar_domain::entity::player::PlayerGender::Male,
+        }),
+        MotionMoveMode::Walk,
+        1.5,
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_106);
+    let mut player_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(1.0, 1.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut player_rx);
+
+    set_movement_animation(&inbound_tx, player_id, MovementAnimation::Walk);
+    advance_tick(&mut app);
+
+    assert_eq!(
+        movement_animation_events(&drain_player_events(&mut player_rx)),
+        vec![(player_net_id, MovementAnimation::Walk)]
+    );
+
+    clear_pending_movements(&mut app);
+    move_player(&inbound_tx, player_id, LocalPos::new(4.0, 1.0), 1_000);
+    run_pre_update(&mut app);
+    run_fixed_first(&mut app);
+    run_fixed_update(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.entity_id == player_net_id)
+        .expect("pending player movement");
+    let expected_duration = super::util::duration_from_motion_speed(
+        1.5,
+        100,
+        LocalPos::new(1.0, 1.0),
+        LocalPos::new(4.0, 1.0),
+    );
+
+    assert_eq!(movement.duration, expected_duration);
 }
 
 #[test]

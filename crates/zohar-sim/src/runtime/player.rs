@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::player::PlayerId;
-use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 use zohar_map_port::{AttackIntent, ChatChannel, ClientTimestamp, Facing72, MovementArg};
 
 pub(crate) use self::lifecycle as players;
@@ -40,6 +40,7 @@ pub(crate) enum PlayerCommand {
         target: LocalPos,
         ts: ClientTimestamp,
     },
+    SetMovementAnimation(MovementAnimation),
     Attack {
         target: EntityId,
         attack: AttackIntent,
@@ -69,6 +70,11 @@ pub(crate) struct PlayerMotion(pub(crate) PlayerMotionState);
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct PlayerAppearanceComp(pub(crate) PlayerAppearance);
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component, Default)]
+pub(crate) struct PlayerMovementAnimation(pub(crate) MovementAnimation);
 
 #[derive(Component)]
 pub(crate) struct PlayerOutboxComp(pub(crate) PlayerOutbox);

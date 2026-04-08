@@ -1,26 +1,47 @@
-use super::{ChatS2c, InGamePhaseEffects, ZeroOpt};
-use clap::{CommandFactory, Parser, error::ErrorKind};
-use zohar_protocol::game_pkt::ChatKind;
+use super::super::InGameCtx;
+use super::{ChatKind, ChatS2c, InGamePhaseEffects, ZeroOpt};
+use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
+use tracing::warn;
+use zohar_map_port::{ClientIntent, ClientIntentMsg};
 
+mod prefs;
 mod session;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "/",
     about = "In-game slash commands.",
+    infer_subcommands = true,
     disable_colored_help = true,
     disable_version_flag = true
 )]
 struct SlashCommandLine {
     #[command(subcommand)]
-    command: session::SessionCommand,
+    command: KnownCommand,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub(super) enum KnownCommand {
+    #[command(flatten)]
+    Session(session::SessionCommand),
+    #[command(flatten)]
+    Movement(prefs::PreferencesCommand),
+}
+
+impl KnownCommand {
+    fn execute(self, state: &mut InGameCtx<'_>) -> InGamePhaseEffects {
+        match self {
+            Self::Session(command) => command.execute(),
+            Self::Movement(command) => command.execute(state),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ParsedCommand {
     Unknown { spelled: String },
     Feedback { message: String },
-    Known(session::SessionCommand),
+    Known(KnownCommand),
 }
 
 pub(super) fn parse(input: &str) -> Option<ParsedCommand> {
@@ -58,9 +79,9 @@ pub(super) fn parse(input: &str) -> Option<ParsedCommand> {
     }
 }
 
-pub(super) fn execute(command: ParsedCommand) -> InGamePhaseEffects {
+pub(super) fn execute(command: ParsedCommand, state: &mut InGameCtx<'_>) -> InGamePhaseEffects {
     match command {
-        ParsedCommand::Known(command) => command.execute(),
+        ParsedCommand::Known(command) => command.execute(state),
         ParsedCommand::Feedback { message } => InGamePhaseEffects::send(
             ChatS2c::NotifyChatMessage {
                 kind: ChatKind::Info,
@@ -79,6 +100,41 @@ pub(super) fn execute(command: ParsedCommand) -> InGamePhaseEffects {
             }
             .into(),
         ),
+    }
+}
+
+pub(super) fn try_send_client_intent(
+    state: &mut InGameCtx<'_>,
+    intent: ClientIntent,
+    action_name: &'static str,
+) -> InGamePhaseEffects {
+    if let Err(err) = state
+        .ctx
+        .map_events
+        .try_send_client_intent(ClientIntentMsg {
+            player_id: state.player_id,
+            intent,
+        })
+    {
+        warn!(
+            player_id = ?state.player_id,
+            map_id = state.map_id.get(),
+            error = ?err,
+            action = action_name,
+            "Failed to enqueue client intent to map runtime"
+        );
+
+        InGamePhaseEffects::send(
+            ChatS2c::NotifyChatMessage {
+                kind: ChatKind::Info,
+                message: b"Server is busy. Please try again.\0".to_vec(),
+                net_id: ZeroOpt::none(),
+                empire: ZeroOpt::none(),
+            }
+            .into(),
+        )
+    } else {
+        InGamePhaseEffects::empty()
     }
 }
 
@@ -128,9 +184,8 @@ fn tokenize(input: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use zohar_protocol::game_pkt::InGameS2c;
-
     use super::*;
+    use zohar_protocol::game_pkt::InGameS2c;
 
     #[test]
     fn parser_returns_none_for_normal_chat() {
@@ -141,7 +196,15 @@ mod tests {
     fn parser_uses_clap_for_known_command_variants() {
         assert_eq!(
             parse("/logout"),
-            Some(ParsedCommand::Known(session::SessionCommand::Logout))
+            Some(ParsedCommand::Known(KnownCommand::Session(
+                session::SessionCommand::Logout,
+            )))
+        );
+        assert_eq!(
+            parse("/set_walk_mode"),
+            Some(ParsedCommand::Known(KnownCommand::Movement(
+                prefs::PreferencesCommand::SetWalkMode,
+            )))
         );
     }
 
@@ -171,15 +234,21 @@ mod tests {
     fn legacy_aliases_parse_as_known_commands() {
         assert_eq!(
             parse("/phase_selec"),
-            Some(ParsedCommand::Known(session::SessionCommand::PhaseSelect))
+            Some(ParsedCommand::Known(KnownCommand::Session(
+                session::SessionCommand::PhaseSelect,
+            )))
         );
         assert_eq!(
             parse("/logou"),
-            Some(ParsedCommand::Known(session::SessionCommand::Logout))
+            Some(ParsedCommand::Known(KnownCommand::Session(
+                session::SessionCommand::Logout,
+            )))
         );
         assert_eq!(
             parse("/qui"),
-            Some(ParsedCommand::Known(session::SessionCommand::Quit))
+            Some(ParsedCommand::Known(KnownCommand::Session(
+                session::SessionCommand::Quit,
+            )))
         );
     }
 
@@ -192,9 +261,9 @@ mod tests {
             })
         );
         assert_eq!(
-            parse("/logou --help"),
+            parse("/set_walk_mode --help"),
             Some(ParsedCommand::Feedback {
-                message: "/logou: Disconnect back to the login screen.".to_string(),
+                message: "/set_walk_mode: Switch your movement animation to walk.".to_string(),
             })
         );
     }
@@ -210,9 +279,12 @@ mod tests {
 
     #[test]
     fn unknown_commands_send_private_info_feedback() {
-        let effects = execute(ParsedCommand::Unknown {
-            spelled: "/foobar".to_string(),
-        });
+        let effects = execute(
+            ParsedCommand::Unknown {
+                spelled: "/foobar".to_string(),
+            },
+            panic_state(),
+        );
 
         assert!(effects.transition.is_none());
         assert!(effects.disconnect.is_none());
@@ -232,6 +304,10 @@ mod tests {
         assert_eq!(*kind, ChatKind::Info);
         assert_eq!(*net_id, ZeroOpt::none());
         assert_eq!(*empire, ZeroOpt::none());
-        assert_eq!(message, &b"Unimplemented command: `/foobar`.\0".to_vec());
+        assert_eq!(message, &b"Unimplemented command `/foobar`\0".to_vec());
+    }
+
+    fn panic_state() -> &'static mut InGameCtx<'static> {
+        panic!("tests should not execute known commands")
     }
 }
