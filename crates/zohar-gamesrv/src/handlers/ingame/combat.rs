@@ -1,5 +1,5 @@
 use super::super::types::PhaseResult;
-use super::{InGameCtx, PhaseEffects, ThisPhase};
+use super::{InGameCtx, InGamePhaseEffects};
 use crate::adapters::ToDomain;
 use tracing::{debug, warn};
 use zohar_map_port::{
@@ -11,7 +11,7 @@ use zohar_protocol::game_pkt::ingame::combat::CombatC2s;
 pub(super) async fn handle_packet(
     packet: CombatC2s,
     state: &mut InGameCtx<'_>,
-) -> PhaseResult<PhaseEffects<ThisPhase>> {
+) -> PhaseResult<InGamePhaseEffects> {
     match packet {
         CombatC2s::InputAttack {
             attack_type,
@@ -39,7 +39,7 @@ pub(super) async fn handle_packet(
                     "Failed to enqueue attack intent to map runtime"
                 );
             }
-            Ok(PhaseEffects::empty())
+            Ok(InGamePhaseEffects::empty())
         }
         CombatC2s::SignalTargetSwitch { target } => {
             debug!(
@@ -48,7 +48,7 @@ pub(super) async fn handle_packet(
                 target = u32::from(target),
                 "Received client target selection"
             );
-            Ok(PhaseEffects::empty())
+            Ok(InGamePhaseEffects::empty())
         }
     }
 }

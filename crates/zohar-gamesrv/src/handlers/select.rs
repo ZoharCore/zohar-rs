@@ -157,51 +157,6 @@ async fn handle_packet(
                 ));
             }
 
-            let stat_str: u8 = match stat_str.try_into() {
-                Ok(value) => value,
-                Err(_) => {
-                    return Ok(PhaseEffects::send(
-                        SelectS2cSpecific::CreatePlayerResultFail {
-                            error: CreatePlayerError::GenericFailure,
-                        }
-                        .into(),
-                    ));
-                }
-            };
-            let stat_vit: u8 = match stat_vit.try_into() {
-                Ok(value) => value,
-                Err(_) => {
-                    return Ok(PhaseEffects::send(
-                        SelectS2cSpecific::CreatePlayerResultFail {
-                            error: CreatePlayerError::GenericFailure,
-                        }
-                        .into(),
-                    ));
-                }
-            };
-            let stat_dex: u8 = match stat_dex.try_into() {
-                Ok(value) => value,
-                Err(_) => {
-                    return Ok(PhaseEffects::send(
-                        SelectS2cSpecific::CreatePlayerResultFail {
-                            error: CreatePlayerError::GenericFailure,
-                        }
-                        .into(),
-                    ));
-                }
-            };
-            let stat_int: u8 = match stat_int.try_into() {
-                Ok(value) => value,
-                Err(_) => {
-                    return Ok(PhaseEffects::send(
-                        SelectS2cSpecific::CreatePlayerResultFail {
-                            error: CreatePlayerError::GenericFailure,
-                        }
-                        .into(),
-                    ));
-                }
-            };
-
             let (class, gender) = class_gender.to_domain();
             let outcome = state
                 .runtime

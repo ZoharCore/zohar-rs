@@ -84,6 +84,11 @@ impl<S: zohar_net::connection::NextState> PhaseEffects<S> {
             disconnect: Some(reason),
         }
     }
+
+    pub fn with_disconnect(mut self, reason: &'static str) -> Self {
+        self.disconnect = Some(reason);
+        self
+    }
 }
 
 pub(crate) fn base_phase_span<S: ConnectionState>() -> tracing::Span {

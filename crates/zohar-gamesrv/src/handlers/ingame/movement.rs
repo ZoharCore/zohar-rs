@@ -1,5 +1,5 @@
 use super::super::types::PhaseResult;
-use super::{InGameCtx, PhaseEffects, ThisPhase};
+use super::{InGameCtx, InGamePhaseEffects};
 use crate::ContentCoords;
 use crate::adapters::{ToDomain, ToProtocol};
 use tracing::warn;
@@ -14,7 +14,7 @@ use zohar_protocol::game_pkt::ingame::movement::{MovementC2s, MovementS2c};
 pub(super) async fn handle_packet(
     packet: MovementC2s,
     state: &mut InGameCtx<'_>,
-) -> PhaseResult<PhaseEffects<ThisPhase>> {
+) -> PhaseResult<InGamePhaseEffects> {
     match packet {
         MovementC2s::InputMovement {
             kind,
@@ -36,7 +36,7 @@ pub(super) async fn handle_packet(
                     wire_y = i32::from(y),
                     "Ignoring out-of-bounds movement position"
                 );
-                return Ok(PhaseEffects::empty());
+                return Ok(InGamePhaseEffects::empty());
             };
             let intent_msg = ClientIntentMsg {
                 player_id: state.player_id,
@@ -59,7 +59,7 @@ pub(super) async fn handle_packet(
                     "Failed to enqueue movement intent to map runtime"
                 );
             }
-            Ok(PhaseEffects::empty())
+            Ok(InGamePhaseEffects::empty())
         }
     }
 }

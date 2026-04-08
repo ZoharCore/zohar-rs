@@ -10,8 +10,8 @@ use zohar_protocol::game_pkt::ingame::system::SystemS2c;
 use zohar_protocol::game_pkt::ingame::world::{EntityType, WorldS2c};
 use zohar_protocol::game_pkt::select::{CreatePlayerError, Player};
 use zohar_protocol::game_pkt::{
-    Empire, HandshakeGameC2s, HandshakeGameS2c, LoadingC2s, LoadingS2c, LoginC2s, LoginS2c,
-    NetId, SelectC2s, SelectS2c, ServerInfo, ServerStatus, WireMillis32, WireWorldCm, ZeroOpt,
+    Empire, HandshakeGameC2s, HandshakeGameS2c, LoadingC2s, LoadingS2c, LoginC2s, LoginS2c, NetId,
+    SelectC2s, SelectS2c, ServerInfo, ServerStatus, WireMillis32, WireWorldCm, ZeroOpt,
 };
 
 #[test]
@@ -342,11 +342,7 @@ fn combat_c2s_packets_keep_their_legacy_lengths() {
         0x02,
         8,
     );
-    assert_packet_frame(
-        &CombatC2s::SignalTargetSwitch { target: NetId(2) },
-        0x3D,
-        5,
-    );
+    assert_packet_frame(&CombatC2s::SignalTargetSwitch { target: NetId(2) }, 0x3D, 5);
 }
 
 #[test]

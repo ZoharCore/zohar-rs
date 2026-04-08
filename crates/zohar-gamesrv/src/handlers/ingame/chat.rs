@@ -1,9 +1,9 @@
 use super::super::types::PhaseResult;
-use super::{InGameCtx, PhaseEffects, ThisPhase};
+use super::{InGameCtx, InGamePhaseEffects};
 use crate::adapters::{ToDomain, ToProtocol};
 use crate::infra::{ClusterEvent, GlobalShoutEvent};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::warn;
 use zohar_domain::Empire;
 use zohar_domain::entity::EntityId;
 use zohar_map_port::{ChatChannel, ChatIntent as PortChatIntent, ClientIntent, ClientIntentMsg};
@@ -12,72 +12,42 @@ use zohar_protocol::game_pkt::ingame::InGameS2c;
 use zohar_protocol::game_pkt::ingame::chat::{ChatC2s, ChatS2c};
 use zohar_protocol::game_pkt::{ChatKind, ZeroOpt};
 
+mod command;
+
 pub(super) async fn handle_packet(
     packet: ChatC2s,
     state: &mut InGameCtx<'_>,
-) -> PhaseResult<PhaseEffects<ThisPhase>> {
+) -> PhaseResult<InGamePhaseEffects> {
     match packet {
         ChatC2s::SubmitChatMessage { kind, message } => {
             let text = decode_cstr(&message);
-            let cmd = text.trim().to_owned();
-            match cmd.as_str() {
-                // TODO: implement some clap-style safe typed command parser
-                "/phase_select" => {
-                    info!(kind = ?kind, "Returning to character select");
-                    Ok(PhaseEffects::transition(()))
-                }
-                "/logout" => Ok(PhaseEffects {
-                    send: vec![
-                        ChatS2c::NotifyChatMessage {
-                            kind: ChatKind::Info,
-                            net_id: ZeroOpt::none(),
-                            empire: ZeroOpt::none(),
-                            message: b"Back to login window. Please wait.\0".to_vec(),
-                        }
-                        .into(),
-                    ],
-                    transition: None,
-                    disconnect: Some("client requested logout"),
-                }),
-                "/quit" => Ok(PhaseEffects {
-                    send: vec![
-                        ChatS2c::NotifyChatMessage {
-                            kind: ChatKind::Command,
-                            net_id: ZeroOpt::none(),
-                            empire: ZeroOpt::none(),
-                            message: b"quit\0".to_vec(),
-                        }
-                        .into(),
-                    ],
-                    transition: None,
-                    disconnect: Some("client requested quit"),
-                }),
-                _ => {
-                    if kind == ChatKind::Shout {
-                        let event = Arc::new(ClusterEvent::GlobalShout(GlobalShoutEvent {
-                            from_player_name: state.player_name.clone(),
-                            from_empire: state.player_empire,
-                            message: text,
-                        }));
-                        if let Err(err) = state.ctx.cluster_events.publish(event).await {
-                            warn!(error = ?err, "Failed to broadcast global shout");
-                        }
-                    } else {
-                        let _ = state
-                            .ctx
-                            .map_events
-                            .try_send_client_intent(ClientIntentMsg {
-                                player_id: state.player_id,
-                                intent: ClientIntent::Chat(PortChatIntent {
-                                    // TODO: only broadcast local speaking packets
-                                    channel: kind.to_domain(),
-                                    message,
-                                }),
-                            });
-                    }
-                    Ok(PhaseEffects::empty())
-                }
+            if let Some(cmd) = command::parse(text.trim()) {
+                return Ok(command::execute(cmd));
             }
+
+            if kind == ChatKind::Shout {
+                let event = Arc::new(ClusterEvent::GlobalShout(GlobalShoutEvent {
+                    from_player_name: state.player_name.clone(),
+                    from_empire: state.player_empire,
+                    message: text,
+                }));
+                if let Err(err) = state.ctx.cluster_events.publish(event).await {
+                    warn!(error = ?err, "Failed to broadcast global shout");
+                }
+            } else {
+                let _ = state
+                    .ctx
+                    .map_events
+                    .try_send_client_intent(ClientIntentMsg {
+                        player_id: state.player_id,
+                        intent: ClientIntent::Chat(PortChatIntent {
+                            // TODO: only broadcast local speaking packets
+                            channel: kind.to_domain(),
+                            message,
+                        }),
+                    });
+            }
+            Ok(InGamePhaseEffects::empty())
         }
     }
 }

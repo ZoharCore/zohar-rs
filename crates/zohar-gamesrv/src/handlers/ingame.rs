@@ -39,6 +39,7 @@ pub(super) mod trading;
 pub(super) mod world;
 
 pub(super) type ThisPhase = zohar_net::connection::game_conn::InGame;
+pub(super) type InGamePhaseEffects = PhaseEffects<ThisPhase>;
 
 pub(super) struct InGameCtx<'a> {
     ctx: Arc<GameContext>,
@@ -179,7 +180,7 @@ fn enter_packets(state: &mut InGameCtx<'_>) -> Vec<InGameS2c> {
     ]
 }
 
-async fn handle_session_tick(state: &mut InGameCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
+async fn handle_session_tick(state: &mut InGameCtx<'_>) -> PhaseResult<InGamePhaseEffects> {
     let now = Instant::now();
     match state.session.on_tick(now) {
         Some(SessionTick::SendHeartbeat) => {
@@ -197,7 +198,7 @@ async fn handle_session_tick(state: &mut InGameCtx<'_>) -> PhaseResult<PhaseEffe
                     "Failed to update session heartbeat"
                 );
             }
-            Ok(PhaseEffects::send_many([
+            Ok(InGamePhaseEffects::send_many([
                 ControlS2c::RequestHeartbeat.into(),
                 SystemS2c::SetServerTime {
                     time: state.handshake.uptime_at(now).into(),
@@ -205,21 +206,21 @@ async fn handle_session_tick(state: &mut InGameCtx<'_>) -> PhaseResult<PhaseEffe
                 .into(),
             ]))
         }
-        Some(SessionTick::TimedOut) => Ok(PhaseEffects::disconnect("heartbeat timeout")),
-        None => Ok(PhaseEffects::empty()),
+        Some(SessionTick::TimedOut) => Ok(InGamePhaseEffects::disconnect("heartbeat timeout")),
+        None => Ok(InGamePhaseEffects::empty()),
     }
 }
 
 async fn handle_packet(
     packet: InGameC2s,
     state: &mut InGameCtx<'_>,
-) -> PhaseResult<PhaseEffects<ThisPhase>> {
+) -> PhaseResult<InGamePhaseEffects> {
     let now = Instant::now();
     state.session.mark_rx(now);
     match packet {
         InGameC2s::Control(packet) => match handle_session_control(packet, now, state.handshake)? {
-            ControlDecision::Handled(outcome) => Ok(PhaseEffects::send_many(outcome.send)),
-            ControlDecision::Reject(reason) => Ok(PhaseEffects::disconnect(reason)),
+            ControlDecision::Handled(outcome) => Ok(InGamePhaseEffects::send_many(outcome.send)),
+            ControlDecision::Reject(reason) => Ok(InGamePhaseEffects::disconnect(reason)),
         },
         InGameC2s::Chat(packet) => chat::handle_packet(packet, state).await,
         InGameC2s::Combat(packet) => combat::handle_packet(packet, state).await,
@@ -252,7 +253,7 @@ fn map_event_to_packets(
 
 async fn apply_runtime_effects(
     conn: &mut Connection<ThisPhase>,
-    effects: PhaseEffects<ThisPhase>,
+    effects: InGamePhaseEffects,
 ) -> PhaseResult<Option<()>> {
     for packet in effects.send {
         send_outbound_packet(conn, packet).await?;
@@ -321,7 +322,7 @@ async fn drive_ingame(
 
         let effects = tokio::select! {
             _ = wait_for_server_drain(&mut drain_rx) => {
-                PhaseEffects::disconnect("server draining")
+                InGamePhaseEffects::disconnect("server draining")
             }
             _ = heartbeat.tick() => {
                 handle_session_tick(state).await?
