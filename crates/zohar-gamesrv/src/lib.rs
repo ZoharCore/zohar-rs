@@ -1,9 +1,9 @@
 mod adapters;
 mod coords;
 pub mod drain;
-mod empire_start_maps;
 pub mod handlers;
 pub mod infra;
+mod new_player_defaults;
 
 use std::io;
 use std::net::SocketAddr;
@@ -18,15 +18,27 @@ use zohar_sim::{MapEventSender, PlayerPersistenceCoordinatorHandle};
 
 pub use coords::{ContentCoords, PersistedPlayerPos, ResolvedSpawn};
 pub use drain::ServerDrainController;
-pub use empire_start_maps::EmpireStartMaps;
 pub use infra::{ChannelDirectory, ClusterEventBus, MapEndpointResolver};
+pub use new_player_defaults::{EmpireStartMaps, PlayerCreateBaseStatTable, PlayerCreateBaseStats};
 
 pub const SERVER_DRAIN_GRACE_PERIOD: Duration = Duration::from_secs(20);
+
+#[derive(Clone)]
+pub struct CoreSelectConfig {
+    pub player_create_base_stats: Arc<PlayerCreateBaseStatTable>,
+}
+
+#[derive(Clone)]
+pub struct GatewaySelectConfig {
+    pub player_create_base_stats: Arc<PlayerCreateBaseStatTable>,
+    pub empire_start_maps: EmpireStartMaps,
+}
 
 /// Shared context for all game server connections.
 #[derive(Clone)]
 pub struct GameContext {
     pub db: Game,
+    pub select: CoreSelectConfig,
     pub token_signer: Arc<TokenSigner>,
     pub login_token_idle_ttl: Duration,
     pub coords: Arc<ContentCoords>,
@@ -47,9 +59,9 @@ pub struct GameContext {
 #[derive(Clone)]
 pub struct GatewayContext {
     pub db: Game,
+    pub select: GatewaySelectConfig,
     pub token_signer: Arc<TokenSigner>,
     pub login_token_idle_ttl: Duration,
-    pub empire_start_maps: EmpireStartMaps,
     pub heartbeat_interval: Duration,
     pub channel_id: u32,
     pub advertised_endpoint: SocketAddr,

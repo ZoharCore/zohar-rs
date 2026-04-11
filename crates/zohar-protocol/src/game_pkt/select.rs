@@ -27,10 +27,7 @@ pub enum SelectC2sSpecific {
         class_gender: game_pkt::PlayerClassGendered,
         _reserved: u8,
         appearance: PlayerBaseAppearance,
-        stat_vit: u8,
-        stat_int: u8,
-        stat_str: u8,
-        stat_dex: u8,
+        _reserved_stats: u32,
     },
 
     #[brw(magic = 0x05_u8)]

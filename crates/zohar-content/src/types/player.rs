@@ -19,3 +19,24 @@ pub enum Gender {
     #[strum(serialize = "FEMALE")]
     Female,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerClassBaseStats {
+    pub player_class: PlayerClass,
+    pub base_strength: i32,
+    pub base_vitality: i32,
+    pub base_dexterity: i32,
+    pub base_intelligence: i32,
+    pub base_hp: i32,
+    pub base_sp: i32,
+    pub hp_per_vitality: i32,
+    pub sp_per_intelligence: i32,
+    pub hp_per_level_min: i32,
+    pub hp_per_level_max: i32,
+    pub sp_per_level_min: i32,
+    pub sp_per_level_max: i32,
+    pub base_stamina: i32,
+    pub stamina_per_vitality: i32,
+    pub stamina_per_level_min: i32,
+    pub stamina_per_level_max: i32,
+}

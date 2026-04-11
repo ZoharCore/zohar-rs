@@ -12,7 +12,7 @@ use std::time::Duration;
 use tracing::info;
 use zohar_db::postgres_backend;
 use zohar_gamesrv::infra::EndpointMode;
-use zohar_gamesrv::{SERVER_DRAIN_GRACE_PERIOD, ServerDrainController};
+use zohar_gamesrv::{CoreSelectConfig, SERVER_DRAIN_GRACE_PERIOD, ServerDrainController};
 use zohar_protocol::token::TokenSigner;
 use zohar_sim::{build_map_app, player_persistence_channel};
 
@@ -69,6 +69,9 @@ pub fn run_core(
         game_db,
         token_signer,
         loaded.coords.clone(),
+        CoreSelectConfig {
+            player_create_base_stats: loaded.player_create_base_stats.clone(),
+        },
         map_events.clone(),
         player_persistence,
         drain.clone(),

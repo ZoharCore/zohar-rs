@@ -24,6 +24,7 @@ binrw = "0.15"
 
 # general utils
 rand = "0.10"
+sha2 = "0.11"
 uuid = { version = "1", features = ["v4"] }
 bitflags = "2"
 

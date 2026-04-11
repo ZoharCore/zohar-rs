@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::db::{open_existing_read_only, open_fresh_connection};
 use crate::error::ContentError;
-use crate::loaders::{chat, empires, maps, mob_groups, mobs, motion, spawns};
+use crate::loaders::{chat, empires, maps, mob_groups, mobs, motion, player, spawns};
 use crate::migrations::{private_data, schema};
 use crate::runtime::{ContentRuntime, MigrationSummary};
 use crate::types::ContentCatalog;
@@ -74,6 +74,7 @@ async fn load_catalog(conn: &SqlitePool) -> Result<ContentCatalog, ContentError>
     let map_terrain_flags = maps::load_map_flag_grids(conn, &maps).await?;
 
     Ok(ContentCatalog {
+        player_class_base_stats: player::load_player_class_base_stats(conn).await?,
         maps,
         map_terrain_flags,
         town_spawns: maps::load_town_spawns(conn).await?,

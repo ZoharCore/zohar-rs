@@ -13,10 +13,12 @@ use maps::{ContentMap, MapTownSpawn, TerrainFlagsGrid};
 use mob_groups::{MobGroupGroupRecord, MobGroupRecord};
 use mobs::ContentMob;
 use motion::{ContentMotion, PlayerMotionProfile};
+use player::PlayerClassBaseStats;
 use spawns::SpawnRuleRecord;
 
 #[derive(Debug, Default, Clone)]
 pub struct ContentCatalog {
+    pub player_class_base_stats: Vec<PlayerClassBaseStats>,
     pub maps: Vec<ContentMap>,
     pub map_terrain_flags: Vec<TerrainFlagsGrid>,
     pub town_spawns: Vec<MapTownSpawn>,

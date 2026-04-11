@@ -20,6 +20,9 @@ use tokio_util::codec::{Framed, FramedParts};
 use zohar_content::types::ContentCatalog;
 use zohar_content::types::empires::{Empire as ContentEmpire, EmpireStartConfig};
 use zohar_content::types::maps::ContentMap;
+use zohar_content::types::player::{
+    PlayerClass as ContentPlayerClass, PlayerClassBaseStats as ContentPlayerClassBaseStats,
+};
 use zohar_db::{Game, GameDb, PlayersView, ProfilesView, SessionsView, postgres_backend};
 use zohar_domain::Empire as DomainEmpire;
 use zohar_domain::MapId;
@@ -28,7 +31,9 @@ use zohar_domain::entity::player::{PlayerBaseAppearance, PlayerClass, PlayerGend
 use zohar_gamesrv::infra::{
     ClusterEventBus, MapEndpointResolver, StaticMapResolver, in_process_cluster_event_bus,
 };
-use zohar_gamesrv::{ContentCoords, GameContext, ServerDrainController};
+use zohar_gamesrv::{
+    ContentCoords, CoreSelectConfig, GameContext, PlayerCreateBaseStatTable, ServerDrainController,
+};
 use zohar_net::SimpleBinRwCodec;
 use zohar_protocol::game_pkt::handshake::{HandshakeGameC2s, HandshakeGameS2c};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
@@ -460,6 +465,11 @@ async fn setup_test_env_with_options_and_heartbeat(
 
     let ctx = Arc::new(GameContext {
         db: game_db,
+        select: CoreSelectConfig {
+            player_create_base_stats: Arc::new(PlayerCreateBaseStatTable::from_content_rows(
+                &test_player_class_base_stats(),
+            )),
+        },
         token_signer: test_token_signer(),
         login_token_idle_ttl: Duration::from_secs(7 * 24 * 60 * 60),
         coords,
@@ -872,6 +882,7 @@ fn encode_username(s: &str) -> [u8; 31] {
 
 fn test_content_catalog() -> ContentCatalog {
     ContentCatalog {
+        player_class_base_stats: test_player_class_base_stats(),
         maps: vec![
             ContentMap {
                 map_id: 1,
@@ -926,4 +937,85 @@ fn test_content_catalog() -> ContentCatalog {
         ],
         ..ContentCatalog::default()
     }
+}
+
+fn test_player_class_base_stats() -> Vec<ContentPlayerClassBaseStats> {
+    vec![
+        ContentPlayerClassBaseStats {
+            player_class: ContentPlayerClass::Warrior,
+            base_strength: 6,
+            base_vitality: 4,
+            base_dexterity: 3,
+            base_intelligence: 3,
+            base_hp: 600,
+            base_sp: 200,
+            hp_per_vitality: 40,
+            sp_per_intelligence: 20,
+            hp_per_level_min: 36,
+            hp_per_level_max: 44,
+            sp_per_level_min: 18,
+            sp_per_level_max: 22,
+            base_stamina: 800,
+            stamina_per_vitality: 5,
+            stamina_per_level_min: 1,
+            stamina_per_level_max: 3,
+        },
+        ContentPlayerClassBaseStats {
+            player_class: ContentPlayerClass::Ninja,
+            base_strength: 4,
+            base_vitality: 3,
+            base_dexterity: 6,
+            base_intelligence: 3,
+            base_hp: 650,
+            base_sp: 200,
+            hp_per_vitality: 40,
+            sp_per_intelligence: 20,
+            hp_per_level_min: 36,
+            hp_per_level_max: 44,
+            sp_per_level_min: 18,
+            sp_per_level_max: 22,
+            base_stamina: 800,
+            stamina_per_vitality: 5,
+            stamina_per_level_min: 1,
+            stamina_per_level_max: 3,
+        },
+        ContentPlayerClassBaseStats {
+            player_class: ContentPlayerClass::Sura,
+            base_strength: 5,
+            base_vitality: 3,
+            base_dexterity: 3,
+            base_intelligence: 5,
+            base_hp: 650,
+            base_sp: 200,
+            hp_per_vitality: 40,
+            sp_per_intelligence: 20,
+            hp_per_level_min: 36,
+            hp_per_level_max: 44,
+            sp_per_level_min: 18,
+            sp_per_level_max: 22,
+            base_stamina: 800,
+            stamina_per_vitality: 5,
+            stamina_per_level_min: 1,
+            stamina_per_level_max: 3,
+        },
+        ContentPlayerClassBaseStats {
+            player_class: ContentPlayerClass::Shaman,
+            base_strength: 3,
+            base_vitality: 4,
+            base_dexterity: 3,
+            base_intelligence: 6,
+            base_hp: 700,
+            base_sp: 200,
+            hp_per_vitality: 40,
+            sp_per_intelligence: 20,
+            hp_per_level_min: 36,
+            hp_per_level_max: 44,
+            sp_per_level_min: 18,
+            sp_per_level_max: 22,
+            base_stamina: 800,
+            stamina_per_vitality: 5,
+            stamina_per_level_min: 1,
+            stamina_per_level_max: 3,
+        },
+    ]
 }

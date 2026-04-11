@@ -9,7 +9,7 @@ use zohar_gamesrv::infra::{
     KubeAgonesMapResolver, MapEndpointResolver, MapResolverConfig, NatsClusterEventBusConfig,
     nats_cluster_event_bus, postgres_cluster_event_bus,
 };
-use zohar_gamesrv::{ContentCoords, GameContext, ServerDrainController};
+use zohar_gamesrv::{ContentCoords, CoreSelectConfig, GameContext, ServerDrainController};
 use zohar_protocol::token::TokenSigner;
 use zohar_sim::{MapEventSender, PlayerPersistenceCoordinatorHandle};
 
@@ -24,6 +24,7 @@ pub(crate) fn wire_infra(
     game_db: Game,
     token_signer: Arc<TokenSigner>,
     coords: Arc<ContentCoords>,
+    select: CoreSelectConfig,
     map_events: MapEventSender,
     player_persistence: PlayerPersistenceCoordinatorHandle,
     drain: ServerDrainController,
@@ -65,6 +66,7 @@ pub(crate) fn wire_infra(
 
     let ctx = Arc::new(GameContext {
         db: game_db,
+        select,
         token_signer,
         login_token_idle_ttl: config.login_token_idle_ttl,
         coords,

@@ -41,6 +41,11 @@ static SCHEMA_MIGRATIONS: &[SchemaMigration] = &[
         id: "V0050__spawns.sql",
         sql: include_str!("schema/V0050__spawns.sql"),
     },
+    SchemaMigration {
+        version: 60,
+        id: "V0060__player.sql",
+        sql: include_str!("schema/V0060__player.sql"),
+    },
 ];
 
 pub async fn apply_schema_migrations(

@@ -12,7 +12,9 @@ use zohar_gamesrv::infra::{
     EndpointMode, KubeAgonesMapResolver, KubeServiceChannelDirectory, MapEndpointResolver,
     MapResolverConfig,
 };
-use zohar_gamesrv::{EmpireStartMaps, GatewayContext};
+use zohar_gamesrv::{
+    EmpireStartMaps, GatewayContext, GatewaySelectConfig, PlayerCreateBaseStatTable,
+};
 use zohar_protocol::token::TokenSigner;
 
 #[derive(Debug, Parser)]
@@ -88,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
     let game_db = postgres_backend::open_game_db(&cli.game_db_url)
         .await
         .context("open game db")?;
+    let player_create_base_stats = Arc::new(PlayerCreateBaseStatTable::default());
     let token_signer = Arc::new(TokenSigner::new(
         cli.auth_token_secret.as_bytes().to_vec(),
         Duration::from_secs(cli.token_window_secs),
@@ -124,9 +127,12 @@ async fn main() -> anyhow::Result<()> {
 
     let ctx = Arc::new(GatewayContext {
         db: game_db,
+        select: GatewaySelectConfig {
+            player_create_base_stats,
+            empire_start_maps,
+        },
         token_signer,
         login_token_idle_ttl: Duration::from_secs(cli.login_token_idle_ttl_secs),
-        empire_start_maps,
         heartbeat_interval: Duration::from_secs(cli.heartbeat_interval_secs),
         channel_id: cli.channel,
         advertised_endpoint,

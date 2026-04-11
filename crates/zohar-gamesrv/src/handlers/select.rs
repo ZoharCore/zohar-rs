@@ -9,6 +9,7 @@ use super::runtime::{
 };
 use super::session_health::{SessionTick, SessionTracker};
 use super::types::{PhaseResult, SessionEnd, SessionLeaseAction};
+use crate::PlayerCreateBaseStatTable;
 use crate::adapters::{ToDomain, ToProtocol, ToProtocolPlayer};
 use crate::infra::MapEndpointResolver;
 use crate::{ContentCoords, EmpireStartMaps, GameContext, GatewayContext, ServerDrainController};
@@ -41,6 +42,7 @@ struct SelectCtx<'a> {
 #[derive(Clone)]
 struct SelectRuntime {
     db: Game,
+    player_create_base_stats: Arc<PlayerCreateBaseStatTable>,
     routing: SelectRouting,
     drain: Option<ServerDrainController>,
     heartbeat_interval: std::time::Duration,
@@ -130,11 +132,8 @@ async fn handle_packet(
             name,
             class_gender,
             appearance,
-            stat_vit,
-            stat_int,
-            stat_str,
-            stat_dex,
-            ..
+            _reserved,
+            _reserved_stats,
         }) => {
             let name = decode_cstr(&name);
             if !NEW_PLAYER_NAME_VALID_LEN.contains(&name.len()) {
@@ -158,6 +157,15 @@ async fn handle_packet(
             }
 
             let (class, gender) = class_gender.to_domain();
+            let Some(base_stats) = state.runtime.player_create_base_stats.get(class) else {
+                warn!(?class, "Missing player class base stat content");
+                return Ok(PhaseEffects::send(
+                    SelectS2cSpecific::CreatePlayerResultFail {
+                        error: CreatePlayerError::GenericFailure,
+                    }
+                    .into(),
+                ));
+            };
             let outcome = state
                 .runtime
                 .db
@@ -169,10 +177,10 @@ async fn handle_packet(
                     class,
                     gender,
                     appearance.to_domain(),
-                    stat_str,
-                    stat_vit,
-                    stat_dex,
-                    stat_int,
+                    base_stats.stat_str,
+                    base_stats.stat_vit,
+                    base_stats.stat_dex,
+                    base_stats.stat_int,
                 )
                 .await?;
 
@@ -354,6 +362,7 @@ pub(crate) async fn run_select_core(
     let mut state = SelectCtx {
         runtime: SelectRuntime {
             db: ctx.db.clone(),
+            player_create_base_stats: Arc::clone(&ctx.select.player_create_base_stats),
             routing: SelectRouting::Core {
                 coords: Arc::clone(&ctx.coords),
             },
@@ -392,8 +401,9 @@ pub(crate) async fn run_select_gateway(
     let mut state = SelectCtx {
         runtime: SelectRuntime {
             db: ctx.db.clone(),
+            player_create_base_stats: Arc::clone(&ctx.select.player_create_base_stats),
             routing: SelectRouting::Gateway {
-                empire_start_maps: ctx.empire_start_maps.clone(),
+                empire_start_maps: ctx.select.empire_start_maps.clone(),
             },
             drain: None,
             heartbeat_interval: ctx.heartbeat_interval,
