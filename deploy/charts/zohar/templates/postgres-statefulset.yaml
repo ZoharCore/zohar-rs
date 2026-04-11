@@ -20,6 +20,7 @@ spec:
         {{- include "zohar.labels" . | nindent 8 }}
         app.kubernetes.io/component: postgres
     spec:
+      enableServiceLinks: false
       containers:
         - name: postgres
           image: {{ .Values.postgres.image | quote }}

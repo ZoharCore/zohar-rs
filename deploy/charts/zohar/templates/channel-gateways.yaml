@@ -29,6 +29,7 @@ spec:
         app.kubernetes.io/component: channel-entry
         channel: "{{ $channelId }}"
     spec:
+      enableServiceLinks: false
       serviceAccountName: {{ include "zohar.channelServiceAccountName" $ }}
       containers:
         - name: zohar-chgw
