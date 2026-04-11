@@ -15,6 +15,7 @@ zohar-gamesrv = { path = "../zohar-gamesrv", features = ["kube-resolver"] }
 zohar-map-port = { path = "../zohar-map-port" }
 zohar-sim = { path = "../zohar-sim", default-features = false }
 zohar-protocol = { path = "../zohar-protocol", default-features = false, features = ["token"] }
+zohar-gameplay = { path = "../zohar-gameplay" }
 
 anyhow.workspace = true
 bevy.workspace = true

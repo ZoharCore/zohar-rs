@@ -49,7 +49,29 @@ pub struct EntityDetails {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerVisualProfile {
+    pub name: String,
+    pub gender: PlayerGender,
+    pub empire: Empire,
+    pub body_part: u16,
+    pub guild_id: u32,
+}
+
+impl Default for PlayerVisualProfile {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            gender: PlayerGender::Male,
+            empire: Empire::Red,
+            body_part: 0,
+            guild_id: 0,
+        }
+    }
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerAppearance {
     pub name: String,
     pub class: PlayerClass,
@@ -62,18 +84,36 @@ pub struct PlayerAppearance {
     pub attack_speed: u8,
 }
 
+impl PlayerAppearance {
+    pub fn from_parts(
+        visual_profile: &PlayerVisualProfile,
+        class: PlayerClass,
+        level: u32,
+        move_speed: u8,
+        attack_speed: u8,
+    ) -> Self {
+        Self {
+            name: visual_profile.name.clone(),
+            class,
+            gender: visual_profile.gender,
+            empire: visual_profile.empire,
+            body_part: visual_profile.body_part,
+            level,
+            guild_id: visual_profile.guild_id,
+            move_speed,
+            attack_speed,
+        }
+    }
+}
+
 impl Default for PlayerAppearance {
     fn default() -> Self {
-        Self {
-            name: String::new(),
-            class: PlayerClass::Warrior,
-            gender: PlayerGender::Male,
-            empire: Empire::Red,
-            body_part: 0,
-            level: 1,
-            guild_id: 0,
-            move_speed: 100,
-            attack_speed: 100,
-        }
+        Self::from_parts(
+            &PlayerVisualProfile::default(),
+            PlayerClass::Warrior,
+            1,
+            100,
+            100,
+        )
     }
 }

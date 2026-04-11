@@ -20,10 +20,7 @@ use tokio::time::Instant as TokioInstant;
 use tracing::warn;
 use uuid::Uuid;
 use zohar_db::{GameDb, SessionsView};
-use zohar_domain::{
-    Empire as DomainEmpire, MapId, PlayerExitKind,
-    entity::player::{PlayerRuntimeEpoch, PlayerRuntimeSnapshot},
-};
+use zohar_domain::{Empire as DomainEmpire, MapId, PlayerExitKind, entity::player::PlayerSnapshot};
 use zohar_map_port::{EnterMsg, LeaveMsg, PlayerEvent};
 use zohar_net::{Connection, ConnectionPhaseExt, connection::NextConnection};
 use zohar_protocol::{
@@ -41,6 +38,7 @@ pub(super) mod fishing;
 pub(super) mod guild;
 pub(super) mod movement;
 pub(super) mod relocation;
+pub(super) mod stats;
 pub(super) mod trading;
 pub(super) mod world;
 
@@ -55,7 +53,7 @@ pub(super) struct InGameCtx<'a> {
     pub(super) connection_id: String,
     pub(super) player_name: String,
     pub(super) player_id: zohar_domain::entity::player::PlayerId,
-    pub(super) player_runtime_epoch: PlayerRuntimeEpoch,
+    pub(super) player_net_id: zohar_domain::entity::EntityId,
     pub(super) map_id: MapId,
     pub(super) player_empire: DomainEmpire,
 }
@@ -117,14 +115,11 @@ where
     await_persistence_result(reply_rx, deadline, op_name).await
 }
 
-async fn flush_player_snapshot(
-    ctx: &GameContext,
-    snapshot: PlayerRuntimeSnapshot,
-) -> anyhow::Result<()> {
+async fn flush_player_state(ctx: &GameContext, snapshot: PlayerSnapshot) -> anyhow::Result<()> {
     run_persistence_op(
         ctx.player_persistence.schedule_flush(snapshot),
         player_persistence_timeout(ctx),
-        "player snapshot flush",
+        "player state flush",
     )
     .await
 }
@@ -134,7 +129,7 @@ async fn commit_player_exit(
     exit_kind: PlayerExitKind,
     username: &str,
     connection_id: &str,
-    snapshot: PlayerRuntimeSnapshot,
+    snapshot: PlayerSnapshot,
 ) -> anyhow::Result<()> {
     run_persistence_op(
         ctx.player_persistence.commit_player_exit(
@@ -231,6 +226,12 @@ fn map_event_to_packets(
         PlayerEvent::EntitySpawn { show, details } => {
             world::encode_entity_spawn(show, details, map_id, coords)
         }
+        PlayerEvent::SetEntityStat {
+            entity_id,
+            stat,
+            delta,
+            absolute,
+        } => stats::encode_entity_stat(entity_id, stat, delta, absolute),
         PlayerEvent::EntityMove(event) => movement::encode_entity_move(event, map_id, coords),
         PlayerEvent::SetEntityMovementAnimation {
             entity_id,
@@ -367,7 +368,7 @@ fn prepare_ingame<'a>(
     let player_id = conn.player_id();
     let player_net_id = zohar_domain::entity::EntityId(entry.net_id.into());
     let map_id = entry.map_id;
-    let player_empire = entry.appearance.empire;
+    let player_empire = entry.visual_profile.empire;
 
     let Some(map_code) = ctx.coords.map_code_by_id(map_id) else {
         return Err(SessionEnd::AfterLogin {
@@ -396,8 +397,10 @@ fn prepare_ingame<'a>(
         player_id,
         player_net_id,
         runtime_epoch: entry.runtime_epoch,
+        playtime: entry.playtime,
         initial_pos: entry.initial_pos,
-        appearance: entry.appearance.clone(),
+        visual_profile: entry.visual_profile.clone(),
+        gameplay: entry.gameplay.clone(),
     }) {
         Ok(map_rx) => (map_rx, true),
         Err(err) => {
@@ -417,7 +420,7 @@ fn prepare_ingame<'a>(
             connection_id: connection_id_string(conn_id),
             player_name,
             player_id,
-            player_runtime_epoch: entry.runtime_epoch,
+            player_net_id,
             map_id,
             player_empire,
         },
@@ -461,7 +464,7 @@ async fn finalize_ingame_result(
                 }
             };
 
-            match flush_player_snapshot(&state.ctx, snapshot.clone()).await {
+            match flush_player_state(&state.ctx, snapshot.clone()).await {
                 Ok(()) => Ok(conn_next),
                 Err(flush_error) => {
                     warn!(

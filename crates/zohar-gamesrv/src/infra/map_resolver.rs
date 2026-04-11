@@ -232,6 +232,7 @@ impl KubeAgonesMapResolver {
     pub async fn resolve(&self, channel_id: u32, map_code: &str) -> anyhow::Result<SocketAddr> {
         #[cfg(not(feature = "kube-resolver"))]
         {
+            #[allow(clippy::needless_return)]
             return Err(anyhow!(
                 "kube resolver disabled for channel={} map={}",
                 channel_id,

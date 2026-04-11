@@ -40,3 +40,10 @@ pub struct PlayerClassBaseStats {
     pub stamina_per_level_min: i32,
     pub stamina_per_level_max: i32,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LevelExp {
+    pub level: i32,
+    pub next_exp: i64,
+    pub death_loss_pct: i32,
+}

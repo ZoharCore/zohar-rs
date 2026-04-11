@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tokio::sync::oneshot;
 use zohar_domain::entity::EntityId;
-use zohar_domain::entity::player::PlayerRuntimeSnapshot;
+use zohar_domain::entity::player::PlayerSnapshot;
 use zohar_map_port::{ClientIntentMsg, EnterMsg, GlobalShoutMsg, LeaveMsg, PlayerEvent};
 
 use crate::outbox::PlayerOutbox;
@@ -10,6 +10,7 @@ use crate::outbox::PlayerOutbox;
 const PLAYER_EVENT_BUFFER: usize = 256;
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum InboundEvent {
     ReserveNetId {
         reply: oneshot::Sender<EntityId>,
@@ -21,9 +22,13 @@ pub(crate) enum InboundEvent {
     PlayerLeave {
         msg: LeaveMsg,
     },
+    CapturePlayerSnapshot {
+        msg: LeaveMsg,
+        reply: oneshot::Sender<anyhow::Result<PlayerSnapshot>>,
+    },
     PlayerLeaveAndSnapshot {
         msg: LeaveMsg,
-        reply: oneshot::Sender<anyhow::Result<PlayerRuntimeSnapshot>>,
+        reply: oneshot::Sender<anyhow::Result<PlayerSnapshot>>,
     },
     ClientIntent {
         msg: ClientIntentMsg,
@@ -48,10 +53,18 @@ impl MapEventSender {
         self.enqueue(InboundEvent::PlayerLeave { msg })
     }
 
-    pub async fn leave_player_and_snapshot(
-        &self,
-        msg: LeaveMsg,
-    ) -> anyhow::Result<PlayerRuntimeSnapshot> {
+    pub async fn capture_player_snapshot(&self, msg: LeaveMsg) -> anyhow::Result<PlayerSnapshot> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.enqueue(InboundEvent::CapturePlayerSnapshot {
+            msg,
+            reply: reply_tx,
+        })?;
+        reply_rx
+            .await
+            .map_err(|_| anyhow!("map runtime dropped player snapshot reply"))?
+    }
+
+    pub async fn leave_player_and_snapshot(&self, msg: LeaveMsg) -> anyhow::Result<PlayerSnapshot> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.enqueue(InboundEvent::PlayerLeaveAndSnapshot {
             msg,

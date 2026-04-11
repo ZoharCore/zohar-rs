@@ -19,12 +19,15 @@ pub use motion::{
 };
 pub use navigation::{GridCell, MapNavigator, NavPath, TerrainFlagsGrid};
 pub use persistence::{
-    CriticalPlayerOpRequest, PlayerPersistenceCoordinatorHandle, PlayerPersistenceQueueError,
-    PlayerPersistenceRequest, PlayerPersistenceResult, SnapshotSaveKind,
-    player_persistence_channel,
+    PlayerPersistenceCoordinatorHandle, PlayerPersistenceQueueError, PlayerPersistenceRequest,
+    PlayerPersistenceResult, SaveUrgency, player_persistence_channel,
 };
 pub use runtime::{
     MapConfig, PlayerCount, SharedConfig, SimSet, StartupReadySignal, WanderConfig, build_map_app,
     spawn_map_runtime,
 };
 pub use types::{InstanceId, MapInstanceKey, MapInstanceKind};
+pub use zohar_gameplay::stats::game::{
+    HydratedPlayerStats, LevelExpEntry, LevelExpTable, PlayerClassStatsConfig,
+    PlayerClassStatsTable, PlayerStatRules,
+};

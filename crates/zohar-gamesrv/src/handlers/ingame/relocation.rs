@@ -4,8 +4,7 @@ use super::{InGameCtx, InGamePhaseEffects, commit_player_exit};
 use tracing::warn;
 use zohar_domain::PlayerExitKind;
 use zohar_domain::coords::{LocalPos, WorldPos};
-use zohar_domain::entity::player::PlayerRuntimeSnapshot;
-use zohar_map_port::PortalDestination;
+use zohar_map_port::{LeaveMsg, PortalDestination};
 use zohar_protocol::game_pkt::ingame::chat::ChatS2c;
 use zohar_protocol::game_pkt::{ChatKind, ZeroOpt};
 use zohar_protocol::game_pkt::{WireServerAddr, ingame::system::SystemS2c};
@@ -65,7 +64,7 @@ pub(super) fn resolve_map_code_relocation(
 fn resolve_relocation(
     state: &InGameCtx<'_>,
     map_id: zohar_domain::MapId,
-    local_pos: LocalPos,
+    _local_pos: LocalPos,
 ) -> Result<ResolvedRelocation, RelocationError> {
     let map_code = state
         .ctx
@@ -77,7 +76,7 @@ fn resolve_relocation(
     Ok(ResolvedRelocation {
         map_id,
         map_code,
-        local_pos,
+        local_pos: _local_pos,
     })
 }
 
@@ -115,11 +114,28 @@ pub(super) async fn dispatch_handoff(
     let destination_addr =
         WireServerAddr::from_socket_addr(endpoint).ok_or(RelocationError::NonIpv4Endpoint)?;
 
-    let snapshot = PlayerRuntimeSnapshot {
-        id: state.player_id,
-        runtime_epoch: state.player_runtime_epoch,
-        map_key: map_code.clone(),
-        local_pos,
+    let snapshot = match state
+        .ctx
+        .map_events
+        .capture_player_snapshot(LeaveMsg {
+            player_id: state.player_id,
+            player_net_id: state.player_net_id,
+        })
+        .await
+    {
+        Ok(snapshot) => snapshot.with_runtime_location(map_code.clone(), local_pos),
+        Err(error) => {
+            warn!(
+                source,
+                username = %state.username,
+                player_id = ?state.player_id,
+                map_id = map_id.get(),
+                map_code = %map_code,
+                error = %error,
+                "Failed to capture player snapshot before handoff"
+            );
+            return Err(RelocationError::CommitFailed);
+        }
     };
 
     if let Err(error) = commit_player_exit(

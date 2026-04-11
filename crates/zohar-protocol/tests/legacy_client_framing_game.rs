@@ -6,6 +6,7 @@ use packet_framing_support::{assert_packet_frame, encoded_bytes};
 use zohar_protocol::game_pkt::ingame::chat::{ChatC2s, ChatKind, ChatS2c};
 use zohar_protocol::game_pkt::ingame::combat::CombatC2s;
 use zohar_protocol::game_pkt::ingame::movement::{MovementC2s, MovementKind, MovementS2c};
+use zohar_protocol::game_pkt::ingame::stats::{WireStatPoint, WireStatSnapshot};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
 use zohar_protocol::game_pkt::ingame::world::{EntityType, WorldS2c};
 use zohar_protocol::game_pkt::select::{CreatePlayerError, Player};
@@ -297,13 +298,25 @@ fn loading_s2c_packets_keep_their_legacy_lengths() {
         46,
     );
     assert_packet_frame(
-        &LoadingS2c::Specific(
-            zohar_protocol::game_pkt::loading::LoadingS2cSpecific::SetMainCharacterStats {
-                stats: [0u32; 255],
+        &LoadingS2c::Stats(
+            zohar_protocol::game_pkt::ingame::stats::StatsS2c::SetMainCharacterStats {
+                stats: WireStatSnapshot::default(),
             },
         ),
         0x10,
         1021,
+    );
+    assert_packet_frame(
+        &LoadingS2c::Stats(
+            zohar_protocol::game_pkt::ingame::stats::StatsS2c::SetEntityStat {
+                net_id: zohar_protocol::game_pkt::NetId(0x0102_0304),
+                stat_id: WireStatPoint::Gold,
+                delta: -3,
+                absolute: 0,
+            },
+        ),
+        0x11,
+        17,
     );
 }
 

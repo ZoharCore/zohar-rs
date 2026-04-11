@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use tracing::warn;
 use zohar_content::types::ContentCatalog;
 use zohar_content::types::empires::Empire as ContentEmpire;
-use zohar_db::PlayerRow;
+use zohar_db::PlayerRuntimeStateRow;
 use zohar_domain::coords::{LocalPos, LocalSize, WorldPos};
 use zohar_domain::{Empire as DomainEmpire, Empire, MapId};
 use zohar_protocol::game_pkt::WireWorldPos;
@@ -110,7 +110,9 @@ pub struct ContentCoords {
 }
 
 impl ContentCoords {
-    pub fn persisted_from_player_row(player: &PlayerRow) -> Option<PersistedPlayerPos> {
+    pub fn persisted_from_runtime_state(
+        player: &PlayerRuntimeStateRow,
+    ) -> Option<PersistedPlayerPos> {
         match (&player.map_key, player.local_x, player.local_y) {
             (Some(map_key), Some(local_x), Some(local_y)) => Some(PersistedPlayerPos {
                 map_key: map_key.clone(),
@@ -123,10 +125,10 @@ impl ContentCoords {
 
     pub fn resolve_spawn_for_player(
         &self,
-        player: Option<&PlayerRow>,
+        player: Option<&PlayerRuntimeStateRow>,
         empire: DomainEmpire,
     ) -> ResolvedSpawn {
-        let persisted = player.and_then(Self::persisted_from_player_row);
+        let persisted = player.and_then(Self::persisted_from_runtime_state);
         self.resolve_spawn(persisted, empire)
     }
 

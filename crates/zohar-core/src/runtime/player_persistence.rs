@@ -1,16 +1,16 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::warn;
-use zohar_db::{Game, GameDb, PlayersView, RuntimeStateSaveOutcome, SessionsView};
+use zohar_db::{Game, GameDb, PlayerStatesView, PlayerWriteOutcome, SessionsView};
 use zohar_domain::{
     PlayerExitKind,
-    entity::player::{PlayerId, PlayerRuntimeSnapshot},
+    entity::player::{PlayerId, PlayerSnapshot},
 };
-use zohar_sim::{PlayerPersistenceRequest, PlayerPersistenceResult, SnapshotSaveKind};
+use zohar_sim::{PlayerPersistenceRequest, PlayerPersistenceResult, SaveUrgency};
 
 const MAX_CONCURRENT_SAVES: usize = 8;
 const AUTOSAVE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -60,6 +60,16 @@ async fn wait_for_retry(deadline: Option<Instant>) {
     }
 }
 
+async fn save_player_snapshot(
+    db: &Game,
+    snapshot: &PlayerSnapshot,
+) -> Result<PlayerWriteOutcome, String> {
+    db.player_states()
+        .save_player_snapshot(snapshot)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 fn handle_request(
     request: PlayerPersistenceRequest,
     lanes: &mut HashMap<PlayerId, PlayerPersistenceLane>,
@@ -67,29 +77,42 @@ fn handle_request(
     match request {
         PlayerPersistenceRequest::SaveSnapshot {
             snapshot,
-            kind,
+            urgency,
             reply,
-        } => match kind {
-            SnapshotSaveKind::Autosave => {
-                let lane = lanes.entry(snapshot.id).or_default();
-                if lane.has_pending_priority_op() {
-                    return;
+        } => {
+            let lane = lanes.entry(snapshot.player_id()).or_default();
+            if lane.pending_exit.is_some() {
+                if let Some(reply) = reply {
+                    let _ = reply.send(Err("player exit is already pending".to_string()));
                 }
-                lane.pending_autosave = Some(snapshot);
-                lane.retry_at = None;
+                return;
             }
-            SnapshotSaveKind::ExplicitFlush => {
-                let lane = lanes.entry(snapshot.id).or_default();
-                lane.pending_autosave = None;
-                lane.retry_at = None;
-                lane.pending_priority_ops
-                    .push_back(PendingPriorityOp::FlushSnapshot {
+
+            lane.retry_at = None;
+            match &mut lane.pending_save {
+                Some(pending) => {
+                    pending.snapshot = snapshot;
+                    if matches!(urgency, SaveUrgency::FlushNow) {
+                        pending.urgency = SaveUrgency::FlushNow;
+                        if let Some(reply) = reply {
+                            if pending.reply.is_some() {
+                                let _ =
+                                    reply.send(Err("player flush is already pending".to_string()));
+                            } else {
+                                pending.reply = Some(reply);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    lane.pending_save = Some(PendingSave {
                         snapshot,
-                        reply: reply
-                            .expect("explicit snapshot flush requests must include a reply handle"),
+                        urgency,
+                        reply,
                     });
+                }
             }
-        },
+        }
         PlayerPersistenceRequest::CommitPlayerExit {
             exit_kind,
             username,
@@ -98,23 +121,17 @@ fn handle_request(
             snapshot,
             reply,
         } => {
-            let lane = lanes.entry(snapshot.id).or_default();
-            lane.pending_autosave = None;
+            let lane = lanes.entry(snapshot.player_id()).or_default();
+            lane.pending_save = None;
             lane.retry_at = None;
-            lane.pending_priority_ops
-                .push_back(PendingPriorityOp::CommitPlayerExit {
-                    exit_kind,
-                    username,
-                    server_id,
-                    connection_id,
-                    snapshot,
-                    reply,
-                });
-        }
-        PlayerPersistenceRequest::CommitCriticalOp { request, reply } => {
-            let _ = reply.send(Err(format!(
-                "critical player op persistence is not implemented yet: {request:?}"
-            )));
+            lane.pending_exit = Some(PendingExit {
+                exit_kind,
+                username,
+                server_id,
+                connection_id,
+                snapshot,
+                reply,
+            });
         }
     }
 }
@@ -143,33 +160,30 @@ fn dispatch_ready_ops(
 
         let db = db.clone();
         in_flight.spawn(async move {
-            let DispatchOp { snapshot, kind } = dispatch;
+            let DispatchOp { player_id, kind } = dispatch;
             let result = match &kind {
-                DispatchKind::Autosave => match db.players().save_runtime_state(&snapshot).await {
-                    Ok(RuntimeStateSaveOutcome::Saved | RuntimeStateSaveOutcome::StaleOwner) => {
-                        Ok(())
-                    }
-                    Err(error) => Err(error.to_string()),
-                },
-                DispatchKind::FlushSnapshot { .. } => {
-                    match db.players().save_runtime_state(&snapshot).await {
-                        Ok(RuntimeStateSaveOutcome::Saved) => Ok(()),
-                        Ok(RuntimeStateSaveOutcome::StaleOwner) => Err(
-                            "player snapshot flush rejected because runtime ownership moved"
+                DispatchKind::Save {
+                    snapshot, urgency, ..
+                } => save_player_snapshot(&db, snapshot)
+                    .await
+                    .and_then(|outcome| match (urgency, outcome) {
+                        (SaveUrgency::Autosave, PlayerWriteOutcome::Saved)
+                        | (SaveUrgency::Autosave, PlayerWriteOutcome::StaleOwner)
+                        | (SaveUrgency::FlushNow, PlayerWriteOutcome::Saved) => Ok(()),
+                        (SaveUrgency::FlushNow, PlayerWriteOutcome::StaleOwner) => Err(
+                            "owned player state flush rejected because runtime ownership moved"
                                 .to_string(),
                         ),
-                        Err(error) => Err(error.to_string()),
-                    }
-                }
-                DispatchKind::CommitPlayerExit {
-                    exit_kind,
-                    username,
-                    server_id,
-                    connection_id,
-                    ..
-                } => db
+                    }),
+                DispatchKind::CommitPlayerExit { exit, .. } => db
                     .sessions()
-                    .commit_player_exit(*exit_kind, username, server_id, connection_id, &snapshot)
+                    .commit_player_exit(
+                        exit.exit_kind,
+                        &exit.username,
+                        &exit.server_id,
+                        &exit.connection_id,
+                        &exit.snapshot,
+                    )
                     .await
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
@@ -177,7 +191,6 @@ fn dispatch_ready_ops(
 
             CompletedDispatch {
                 player_id,
-                snapshot,
                 kind,
                 result,
             }
@@ -195,11 +208,20 @@ fn ready_player_ids(
             if lane.in_flight {
                 return None;
             }
-            if lane.has_pending_priority_op() {
+            if lane.pending_exit.is_some() {
                 return Some((0_u8, *player_id));
             }
-            let retry_ready = lane.retry_at.is_none_or(|retry_at| retry_at <= now);
-            (retry_ready && lane.pending_autosave.is_some()).then_some((1_u8, *player_id))
+            let save = lane.pending_save.as_ref()?;
+            let priority = match save.urgency {
+                SaveUrgency::FlushNow => 1_u8,
+                SaveUrgency::Autosave => {
+                    if lane.retry_at.is_some_and(|retry_at| retry_at > now) {
+                        return None;
+                    }
+                    2_u8
+                }
+            };
+            Some((priority, *player_id))
         })
         .collect::<Vec<_>>();
     ready.sort_unstable_by_key(|(priority, _)| *priority);
@@ -210,8 +232,7 @@ fn next_retry_deadline(lanes: &HashMap<PlayerId, PlayerPersistenceLane>) -> Opti
     lanes
         .values()
         .filter(|lane| !lane.in_flight)
-        .filter(|lane| !lane.has_pending_priority_op())
-        .filter(|lane| lane.pending_autosave.is_some())
+        .filter(|lane| lane.pending_exit.is_none())
         .filter_map(|lane| lane.retry_at)
         .min()
 }
@@ -223,37 +244,48 @@ fn handle_completed_dispatch(
     let Some(lane) = lanes.get_mut(&completed.player_id) else {
         return;
     };
-
     lane.in_flight = false;
 
     match completed.kind {
-        DispatchKind::Autosave => {
-            if let Err(error) = &completed.result {
-                if lane.has_pending_priority_op() {
-                    warn!(
-                        player_id = ?completed.player_id,
-                        error = %error,
-                        "Autosave persistence failed after a priority player write was queued; dropping autosave retry"
-                    );
-                    lane.retry_at = None;
+        DispatchKind::Save {
+            snapshot,
+            urgency,
+            reply,
+        } => match urgency {
+            SaveUrgency::Autosave => {
+                if let Err(error) = &completed.result {
+                    if lane.pending_exit.is_some() || lane.pending_save.is_some() {
+                        warn!(
+                            player_id = ?completed.player_id,
+                            error = %error,
+                            "Autosave failed after a newer player save was queued; dropping retry"
+                        );
+                        lane.retry_at = None;
+                    } else {
+                        warn!(
+                            player_id = ?completed.player_id,
+                            error = %error,
+                            "Autosave persistence failed; scheduling retry"
+                        );
+                        lane.pending_save = Some(PendingSave {
+                            snapshot,
+                            urgency,
+                            reply,
+                        });
+                        lane.retry_at = Some(Instant::now() + AUTOSAVE_RETRY_DELAY);
+                    }
                 } else {
-                    warn!(
-                        player_id = ?completed.player_id,
-                        error = %error,
-                        "Autosave persistence failed; scheduling retry"
-                    );
-                    lane.pending_autosave = Some(completed.snapshot);
-                    lane.retry_at = Some(Instant::now() + AUTOSAVE_RETRY_DELAY);
+                    lane.retry_at = None;
                 }
-            } else {
-                lane.retry_at = None;
             }
-        }
-        DispatchKind::FlushSnapshot { reply } => {
-            let _ = reply.send(completed.result);
-        }
-        DispatchKind::CommitPlayerExit { reply, .. } => {
-            let _ = reply.send(completed.result);
+            SaveUrgency::FlushNow => {
+                if let Some(reply) = reply {
+                    let _ = reply.send(completed.result);
+                }
+            }
+        },
+        DispatchKind::CommitPlayerExit { exit } => {
+            let _ = exit.reply.send(completed.result);
         }
     }
 
@@ -265,91 +297,68 @@ fn handle_completed_dispatch(
 #[derive(Default)]
 struct PlayerPersistenceLane {
     in_flight: bool,
-    pending_autosave: Option<PlayerRuntimeSnapshot>,
-    pending_priority_ops: VecDeque<PendingPriorityOp>,
+    pending_save: Option<PendingSave>,
+    pending_exit: Option<PendingExit>,
     retry_at: Option<Instant>,
 }
 
 impl PlayerPersistenceLane {
     fn next_dispatch(&mut self) -> Option<DispatchOp> {
-        if let Some(pending) = self.pending_priority_ops.pop_front() {
-            return Some(match pending {
-                PendingPriorityOp::FlushSnapshot { snapshot, reply } => DispatchOp {
-                    snapshot,
-                    kind: DispatchKind::FlushSnapshot { reply },
-                },
-                PendingPriorityOp::CommitPlayerExit {
-                    exit_kind,
-                    username,
-                    server_id,
-                    connection_id,
-                    snapshot,
-                    reply,
-                } => DispatchOp {
-                    snapshot,
-                    kind: DispatchKind::CommitPlayerExit {
-                        exit_kind,
-                        username,
-                        server_id,
-                        connection_id,
-                        reply,
-                    },
-                },
+        if let Some(exit) = self.pending_exit.take() {
+            return Some(DispatchOp {
+                player_id: exit.snapshot.player_id(),
+                kind: DispatchKind::CommitPlayerExit { exit },
             });
         }
 
-        self.pending_autosave.take().map(|snapshot| DispatchOp {
-            snapshot,
-            kind: DispatchKind::Autosave,
+        self.pending_save.take().map(|save| DispatchOp {
+            player_id: save.snapshot.player_id(),
+            kind: DispatchKind::Save {
+                snapshot: save.snapshot,
+                urgency: save.urgency,
+                reply: save.reply,
+            },
         })
     }
 
-    fn has_pending_priority_op(&self) -> bool {
-        !self.pending_priority_ops.is_empty()
-    }
-
     fn is_idle(&self) -> bool {
-        !self.in_flight && self.pending_autosave.is_none() && self.pending_priority_ops.is_empty()
+        !self.in_flight && self.pending_save.is_none() && self.pending_exit.is_none()
     }
 }
 
-enum PendingPriorityOp {
-    FlushSnapshot {
-        snapshot: PlayerRuntimeSnapshot,
-        reply: oneshot::Sender<PlayerPersistenceResult>,
-    },
-    CommitPlayerExit {
-        exit_kind: PlayerExitKind,
-        username: String,
-        server_id: String,
-        connection_id: String,
-        snapshot: PlayerRuntimeSnapshot,
-        reply: oneshot::Sender<PlayerPersistenceResult>,
-    },
+struct PendingSave {
+    snapshot: PlayerSnapshot,
+    urgency: SaveUrgency,
+    reply: Option<oneshot::Sender<PlayerPersistenceResult>>,
+}
+
+struct PendingExit {
+    exit_kind: PlayerExitKind,
+    username: String,
+    server_id: String,
+    connection_id: String,
+    snapshot: PlayerSnapshot,
+    reply: oneshot::Sender<PlayerPersistenceResult>,
 }
 
 struct DispatchOp {
-    snapshot: PlayerRuntimeSnapshot,
+    player_id: PlayerId,
     kind: DispatchKind,
 }
 
 enum DispatchKind {
-    Autosave,
-    FlushSnapshot {
-        reply: oneshot::Sender<PlayerPersistenceResult>,
+    Save {
+        snapshot: PlayerSnapshot,
+        urgency: SaveUrgency,
+        reply: Option<oneshot::Sender<PlayerPersistenceResult>>,
     },
     CommitPlayerExit {
-        exit_kind: PlayerExitKind,
-        username: String,
-        server_id: String,
-        connection_id: String,
-        reply: oneshot::Sender<PlayerPersistenceResult>,
+        exit: PendingExit,
     },
 }
 
 struct CompletedDispatch {
     player_id: PlayerId,
-    snapshot: PlayerRuntimeSnapshot,
     kind: DispatchKind,
     result: PlayerPersistenceResult,
 }
@@ -358,33 +367,51 @@ struct CompletedDispatch {
 mod tests {
     use super::*;
     use zohar_domain::coords::LocalPos;
+    use zohar_domain::entity::player::{
+        CoreStatAllocations, PlayerPlaytime, PlayerProgressionSnapshot, PlayerRuntimeSnapshot,
+        PlayerSnapshot,
+    };
 
-    fn snapshot(player_id: PlayerId, x: f32, y: f32) -> PlayerRuntimeSnapshot {
-        PlayerRuntimeSnapshot {
-            id: player_id,
-            runtime_epoch: Default::default(),
-            map_key: "zohar_map_a1".to_string(),
-            local_pos: LocalPos::new(x, y),
+    fn player_snapshot(player_id: PlayerId, x: f32, y: f32) -> PlayerSnapshot {
+        PlayerSnapshot {
+            runtime: PlayerRuntimeSnapshot {
+                id: player_id,
+                runtime_epoch: Default::default(),
+                map_key: "zohar_map_a1".to_string(),
+                playtime: PlayerPlaytime::ZERO,
+                current_hp: None,
+                current_sp: None,
+                current_stamina: None,
+                local_pos: LocalPos::new(x, y),
+            },
+            progression: PlayerProgressionSnapshot {
+                core_stat_allocations: CoreStatAllocations::default(),
+                stat_reset_count: 0,
+            },
         }
     }
 
+    fn exit_snapshot(player_id: PlayerId, x: f32, y: f32) -> PlayerSnapshot {
+        player_snapshot(player_id, x, y)
+    }
+
     #[test]
-    fn autosave_requests_coalesce_per_player_lane() {
+    fn autosaves_coalesce_to_latest_state() {
         let player_id = PlayerId::from(1);
         let mut lanes = HashMap::new();
 
         handle_request(
             PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 1.0, 2.0),
-                kind: SnapshotSaveKind::Autosave,
+                snapshot: player_snapshot(player_id, 1.0, 2.0),
+                urgency: SaveUrgency::Autosave,
                 reply: None,
             },
             &mut lanes,
         );
         handle_request(
             PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 3.0, 4.0),
-                kind: SnapshotSaveKind::Autosave,
+                snapshot: player_snapshot(player_id, 3.0, 4.0),
+                urgency: SaveUrgency::Autosave,
                 reply: None,
             },
             &mut lanes,
@@ -392,24 +419,25 @@ mod tests {
 
         let lane = lanes.get(&player_id).expect("lane");
         assert_eq!(
-            lane.pending_autosave
+            lane.pending_save
                 .as_ref()
-                .expect("pending autosave")
+                .expect("pending save")
+                .snapshot
+                .runtime
                 .local_pos,
             LocalPos::new(3.0, 4.0)
         );
-        assert!(lane.pending_priority_ops.is_empty());
     }
 
     #[test]
-    fn explicit_flush_replaces_pending_autosave_and_preserves_reply() {
+    fn flush_upgrades_pending_autosave_without_second_lane() {
         let player_id = PlayerId::from(2);
         let mut lanes = HashMap::new();
 
         handle_request(
             PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 1.0, 2.0),
-                kind: SnapshotSaveKind::Autosave,
+                snapshot: player_snapshot(player_id, 1.0, 2.0),
+                urgency: SaveUrgency::Autosave,
                 reply: None,
             },
             &mut lanes,
@@ -418,36 +446,34 @@ mod tests {
         let (reply_tx, _reply_rx) = oneshot::channel();
         handle_request(
             PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 5.0, 6.0),
-                kind: SnapshotSaveKind::ExplicitFlush,
+                snapshot: player_snapshot(player_id, 5.0, 6.0),
+                urgency: SaveUrgency::FlushNow,
                 reply: Some(reply_tx),
             },
             &mut lanes,
         );
 
-        let lane = lanes.get_mut(&player_id).expect("lane");
-        assert!(lane.pending_autosave.is_none());
-
-        let dispatch = lane.next_dispatch().expect("dispatch");
-        assert_eq!(dispatch.snapshot.local_pos, LocalPos::new(5.0, 6.0));
-        assert!(matches!(dispatch.kind, DispatchKind::FlushSnapshot { .. }));
+        let lane = lanes.get(&player_id).expect("lane");
+        let pending = lane.pending_save.as_ref().expect("pending save");
+        assert!(matches!(pending.urgency, SaveUrgency::FlushNow));
+        assert_eq!(pending.snapshot.runtime.local_pos, LocalPos::new(5.0, 6.0));
+        assert!(pending.reply.is_some());
     }
 
     #[test]
-    fn finalize_disconnect_replaces_pending_autosave_and_preserves_reply() {
+    fn exit_replaces_pending_save() {
         let player_id = PlayerId::from(3);
         let mut lanes = HashMap::new();
 
         handle_request(
             PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 1.0, 2.0),
-                kind: SnapshotSaveKind::Autosave,
+                snapshot: player_snapshot(player_id, 1.0, 2.0),
+                urgency: SaveUrgency::Autosave,
                 reply: None,
             },
             &mut lanes,
         );
 
-        let disconnect_snapshot = snapshot(player_id, 7.0, 8.0);
         let (reply_tx, _reply_rx) = oneshot::channel();
         handle_request(
             PlayerPersistenceRequest::CommitPlayerExit {
@@ -455,265 +481,104 @@ mod tests {
                 username: "alice".to_string(),
                 server_id: "ch1-core".to_string(),
                 connection_id: "conn-1".to_string(),
-                snapshot: disconnect_snapshot,
+                snapshot: exit_snapshot(player_id, 7.0, 8.0),
                 reply: reply_tx,
             },
             &mut lanes,
         );
 
-        let lane = lanes.get_mut(&player_id).expect("lane");
-        assert!(lane.pending_autosave.is_none());
-
-        let dispatch = lane.next_dispatch().expect("dispatch");
-        assert_eq!(dispatch.snapshot.local_pos, LocalPos::new(7.0, 8.0));
-        match dispatch.kind {
-            DispatchKind::CommitPlayerExit {
-                exit_kind,
-                username,
-                server_id,
-                connection_id,
-                ..
-            } => {
-                assert_eq!(exit_kind, PlayerExitKind::Disconnect);
-                assert_eq!(username, "alice");
-                assert_eq!(server_id, "ch1-core");
-                assert_eq!(connection_id, "conn-1");
-            }
-            DispatchKind::Autosave | DispatchKind::FlushSnapshot { .. } => {
-                panic!("expected finalize disconnect dispatch")
-            }
-        }
+        let lane = lanes.get(&player_id).expect("lane");
+        assert!(lane.pending_save.is_none());
+        assert!(lane.pending_exit.is_some());
     }
 
     #[test]
-    fn prepare_handoff_replaces_pending_autosave_and_preserves_reply() {
-        let player_id = PlayerId::from(30);
-        let mut lanes = HashMap::new();
-
-        handle_request(
-            PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 1.0, 2.0),
-                kind: SnapshotSaveKind::Autosave,
-                reply: None,
-            },
-            &mut lanes,
-        );
-
-        let handoff_snapshot = snapshot(player_id, 9.0, 10.0);
-        let (reply_tx, _reply_rx) = oneshot::channel();
-        handle_request(
-            PlayerPersistenceRequest::CommitPlayerExit {
-                exit_kind: PlayerExitKind::Handoff,
-                username: "alice".to_string(),
-                server_id: "ch1-core".to_string(),
-                connection_id: "conn-9".to_string(),
-                snapshot: handoff_snapshot,
-                reply: reply_tx,
-            },
-            &mut lanes,
-        );
-
-        let lane = lanes.get_mut(&player_id).expect("lane");
-        assert!(lane.pending_autosave.is_none());
-
-        let dispatch = lane.next_dispatch().expect("dispatch");
-        assert_eq!(dispatch.snapshot.local_pos, LocalPos::new(9.0, 10.0));
-        match dispatch.kind {
-            DispatchKind::CommitPlayerExit {
-                exit_kind,
-                username,
-                server_id,
-                connection_id,
-                ..
-            } => {
-                assert_eq!(exit_kind, PlayerExitKind::Handoff);
-                assert_eq!(username, "alice");
-                assert_eq!(server_id, "ch1-core");
-                assert_eq!(connection_id, "conn-9");
-            }
-            DispatchKind::Autosave | DispatchKind::FlushSnapshot { .. } => {
-                panic!("expected prepare handoff dispatch")
-            }
-        }
-    }
-
-    #[test]
-    fn failed_autosave_does_not_retry_after_priority_op_is_queued() {
+    fn failed_autosave_retries_when_no_newer_state_arrives() {
         let player_id = PlayerId::from(4);
-        let autosave_snapshot = snapshot(player_id, 1.0, 2.0);
         let mut lanes = HashMap::new();
+        let snapshot = player_snapshot(player_id, 1.0, 2.0);
 
         handle_request(
             PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: autosave_snapshot.clone(),
-                kind: SnapshotSaveKind::Autosave,
+                snapshot: snapshot.clone(),
+                urgency: SaveUrgency::Autosave,
                 reply: None,
             },
             &mut lanes,
         );
 
         let lane = lanes.get_mut(&player_id).expect("lane");
-        let dispatch = lane.next_dispatch().expect("autosave dispatch");
-        assert!(matches!(dispatch.kind, DispatchKind::Autosave));
+        let dispatch = lane.next_dispatch().expect("dispatch");
         lane.in_flight = true;
-
-        let (reply_tx, _reply_rx) = oneshot::channel();
-        handle_request(
-            PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 5.0, 6.0),
-                kind: SnapshotSaveKind::ExplicitFlush,
-                reply: Some(reply_tx),
-            },
-            &mut lanes,
-        );
 
         handle_completed_dispatch(
             CompletedDispatch {
                 player_id,
-                snapshot: autosave_snapshot,
-                kind: DispatchKind::Autosave,
+                kind: dispatch.kind,
                 result: Err("autosave failed".to_string()),
             },
             &mut lanes,
         );
 
         let lane = lanes.get(&player_id).expect("lane");
-        assert!(lane.pending_autosave.is_none());
-        assert!(lane.retry_at.is_none());
-        assert!(lane.has_pending_priority_op());
+        assert_eq!(
+            lane.pending_save
+                .as_ref()
+                .expect("retry save")
+                .snapshot
+                .runtime
+                .local_pos,
+            snapshot.runtime.local_pos
+        );
+        assert!(lane.retry_at.is_some());
     }
 
     #[test]
-    fn ready_players_prioritize_disconnects_and_flushes_over_autosaves() {
+    fn ready_players_prioritize_exit_then_flush_then_autosave() {
         let now = Instant::now();
         let autosave_player = PlayerId::from(20);
         let flush_player = PlayerId::from(21);
-        let disconnect_player = PlayerId::from(22);
+        let exit_player = PlayerId::from(22);
 
         let mut lanes = HashMap::new();
         lanes.insert(
             autosave_player,
             PlayerPersistenceLane {
-                in_flight: false,
-                pending_autosave: Some(snapshot(autosave_player, 1.0, 2.0)),
-                pending_priority_ops: VecDeque::new(),
-                retry_at: None,
+                pending_save: Some(PendingSave {
+                    snapshot: player_snapshot(autosave_player, 1.0, 2.0),
+                    urgency: SaveUrgency::Autosave,
+                    reply: None,
+                }),
+                ..Default::default()
             },
         );
         lanes.insert(
             flush_player,
             PlayerPersistenceLane {
-                in_flight: false,
-                pending_autosave: None,
-                pending_priority_ops: VecDeque::from([PendingPriorityOp::FlushSnapshot {
-                    snapshot: snapshot(flush_player, 3.0, 4.0),
-                    reply: oneshot::channel().0,
-                }]),
-                retry_at: None,
+                pending_save: Some(PendingSave {
+                    snapshot: player_snapshot(flush_player, 3.0, 4.0),
+                    urgency: SaveUrgency::FlushNow,
+                    reply: Some(oneshot::channel().0),
+                }),
+                ..Default::default()
             },
         );
         lanes.insert(
-            disconnect_player,
+            exit_player,
             PlayerPersistenceLane {
-                in_flight: false,
-                pending_autosave: None,
-                pending_priority_ops: VecDeque::from([PendingPriorityOp::CommitPlayerExit {
+                pending_exit: Some(PendingExit {
                     exit_kind: PlayerExitKind::Disconnect,
                     username: "bob".to_string(),
                     server_id: "ch1-core".to_string(),
                     connection_id: "conn-2".to_string(),
-                    snapshot: snapshot(disconnect_player, 5.0, 6.0),
+                    snapshot: exit_snapshot(exit_player, 5.0, 6.0),
                     reply: oneshot::channel().0,
-                }]),
-                retry_at: None,
+                }),
+                ..Default::default()
             },
         );
 
         let ready = ready_player_ids(&lanes, now);
-        assert_eq!(ready.len(), 3);
-        assert!(ready[..2].contains(&flush_player));
-        assert!(ready[..2].contains(&disconnect_player));
-        assert_eq!(ready[2], autosave_player);
-    }
-
-    #[test]
-    fn stale_autosave_result_is_dropped_without_retry() {
-        let player_id = PlayerId::from(31);
-        let mut lanes = HashMap::new();
-
-        handle_request(
-            PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 9.0, 10.0),
-                kind: SnapshotSaveKind::Autosave,
-                reply: None,
-            },
-            &mut lanes,
-        );
-
-        let lane = lanes.get_mut(&player_id).expect("lane");
-        let dispatch = lane.next_dispatch().expect("dispatch");
-        lane.in_flight = true;
-        handle_completed_dispatch(
-            CompletedDispatch {
-                player_id,
-                snapshot: dispatch.snapshot,
-                kind: dispatch.kind,
-                result: Ok(()),
-            },
-            &mut lanes,
-        );
-
-        assert!(!lanes.contains_key(&player_id));
-    }
-
-    #[test]
-    fn failed_handoff_preserves_later_autosaves() {
-        let player_id = PlayerId::from(32);
-        let mut lanes = HashMap::new();
-
-        let handoff_snapshot = snapshot(player_id, 9.0, 10.0);
-        let (reply_tx, _reply_rx) = oneshot::channel();
-        handle_request(
-            PlayerPersistenceRequest::CommitPlayerExit {
-                exit_kind: PlayerExitKind::Handoff,
-                username: "alice".to_string(),
-                server_id: "ch1-core".to_string(),
-                connection_id: "conn-9".to_string(),
-                snapshot: handoff_snapshot.clone(),
-                reply: reply_tx,
-            },
-            &mut lanes,
-        );
-
-        let lane = lanes.get_mut(&player_id).expect("lane");
-        let dispatch = lane.next_dispatch().expect("dispatch");
-        lane.in_flight = true;
-        handle_completed_dispatch(
-            CompletedDispatch {
-                player_id,
-                snapshot: handoff_snapshot,
-                kind: dispatch.kind,
-                result: Err("handoff failed".to_string()),
-            },
-            &mut lanes,
-        );
-
-        handle_request(
-            PlayerPersistenceRequest::SaveSnapshot {
-                snapshot: snapshot(player_id, 15.0, 16.0),
-                kind: SnapshotSaveKind::Autosave,
-                reply: None,
-            },
-            &mut lanes,
-        );
-
-        let lane = lanes.get(&player_id).expect("lane");
-        assert_eq!(
-            lane.pending_autosave
-                .as_ref()
-                .expect("pending autosave")
-                .local_pos,
-            LocalPos::new(15.0, 16.0)
-        );
+        assert_eq!(ready, vec![exit_player, flush_player, autosave_player]);
     }
 }

@@ -15,6 +15,7 @@ zohar-map-port = { path = "../zohar-map-port" }
 zohar-net = { path = "../zohar-net", default-features = false, features = ["net-game"] }
 zohar-protocol = { path = "../zohar-protocol", default-features = false, features = ["game", "token"] }
 zohar-sim = { path = "../zohar-sim" }
+zohar-gameplay = { path = "../zohar-gameplay" }
 
 anyhow.workspace = true
 clap.workspace = true

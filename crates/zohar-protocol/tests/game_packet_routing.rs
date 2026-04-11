@@ -5,8 +5,9 @@ use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use zohar_protocol::control_pkt::ControlS2c;
 use zohar_protocol::game_pkt::handshake::HandshakeGameC2sSpecific;
+use zohar_protocol::game_pkt::ingame::stats::StatsS2c;
 use zohar_protocol::game_pkt::ingame::{self, Skill};
-use zohar_protocol::game_pkt::loading::{LoadingC2sSpecific, LoadingS2cSpecific};
+use zohar_protocol::game_pkt::loading::LoadingC2sSpecific;
 use zohar_protocol::game_pkt::login::{LoginC2sSpecific, LoginS2cSpecific};
 use zohar_protocol::game_pkt::select::{SelectC2sSpecific, SelectS2cSpecific};
 use zohar_protocol::game_pkt::*;
@@ -133,12 +134,13 @@ fn s2c_packets_roundtrip() {
     ));
 
     // Loading
-    let pkt =
-        LoadingS2c::Specific(LoadingS2cSpecific::SetMainCharacterStats { stats: [0u32; 255] });
+    let pkt = LoadingS2c::Stats(StatsS2c::SetMainCharacterStats {
+        stats: Default::default(),
+    });
     let decoded = round_trip(&pkt);
     assert!(matches!(
         decoded,
-        LoadingS2c::Specific(LoadingS2cSpecific::SetMainCharacterStats { .. })
+        LoadingS2c::Stats(StatsS2c::SetMainCharacterStats { .. })
     ));
 
     // Select

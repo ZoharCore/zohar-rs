@@ -2,14 +2,21 @@ pub(crate) mod actions;
 pub(crate) mod chat;
 pub(crate) mod lifecycle;
 pub(crate) mod persistence;
+pub(crate) mod progression;
 
 use crate::outbox::PlayerOutbox;
 use bevy::prelude::*;
+use tokio::sync::oneshot;
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::LocalPos;
-use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch};
+use zohar_domain::entity::player::{
+    PlayerGameplayBootstrap, PlayerId, PlayerPlaytime, PlayerRuntimeEpoch,
+};
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
-use zohar_map_port::{AttackIntent, ChatChannel, ClientTimestamp, Facing72, MovementArg};
+use zohar_gameplay::stats::game::{ActorStatSource, ActorStatState};
+use zohar_map_port::{
+    AttackIntent, ChatChannel, ClientTimestamp, Facing72, MovementArg, PlayerProgressionIntent,
+};
 
 pub(crate) use self::lifecycle as players;
 pub(crate) use crate::runtime::action as action_pipeline;
@@ -73,6 +80,17 @@ pub(crate) struct PlayerAppearanceComp(pub(crate) PlayerAppearance);
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component)]
+pub(crate) struct PlayerProgressionComp(pub(crate) PlayerGameplayBootstrap);
+
+#[derive(Component)]
+pub(crate) struct PlayerStatsComp {
+    pub(crate) source: ActorStatSource,
+    pub(crate) state: ActorStatState,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct PlayerMovementAnimation(pub(crate) MovementAnimation);
 
@@ -91,9 +109,24 @@ pub(crate) struct ChatIntentQueue(pub(crate) Vec<ChatIntent>);
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component, Default)]
+pub(crate) struct PlayerProgressionIntentQueue(pub(crate) Vec<PlayerProgressionIntent>);
+
+#[derive(Debug)]
+pub(crate) struct PendingDurableFlush {
+    pub(crate) reply_rx: oneshot::Receiver<crate::persistence::PlayerPersistenceResult>,
+}
+
+#[derive(Component, Default)]
+pub(crate) struct PlayerPendingDurableFlush(pub(crate) Option<PendingDurableFlush>);
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct PlayerPersistenceState {
     pub(crate) dirty: bool,
     pub(crate) runtime_epoch: PlayerRuntimeEpoch,
+    pub(crate) persisted_playtime: PlayerPlaytime,
+    pub(crate) entered_map_at: crate::runtime::time::SimInstant,
     pub(crate) next_autosave_at: crate::runtime::time::SimInstant,
 }

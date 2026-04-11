@@ -8,19 +8,13 @@ use std::future::Future;
 
 use crate::DbResult;
 #[cfg(feature = "db-game")]
-use zohar_domain::Empire as DomainEmpire;
+use zohar_domain::entity::player::{
+    PlayerBaseAppearance as DomainAppearanceVariant, PlayerClass as DomainPlayerClass,
+    PlayerGender as DomainPlayerGender, PlayerId, PlayerRuntimeEpoch, PlayerSnapshot,
+};
 #[cfg(feature = "db-game")]
-use zohar_domain::PlayerExitKind;
-#[cfg(feature = "db-game")]
-use zohar_domain::entity::player::PlayerBaseAppearance as DomainAppearanceVariant;
-#[cfg(feature = "db-game")]
-use zohar_domain::entity::player::PlayerClass as DomainPlayerClass;
-#[cfg(feature = "db-game")]
-use zohar_domain::entity::player::PlayerGender as DomainPlayerGender;
-#[cfg(feature = "db-game")]
-use zohar_domain::entity::player::PlayerRuntimeSnapshot;
-#[cfg(feature = "db-game")]
-use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch};
+use zohar_domain::{Empire as DomainEmpire, PlayerExitKind};
+
 // =============================================================================
 // Response Types (Portable across backends)
 // =============================================================================
@@ -45,29 +39,68 @@ pub struct ProfileRow {
 
 /// Player character data.
 #[cfg(feature = "db-game")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerCoreStatAllocationRow {
+    pub allocated_str: i32,
+    pub allocated_vit: i32,
+    pub allocated_dex: i32,
+    pub allocated_int: i32,
+}
+
+/// Player character data.
+#[cfg(feature = "db-game")]
 #[derive(Debug, Clone)]
-pub struct PlayerRow {
+pub struct PlayerSummaryRow {
     pub id: PlayerId,
     pub username: String,
     pub slot: i32,
     pub name: String,
-    pub level: i32,
     pub class: DomainPlayerClass,
     pub gender: DomainPlayerGender,
     pub appearance: DomainAppearanceVariant,
-    pub stat_str: i32,
-    pub stat_vit: i32,
-    pub stat_dex: i32,
-    pub stat_int: i32,
+    pub level: i32,
+    pub playtime_secs: i64,
+    pub core_stat_allocations: PlayerCoreStatAllocationRow,
+}
+
+/// Player bootstrap data for gameplay systems such as stats.
+#[cfg(feature = "db-game")]
+#[derive(Debug, Clone)]
+pub struct PlayerStatsBootstrapRow {
+    pub id: PlayerId,
+    pub username: String,
+    pub slot: i32,
+    pub name: String,
+    pub class: DomainPlayerClass,
+    pub gender: DomainPlayerGender,
+    pub appearance: DomainAppearanceVariant,
+    pub level: i32,
+    pub exp_in_level: i64,
+    pub core_stat_allocations: PlayerCoreStatAllocationRow,
+    pub stat_reset_count: i32,
+    pub playtime_secs: i64,
+    pub current_hp: Option<i32>,
+    pub current_sp: Option<i32>,
+    pub current_stamina: Option<i32>,
+}
+
+/// Persisted runtime state for a player.
+#[cfg(feature = "db-game")]
+#[derive(Debug, Clone)]
+pub struct PlayerRuntimeStateRow {
+    pub player_id: PlayerId,
     pub map_key: Option<String>,
     pub local_x: Option<f32>,
     pub local_y: Option<f32>,
+    pub current_hp: Option<i32>,
+    pub current_sp: Option<i32>,
+    pub current_stamina: Option<i32>,
     pub runtime_epoch: PlayerRuntimeEpoch,
 }
 
 #[cfg(feature = "db-game")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeStateSaveOutcome {
+pub enum PlayerWriteOutcome {
     Saved,
     StaleOwner,
 }
@@ -76,7 +109,7 @@ pub enum RuntimeStateSaveOutcome {
 #[cfg(feature = "db-game")]
 #[derive(Debug, Clone)]
 pub enum CreatePlayerOutcome {
-    Created(PlayerRow),
+    Created(PlayerSummaryRow),
     NameTaken,
 }
 
@@ -136,12 +169,16 @@ pub trait GameDb: Clone + Send + Sync + 'static {
     type Players<'a>: PlayersView
     where
         Self: 'a;
+    type PlayerStates<'a>: PlayerStatesView
+    where
+        Self: 'a;
     type Sessions<'a>: SessionsView
     where
         Self: 'a;
 
     fn profiles(&self) -> Self::Profiles<'_>;
     fn players(&self) -> Self::Players<'_>;
+    fn player_states(&self) -> Self::PlayerStates<'_>;
     fn sessions(&self) -> Self::Sessions<'_>;
 }
 
@@ -170,18 +207,21 @@ pub trait ProfilesView: Send + Sync {
 /// View trait for player character operations.
 #[cfg(feature = "db-game")]
 pub trait PlayersView: Send + Sync {
-    fn list_for_user(
+    fn list_summaries_for_user(
         &self,
         username: &str,
-    ) -> impl Future<Output = DbResult<Vec<PlayerRow>>> + Send;
+    ) -> impl Future<Output = DbResult<Vec<PlayerSummaryRow>>> + Send;
 
-    fn find_by_slot(
+    fn find_summary_by_slot(
         &self,
         username: &str,
         slot: u8,
-    ) -> impl Future<Output = DbResult<Option<PlayerRow>>> + Send;
+    ) -> impl Future<Output = DbResult<Option<PlayerSummaryRow>>> + Send;
 
-    fn find_by_id(&self, id: PlayerId) -> impl Future<Output = DbResult<Option<PlayerRow>>> + Send;
+    fn find_stats_bootstrap_by_id(
+        &self,
+        id: PlayerId,
+    ) -> impl Future<Output = DbResult<Option<PlayerStatsBootstrapRow>>> + Send;
 
     fn create(
         &self,
@@ -191,10 +231,6 @@ pub trait PlayersView: Send + Sync {
         class: DomainPlayerClass,
         gender: DomainPlayerGender,
         appearance: DomainAppearanceVariant,
-        stat_str: u8,
-        stat_vit: u8,
-        stat_dex: u8,
-        stat_int: u8,
     ) -> impl Future<Output = DbResult<CreatePlayerOutcome>> + Send;
 
     fn delete_with_code(
@@ -203,11 +239,25 @@ pub trait PlayersView: Send + Sync {
         slot: u8,
         delete_code: &str,
     ) -> impl Future<Output = DbResult<bool>> + Send;
+}
 
-    fn save_runtime_state(
+/// View trait for persisted player runtime state operations.
+#[cfg(feature = "db-game")]
+pub trait PlayerStatesView: Send + Sync {
+    fn list_for_user(
         &self,
-        snapshot: &PlayerRuntimeSnapshot,
-    ) -> impl Future<Output = DbResult<RuntimeStateSaveOutcome>> + Send;
+        username: &str,
+    ) -> impl Future<Output = DbResult<Vec<PlayerRuntimeStateRow>>> + Send;
+
+    fn find_by_player_id(
+        &self,
+        player_id: PlayerId,
+    ) -> impl Future<Output = DbResult<Option<PlayerRuntimeStateRow>>> + Send;
+
+    fn save_player_snapshot(
+        &self,
+        snapshot: &PlayerSnapshot,
+    ) -> impl Future<Output = DbResult<PlayerWriteOutcome>> + Send;
 }
 
 /// View trait for session management operations.
@@ -267,7 +317,7 @@ pub trait SessionsView: Send + Sync {
         username: &str,
         server_id: &str,
         connection_id: &str,
-        snapshot: &PlayerRuntimeSnapshot,
+        snapshot: &PlayerSnapshot,
     ) -> impl Future<Output = DbResult<()>> + Send;
 
     fn update_heartbeat(&self, username: &str) -> impl Future<Output = DbResult<()>> + Send;

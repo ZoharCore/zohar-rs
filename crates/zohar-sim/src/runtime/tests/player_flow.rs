@@ -19,9 +19,9 @@ use super::state::{
 use super::util::sample_player_motion_at;
 use crate::MapEventSender;
 use crate::motion::{EntityMotionSpeedTable, MotionMoveMode, PlayerMotionProfileKey};
-use crate::persistence::PlayerPersistenceCoordinatorHandle;
+use crate::persistence::{PlayerPersistenceCoordinatorHandle, player_persistence_channel};
 use crate::types::MapInstanceKey;
-use zohar_domain::appearance::{EntityKind, PlayerAppearance};
+use zohar_domain::appearance::{EntityKind, PlayerAppearance, PlayerVisualProfile};
 use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize};
 use zohar_domain::entity::mob::spawn::{
     Direction, FacingStrategy, SpawnArea, SpawnRuleDef, SpawnTemplate,
@@ -29,14 +29,21 @@ use zohar_domain::entity::mob::spawn::{
 use zohar_domain::entity::mob::{
     MobBattleType, MobId, MobKind, MobPrototypeDef, MobRank, PortalBehavior,
 };
-use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::player::skill::SkillId;
+use zohar_domain::entity::player::{
+    CoreStatAllocations, PlayerClass, PlayerGameplayBootstrap, PlayerId, PlayerPlaytime,
+    PlayerProgressionSnapshot, PlayerRuntimeSnapshot, PlayerSnapshot,
+};
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 use zohar_domain::{BehaviorFlags, MapId, TerrainFlags};
+use zohar_gameplay::stats::game::{
+    ActorStatSource, CoreStatBlock, DeterministicGrowthVersion, PlayerGrowthFormula,
+    PlayerResourceFormula, PlayerStatSource, SourceSpeeds, Stat,
+};
 use zohar_map_port::{
     AttackIntent, AttackTargetIntent, ChatChannel, ChatIntent as PortChatIntent, ClientIntent,
-    ClientIntentMsg, ClientTimestamp, EnterMsg, Facing72, MoveIntent, MovementArg, PlayerEvent,
-    PortalDestination,
+    ClientIntentMsg, ClientTimestamp, CoreStatAllocationIntent, CoreStatKind, EnterMsg, Facing72,
+    MoveIntent, MovementArg, PlayerEvent, PlayerProgressionIntent, PortalDestination,
 };
 
 fn sim_ms(value: u64) -> super::state::SimInstant {
@@ -68,6 +75,7 @@ fn test_configs(map_key: MapInstanceKey) -> (SharedConfig, MapConfig) {
         SharedConfig {
             motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
             mobs: Arc::new(HashMap::new()),
+            player_stats: Arc::new(test_player_stat_rules()),
             wander: WanderConfig::default(),
             mob_chat: Arc::new(MobChatContent::default()),
         },
@@ -80,6 +88,79 @@ fn test_configs(map_key: MapInstanceKey) -> (SharedConfig, MapConfig) {
             spawn_rules: Vec::new(),
         },
     )
+}
+
+fn test_player_stat_rules() -> crate::PlayerStatRules {
+    fn class_config(
+        class: PlayerClass,
+        base_stats: CoreStatBlock,
+    ) -> crate::PlayerClassStatsConfig {
+        crate::PlayerClassStatsConfig {
+            base_stats,
+            stat_source: ActorStatSource::Player(PlayerStatSource {
+                resources: PlayerResourceFormula {
+                    base_max_hp: 600,
+                    base_max_sp: 200,
+                    base_max_stamina: 800,
+                    hp_per_ht: 40,
+                    sp_per_iq: 20,
+                    stamina_per_ht: 5,
+                },
+                growth: PlayerGrowthFormula {
+                    hp_per_level: (36, 44),
+                    sp_per_level: (18, 22),
+                    stamina_per_level: (5, 8),
+                    version: DeterministicGrowthVersion::V1,
+                },
+                balance: zohar_gameplay::stats::game::default_player_balance_rules(class),
+                speeds: SourceSpeeds::default(),
+            }),
+        }
+    }
+
+    crate::PlayerStatRules::new(
+        crate::PlayerClassStatsTable::new(vec![
+            (
+                PlayerClass::Warrior,
+                class_config(PlayerClass::Warrior, CoreStatBlock::new(6, 4, 3, 3)),
+            ),
+            (
+                PlayerClass::Ninja,
+                class_config(PlayerClass::Ninja, CoreStatBlock::new(4, 3, 6, 3)),
+            ),
+            (
+                PlayerClass::Sura,
+                class_config(PlayerClass::Sura, CoreStatBlock::new(5, 3, 3, 5)),
+            ),
+            (
+                PlayerClass::Shaman,
+                class_config(PlayerClass::Shaman, CoreStatBlock::new(3, 4, 3, 6)),
+            ),
+        ]),
+        crate::LevelExpTable::new((1..=120).map(|level| crate::LevelExpEntry {
+            level,
+            next_exp: i64::from(level) * 300,
+            death_loss_pct: 0,
+        })),
+    )
+}
+
+fn default_gameplay_bootstrap(
+    player_id: PlayerId,
+    class: PlayerClass,
+    level: i32,
+) -> PlayerGameplayBootstrap {
+    PlayerGameplayBootstrap {
+        player_id,
+        class,
+        level,
+        exp_in_level: 0,
+        core_stat_allocations: CoreStatAllocations::default(),
+        stat_reset_count: 0,
+        current_hp: None,
+        current_sp: None,
+        current_stamina: None,
+    }
 }
 
 fn test_navigator(
@@ -246,15 +327,50 @@ fn enter_player_with_appearance(
     initial_pos: LocalPos,
     appearance: PlayerAppearance,
 ) -> Receiver<PlayerEvent> {
+    enter_player_with_gameplay(
+        map_events,
+        gameplay_bootstrap_from_appearance(player_id, &appearance),
+        player_net_id,
+        initial_pos,
+        appearance,
+    )
+}
+
+fn enter_player_with_gameplay(
+    map_events: &MapEventSender,
+    gameplay: PlayerGameplayBootstrap,
+    player_net_id: EntityId,
+    initial_pos: LocalPos,
+    appearance: PlayerAppearance,
+) -> Receiver<PlayerEvent> {
     map_events
         .enter_player(EnterMsg {
-            player_id,
+            player_id: gameplay.player_id,
             player_net_id,
             runtime_epoch: Default::default(),
+            playtime: zohar_domain::entity::player::PlayerPlaytime::ZERO,
             initial_pos,
-            appearance,
+            gameplay,
+            visual_profile: PlayerVisualProfile {
+                name: appearance.name.clone(),
+                gender: appearance.gender,
+                empire: appearance.empire,
+                body_part: appearance.body_part,
+                guild_id: appearance.guild_id,
+            },
         })
         .expect("player enter")
+}
+
+fn gameplay_bootstrap_from_appearance(
+    player_id: PlayerId,
+    appearance: &PlayerAppearance,
+) -> PlayerGameplayBootstrap {
+    default_gameplay_bootstrap(
+        player_id,
+        appearance.class,
+        i32::try_from(appearance.level).unwrap_or(i32::MAX),
+    )
 }
 
 fn attack_target(
@@ -314,6 +430,22 @@ fn set_movement_animation(
         .expect("movement animation intent");
 }
 
+fn send_core_stat_intent(
+    map_events: &MapEventSender,
+    player_id: PlayerId,
+    stat: CoreStatKind,
+    delta: i8,
+) {
+    map_events
+        .try_send_client_intent(ClientIntentMsg {
+            player_id,
+            intent: ClientIntent::Progression(PlayerProgressionIntent::CoreStat(
+                CoreStatAllocationIntent { stat, delta },
+            )),
+        })
+        .expect("progression intent");
+}
+
 fn drain_player_events(rx: &mut Receiver<PlayerEvent>) -> Vec<PlayerEvent> {
     let mut events = Vec::new();
     while let Ok(event) = rx.try_recv() {
@@ -363,6 +495,58 @@ fn portal_entry_destinations(events: &[PlayerEvent]) -> Vec<PortalDestination> {
             _ => None,
         })
         .collect()
+}
+
+fn stat_events(events: &[PlayerEvent]) -> Vec<(EntityId, Stat, i32, i32)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::SetEntityStat {
+                entity_id,
+                stat,
+                delta,
+                absolute,
+            } => Some((*entity_id, *stat, *delta, *absolute)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn info_messages(events: &[PlayerEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::Chat {
+                channel: ChatChannel::Info,
+                message,
+                ..
+            } => Some(
+                String::from_utf8_lossy(message)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+fn pending_snapshot(player_id: PlayerId) -> PlayerSnapshot {
+    PlayerSnapshot {
+        runtime: PlayerRuntimeSnapshot {
+            id: player_id,
+            runtime_epoch: Default::default(),
+            map_key: "queued_map".to_string(),
+            local_pos: LocalPos::new(1.0, 1.0),
+            playtime: PlayerPlaytime::ZERO,
+            current_hp: None,
+            current_sp: None,
+            current_stamina: None,
+        },
+        progression: PlayerProgressionSnapshot {
+            core_stat_allocations: CoreStatAllocations::default(),
+            stat_reset_count: 0,
+        },
+    }
 }
 
 fn first_mob_entity(app: &mut App) -> Entity {
@@ -667,6 +851,144 @@ fn player_enter_enqueues_self_spawn_with_details_once() {
     assert!(
         spawn_event_ids(&followup_events).is_empty(),
         "self should be bootstrapped once and stay excluded from AOI diffs"
+    );
+}
+
+#[test]
+fn core_stat_progression_intent_emits_stat_deltas() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_102);
+    let initial_pos = LocalPos::new(6_400.0, 6_400.0);
+    let appearance = PlayerAppearance {
+        name: "Alice".to_string(),
+        level: 2,
+        ..Default::default()
+    };
+    let mut gameplay = gameplay_bootstrap_from_appearance(player_id, &appearance);
+    gameplay.current_hp = Some(640);
+
+    let mut map_rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay,
+        player_net_id,
+        initial_pos,
+        appearance,
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    send_core_stat_intent(&inbound_tx, player_id, CoreStatKind::St, 1);
+    advance_tick(&mut app);
+
+    let events = drain_player_events(&mut map_rx);
+    let stat_events = stat_events(&events);
+
+    assert!(
+        stat_events.iter().any(|(entity_id, _, delta, absolute)| {
+            *entity_id == player_net_id && *delta == 1 && *absolute == 7
+        }),
+        "expected core stat increment event, got {stat_events:?}"
+    );
+    assert!(
+        stat_events.iter().any(|(entity_id, _, delta, absolute)| {
+            *entity_id == player_net_id && *delta == -1 && *absolute == 2
+        }),
+        "expected stat point decrement event, got {stat_events:?}"
+    );
+}
+
+#[test]
+fn core_stat_progression_reports_cap_feedback() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_103);
+    let initial_pos = LocalPos::new(6_400.0, 6_400.0);
+    let appearance = PlayerAppearance {
+        name: "Alice".to_string(),
+        level: 30,
+        ..Default::default()
+    };
+    let mut gameplay = gameplay_bootstrap_from_appearance(player_id, &appearance);
+    gameplay.core_stat_allocations.allocated_str = 83;
+
+    let mut map_rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay,
+        player_net_id,
+        initial_pos,
+        appearance,
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    send_core_stat_intent(&inbound_tx, player_id, CoreStatKind::St, 1);
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    send_core_stat_intent(&inbound_tx, player_id, CoreStatKind::St, 1);
+    advance_tick(&mut app);
+
+    let events = drain_player_events(&mut map_rx);
+    assert!(stat_events(&events).is_empty());
+    assert!(
+        info_messages(&events)
+            .iter()
+            .any(|message| message.contains("max (90)"))
+    );
+}
+
+#[test]
+fn core_stat_progression_does_not_apply_when_flush_enqueue_fails() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (handle, _rx) = player_persistence_channel(1);
+    handle
+        .try_schedule_autosave(pending_snapshot(PlayerId::from(999)))
+        .expect("prefill persistence queue");
+    let (mut app, inbound_tx) = build_runtime_app_with_persistence(shared, map, handle, true);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_104);
+    let initial_pos = LocalPos::new(6_400.0, 6_400.0);
+    let appearance = PlayerAppearance {
+        name: "Alice".to_string(),
+        level: 2,
+        ..Default::default()
+    };
+
+    let mut map_rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay_bootstrap_from_appearance(player_id, &appearance),
+        player_net_id,
+        initial_pos,
+        appearance,
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    send_core_stat_intent(&inbound_tx, player_id, CoreStatKind::St, 1);
+    advance_tick(&mut app);
+
+    let events = drain_player_events(&mut map_rx);
+    assert!(
+        stat_events(&events).is_empty(),
+        "unexpected stat events: {events:?}"
+    );
+    assert!(
+        info_messages(&events)
+            .iter()
+            .any(|message| message.contains("queue failure")),
+        "expected queue failure feedback, got {events:?}"
     );
 }
 

@@ -10,15 +10,22 @@ use super::runtime::{
 use super::session_health::{SessionTick, SessionTracker};
 use super::types::{PhaseResult, SessionEnd, SessionLeaseAction};
 use crate::PlayerCreateBaseStatTable;
-use crate::adapters::{ToDomain, ToProtocol, ToProtocolPlayer};
+use crate::adapters::{
+    PlayerSummaryRowExt, PlayerSummaryStats, ToDomain, ToProtocol, ToProtocolPlayer,
+};
 use crate::infra::MapEndpointResolver;
 use crate::{ContentCoords, EmpireStartMaps, GameContext, GatewayContext, ServerDrainController};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
-use zohar_db::{CreatePlayerOutcome, Game, GameDb, PlayersView, ProfilesView, SessionsView};
+use zohar_db::{
+    CreatePlayerOutcome, Game, GameDb, PlayerRuntimeStateRow, PlayerStatesView, PlayerSummaryRow,
+    PlayersView, ProfilesView, SessionsView,
+};
 use zohar_domain::Empire as DomainEmpire;
+use zohar_gameplay::stats::game::PlayerStatRules;
 use zohar_net::connection::NextConnection;
 use zohar_net::connection::game_conn::{Select as ThisPhase, SelectedPlayer};
 use zohar_net::{Connection, ConnectionPhaseExt};
@@ -42,7 +49,7 @@ struct SelectCtx<'a> {
 #[derive(Clone)]
 struct SelectRuntime {
     db: Game,
-    player_create_base_stats: Arc<PlayerCreateBaseStatTable>,
+    player_stats: SelectPlayerStats,
     routing: SelectRouting,
     drain: Option<ServerDrainController>,
     heartbeat_interval: std::time::Duration,
@@ -56,6 +63,28 @@ enum SelectRouting {
     Gateway { empire_start_maps: EmpireStartMaps },
 }
 
+#[derive(Clone)]
+enum SelectPlayerStats {
+    Rules(Arc<PlayerStatRules>),
+    CreateBase(Arc<PlayerCreateBaseStatTable>),
+}
+
+impl SelectPlayerStats {
+    fn supports_class(&self, class: zohar_domain::entity::player::PlayerClass) -> bool {
+        match self {
+            Self::Rules(rules) => rules.supports_class(class),
+            Self::CreateBase(base_stats) => base_stats.get(class).is_some(),
+        }
+    }
+
+    fn summary_stats(&self) -> PlayerSummaryStats<'_> {
+        match self {
+            Self::Rules(rules) => PlayerSummaryStats::Rules(rules.as_ref()),
+            Self::CreateBase(base_stats) => PlayerSummaryStats::CreateBase(base_stats.as_ref()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SelectMode {
     CoreTransition,
@@ -63,14 +92,14 @@ enum SelectMode {
 }
 
 async fn handle_enter(state: &mut SelectCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
-    let players = state
-        .runtime
-        .db
-        .players()
-        .list_for_user(&state.username)
-        .await?;
+    let players_view = state.runtime.db.players();
+    let runtime_states_view = state.runtime.db.player_states();
+    let (players, runtime_states) = tokio::try_join!(
+        players_view.list_summaries_for_user(&state.username),
+        runtime_states_view.list_for_user(&state.username),
+    )?;
     Ok(PhaseEffects::send(
-        build_players_pkt(&players, state).await?,
+        build_players_pkt(&players, &runtime_states, state).await?,
     ))
 }
 
@@ -157,7 +186,7 @@ async fn handle_packet(
             }
 
             let (class, gender) = class_gender.to_domain();
-            let Some(base_stats) = state.runtime.player_create_base_stats.get(class) else {
+            if !state.runtime.player_stats.supports_class(class) {
                 warn!(?class, "Missing player class base stat content");
                 return Ok(PhaseEffects::send(
                     SelectS2cSpecific::CreatePlayerResultFail {
@@ -165,7 +194,7 @@ async fn handle_packet(
                     }
                     .into(),
                 ));
-            };
+            }
             let outcome = state
                 .runtime
                 .db
@@ -177,10 +206,6 @@ async fn handle_packet(
                     class,
                     gender,
                     appearance.to_domain(),
-                    base_stats.stat_str,
-                    base_stats.stat_vit,
-                    base_stats.stat_dex,
-                    base_stats.stat_int,
                 )
                 .await?;
 
@@ -195,7 +220,7 @@ async fn handle_packet(
                             ));
                         }
                     };
-                    let endpoint = match resolve_player_endpoint(&player, state).await {
+                    let endpoint = match resolve_player_endpoint(&player, None, state).await {
                         Ok(endpoint) => endpoint,
                         Err(error) => {
                             warn!(
@@ -210,7 +235,9 @@ async fn handle_packet(
                     Ok(PhaseEffects::send(
                         SelectS2cSpecific::CreatePlayerResultOk {
                             slot,
-                            new_player: player.to_domain().to_protocol_player(endpoint),
+                            new_player: player
+                                .to_domain_with_stats(state.runtime.player_stats.summary_stats())
+                                .to_protocol_player(endpoint),
                         }
                         .into(),
                     ))
@@ -271,7 +298,7 @@ async fn handle_packet(
                 .runtime
                 .db
                 .players()
-                .find_by_slot(&state.username, slot_index)
+                .find_summary_by_slot(&state.username, slot_index)
                 .await?;
 
             match player {
@@ -362,7 +389,7 @@ pub(crate) async fn run_select_core(
     let mut state = SelectCtx {
         runtime: SelectRuntime {
             db: ctx.db.clone(),
-            player_create_base_stats: Arc::clone(&ctx.select.player_create_base_stats),
+            player_stats: SelectPlayerStats::Rules(Arc::clone(&ctx.select.player_stats)),
             routing: SelectRouting::Core {
                 coords: Arc::clone(&ctx.coords),
             },
@@ -401,7 +428,9 @@ pub(crate) async fn run_select_gateway(
     let mut state = SelectCtx {
         runtime: SelectRuntime {
             db: ctx.db.clone(),
-            player_create_base_stats: Arc::clone(&ctx.select.player_create_base_stats),
+            player_stats: SelectPlayerStats::CreateBase(Arc::clone(
+                &ctx.select.player_create_base_stats,
+            )),
             routing: SelectRouting::Gateway {
                 empire_start_maps: ctx.select.empire_start_maps.clone(),
             },
@@ -438,16 +467,22 @@ pub(crate) async fn run_select_gateway(
 }
 
 async fn build_players_pkt(
-    db_players: &[zohar_db::PlayerRow],
+    db_players: &[PlayerSummaryRow],
+    runtime_states: &[PlayerRuntimeStateRow],
     state: &SelectCtx<'_>,
 ) -> PhaseResult<SelectS2c> {
     let mut players: [Player; MAX_PLAYER_SLOTS] = std::array::from_fn(|_| Player::empty());
+    let runtime_by_player_id: HashMap<_, _> = runtime_states
+        .iter()
+        .map(|runtime| (runtime.player_id, runtime))
+        .collect();
 
     for (slot, player) in players.iter_mut().enumerate() {
         let Some(db_player) = db_players.iter().find(|p| p.slot as usize == slot) else {
             continue;
         };
-        let endpoint = match resolve_player_endpoint(db_player, state).await {
+        let runtime_state = runtime_by_player_id.get(&db_player.id).copied();
+        let endpoint = match resolve_player_endpoint(db_player, runtime_state, state).await {
             Ok(endpoint) => endpoint,
             Err(error) => {
                 warn!(
@@ -459,7 +494,9 @@ async fn build_players_pkt(
                 WireServerAddr::UNROUTABLE
             }
         };
-        *player = db_player.to_domain().to_protocol_player(endpoint);
+        *player = db_player
+            .to_domain_with_stats(state.runtime.player_stats.summary_stats())
+            .to_protocol_player(endpoint);
     }
 
     for p in db_players {
@@ -480,7 +517,8 @@ async fn build_players_pkt(
 }
 
 async fn resolve_player_endpoint(
-    player: &zohar_db::PlayerRow,
+    player: &PlayerSummaryRow,
+    runtime_state: Option<&PlayerRuntimeStateRow>,
     state: &SelectCtx<'_>,
 ) -> PhaseResult<WireServerAddr> {
     let fallback_empire = state
@@ -493,7 +531,7 @@ async fn resolve_player_endpoint(
         .flatten()
         .and_then(|profile| profile.empire)
         .unwrap_or(DomainEmpire::Red);
-    let map_code = resolve_player_map_code(player, state, fallback_empire)?;
+    let map_code = resolve_player_map_code(runtime_state, state, fallback_empire)?;
     let endpoint = state
         .runtime
         .map_resolver
@@ -519,13 +557,13 @@ async fn resolve_player_endpoint(
 }
 
 fn resolve_player_map_code(
-    player: &zohar_db::PlayerRow,
+    runtime_state: Option<&PlayerRuntimeStateRow>,
     state: &SelectCtx<'_>,
     fallback_empire: DomainEmpire,
 ) -> anyhow::Result<String> {
     match &state.runtime.routing {
         SelectRouting::Core { coords } => {
-            let spawn = coords.resolve_spawn_for_player(Some(player), fallback_empire);
+            let spawn = coords.resolve_spawn_for_player(runtime_state, fallback_empire);
             coords
                 .map_code_by_id(spawn.map_id)
                 .map(ToOwned::to_owned)
@@ -536,7 +574,10 @@ fn resolve_player_map_code(
         SelectRouting::Gateway { empire_start_maps } => {
             // Gateway routing only needs map identity. Core remains source of truth for exact
             // spawn coordinates when DB position is missing.
-            if let Some(map_key) = player.map_key.as_deref().filter(|value| !value.is_empty()) {
+            if let Some(map_key) = runtime_state
+                .and_then(|runtime| runtime.map_key.as_deref())
+                .filter(|value| !value.is_empty())
+            {
                 Ok(map_key.to_owned())
             } else {
                 Ok(empire_start_maps

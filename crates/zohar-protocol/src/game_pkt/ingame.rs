@@ -3,6 +3,7 @@ pub mod combat;
 pub mod fishing;
 pub mod guild;
 pub mod movement;
+pub mod stats;
 pub mod system;
 pub mod trading;
 pub mod world;
@@ -35,6 +36,7 @@ crate::route_packets! {
         Chat(chat::ChatS2c) from 0x04,
         System(system::SystemS2c) from 0x41 | 0x6A | 0x79,
         World(world::WorldS2c) from 0x01 | 0x88,
+        Stats(stats::StatsS2c) from 0x10 | 0x11,
         Trading(trading::TradingS2c) from 0x51,
         Guild(guild::GuildS2c) from 0x61,
         Fishing(fishing::FishingS2c) from 0x71,

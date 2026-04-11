@@ -1,26 +1,22 @@
 use bevy::prelude::Resource;
 
 use tokio::sync::{mpsc, oneshot};
-use zohar_domain::{PlayerExitKind, entity::player::PlayerRuntimeSnapshot};
+use zohar_domain::PlayerExitKind;
+use zohar_domain::entity::player::PlayerSnapshot;
 
 pub type PlayerPersistenceResult = Result<(), String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SnapshotSaveKind {
+pub enum SaveUrgency {
     Autosave,
-    ExplicitFlush,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CriticalPlayerOpRequest {
-    Reserved,
+    FlushNow,
 }
 
 #[derive(Debug)]
 pub enum PlayerPersistenceRequest {
     SaveSnapshot {
-        snapshot: PlayerRuntimeSnapshot,
-        kind: SnapshotSaveKind,
+        snapshot: PlayerSnapshot,
+        urgency: SaveUrgency,
         reply: Option<oneshot::Sender<PlayerPersistenceResult>>,
     },
     CommitPlayerExit {
@@ -28,11 +24,7 @@ pub enum PlayerPersistenceRequest {
         username: String,
         server_id: String,
         connection_id: String,
-        snapshot: PlayerRuntimeSnapshot,
-        reply: oneshot::Sender<PlayerPersistenceResult>,
-    },
-    CommitCriticalOp {
-        request: CriticalPlayerOpRequest,
+        snapshot: PlayerSnapshot,
         reply: oneshot::Sender<PlayerPersistenceResult>,
     },
 }
@@ -62,7 +54,7 @@ impl PlayerPersistenceCoordinatorHandle {
 
     pub fn try_schedule_autosave(
         &self,
-        snapshot: PlayerRuntimeSnapshot,
+        snapshot: PlayerSnapshot,
     ) -> Result<(), PlayerPersistenceQueueError> {
         let Some(tx) = &self.tx else {
             return Ok(());
@@ -70,15 +62,34 @@ impl PlayerPersistenceCoordinatorHandle {
 
         tx.try_send(PlayerPersistenceRequest::SaveSnapshot {
             snapshot,
-            kind: SnapshotSaveKind::Autosave,
+            urgency: SaveUrgency::Autosave,
             reply: None,
         })
         .map_err(map_queue_error)
     }
 
+    pub fn try_schedule_flush(
+        &self,
+        snapshot: PlayerSnapshot,
+    ) -> Result<oneshot::Receiver<PlayerPersistenceResult>, PlayerPersistenceQueueError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let Some(tx) = &self.tx else {
+            let _ = reply_tx.send(Ok(()));
+            return Ok(reply_rx);
+        };
+
+        tx.try_send(PlayerPersistenceRequest::SaveSnapshot {
+            snapshot,
+            urgency: SaveUrgency::FlushNow,
+            reply: Some(reply_tx),
+        })
+        .map_err(map_queue_error)?;
+        Ok(reply_rx)
+    }
+
     pub async fn schedule_flush(
         &self,
-        snapshot: PlayerRuntimeSnapshot,
+        snapshot: PlayerSnapshot,
     ) -> Result<oneshot::Receiver<PlayerPersistenceResult>, PlayerPersistenceQueueError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let Some(tx) = &self.tx else {
@@ -88,7 +99,7 @@ impl PlayerPersistenceCoordinatorHandle {
 
         tx.send(PlayerPersistenceRequest::SaveSnapshot {
             snapshot,
-            kind: SnapshotSaveKind::ExplicitFlush,
+            urgency: SaveUrgency::FlushNow,
             reply: Some(reply_tx),
         })
         .await
@@ -102,7 +113,7 @@ impl PlayerPersistenceCoordinatorHandle {
         username: impl Into<String>,
         server_id: impl Into<String>,
         connection_id: impl Into<String>,
-        snapshot: PlayerRuntimeSnapshot,
+        snapshot: PlayerSnapshot,
     ) -> Result<oneshot::Receiver<PlayerPersistenceResult>, PlayerPersistenceQueueError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let Some(tx) = &self.tx else {
@@ -116,25 +127,6 @@ impl PlayerPersistenceCoordinatorHandle {
             server_id: server_id.into(),
             connection_id: connection_id.into(),
             snapshot,
-            reply: reply_tx,
-        })
-        .await
-        .map_err(|_| PlayerPersistenceQueueError::Closed)?;
-        Ok(reply_rx)
-    }
-
-    pub async fn commit_critical_op(
-        &self,
-        request: CriticalPlayerOpRequest,
-    ) -> Result<oneshot::Receiver<PlayerPersistenceResult>, PlayerPersistenceQueueError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let Some(tx) = &self.tx else {
-            let _ = reply_tx.send(Err("critical player op persistence is disabled".to_string()));
-            return Ok(reply_rx);
-        };
-
-        tx.send(PlayerPersistenceRequest::CommitCriticalOp {
-            request,
             reply: reply_tx,
         })
         .await
@@ -175,63 +167,54 @@ fn map_queue_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{Duration, timeout};
     use zohar_domain::coords::LocalPos;
-    use zohar_domain::entity::player::PlayerId;
+    use zohar_domain::entity::player::{
+        CoreStatAllocations, PlayerId, PlayerPlaytime, PlayerProgressionSnapshot,
+        PlayerRuntimeSnapshot, PlayerSnapshot,
+    };
 
-    fn snapshot(player_id: PlayerId) -> PlayerRuntimeSnapshot {
-        PlayerRuntimeSnapshot {
-            id: player_id,
-            runtime_epoch: Default::default(),
-            map_key: "zohar_map_a1".to_string(),
-            local_pos: LocalPos::new(1.0, 2.0),
+    fn snapshot(player_id: PlayerId) -> PlayerSnapshot {
+        PlayerSnapshot {
+            runtime: PlayerRuntimeSnapshot {
+                id: player_id,
+                runtime_epoch: Default::default(),
+                map_key: "zohar_map_a1".to_string(),
+                playtime: PlayerPlaytime::ZERO,
+                current_hp: None,
+                current_sp: None,
+                current_stamina: None,
+                local_pos: LocalPos::new(1.0, 2.0),
+            },
+            progression: PlayerProgressionSnapshot {
+                core_stat_allocations: CoreStatAllocations::default(),
+                stat_reset_count: 0,
+            },
         }
     }
 
-    #[tokio::test]
-    async fn explicit_flush_waits_for_queue_capacity_instead_of_failing_when_full() {
+    #[test]
+    fn explicit_flush_returns_full_when_queue_capacity_is_exhausted() {
         let (handle, mut rx) = player_persistence_channel(1);
         handle
             .try_schedule_autosave(snapshot(PlayerId::from(1)))
             .expect("enqueue autosave");
 
-        let flush = tokio::spawn({
-            let handle = handle.clone();
-            async move { handle.schedule_flush(snapshot(PlayerId::from(2))).await }
-        });
+        let error = handle
+            .try_schedule_flush(snapshot(PlayerId::from(2)))
+            .expect_err("flush should fail fast when queue is full");
+        assert_eq!(error, PlayerPersistenceQueueError::Full);
 
-        timeout(Duration::from_millis(50), async {
-            loop {
-                if flush.is_finished() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect_err("flush should wait for queue capacity");
-
-        let _ = rx.recv().await.expect("autosave request");
-
-        let reply_rx = timeout(Duration::from_millis(200), flush)
-            .await
-            .expect("flush enqueue should complete once capacity is available")
-            .expect("flush task join")
-            .expect("flush enqueue should succeed");
-
-        match rx.recv().await.expect("flush request") {
+        match rx.try_recv().expect("autosave request") {
             PlayerPersistenceRequest::SaveSnapshot {
                 snapshot,
-                kind,
+                urgency,
                 reply,
             } => {
-                assert_eq!(snapshot.id, PlayerId::from(2));
-                assert!(matches!(kind, SnapshotSaveKind::ExplicitFlush));
-                assert!(reply.is_some());
+                assert_eq!(snapshot.player_id(), PlayerId::from(1));
+                assert!(matches!(urgency, SaveUrgency::Autosave));
+                assert!(reply.is_none());
             }
             other => panic!("unexpected request: {other:?}"),
         }
-
-        drop(reply_rx);
     }
 }

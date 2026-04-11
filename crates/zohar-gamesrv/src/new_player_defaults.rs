@@ -2,8 +2,10 @@ use anyhow::{Result, bail};
 use zohar_content::types::player::{
     PlayerClass as ContentPlayerClass, PlayerClassBaseStats as ContentPlayerClassBaseStats,
 };
+use zohar_db::PlayerCoreStatAllocationRow;
 use zohar_domain::Empire;
 use zohar_domain::entity::player::PlayerClass as DomainPlayerClass;
+use zohar_domain::entity::player::PlayerStats;
 
 impl Default for EmpireStartMaps {
     fn default() -> Self {
@@ -138,6 +140,21 @@ impl PlayerCreateBaseStatTable {
         self.0
             .iter()
             .find_map(|(candidate, stats)| (*candidate == class).then_some(*stats))
+    }
+
+    pub fn resolve_player_stats(
+        &self,
+        class: DomainPlayerClass,
+        allocations: PlayerCoreStatAllocationRow,
+    ) -> Option<PlayerStats> {
+        let base = self.get(class)?;
+
+        Some(PlayerStats {
+            stat_str: i32::from(base.stat_str) + allocations.allocated_str,
+            stat_vit: i32::from(base.stat_vit) + allocations.allocated_vit,
+            stat_dex: i32::from(base.stat_dex) + allocations.allocated_dex,
+            stat_int: i32::from(base.stat_int) + allocations.allocated_int,
+        })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &(DomainPlayerClass, PlayerCreateBaseStats)> {

@@ -7,8 +7,9 @@ use super::queries;
 use crate::traits::{AccountRow, AccountsView, AuthDb};
 #[cfg(feature = "db-game")]
 use crate::traits::{
-    AcquireSessionResult, CreatePlayerOutcome, GameDb, PlayerRow, PlayersView, ProfileRow,
-    ProfilesView, RuntimeStateSaveOutcome, SessionsView,
+    AcquireSessionResult, CreatePlayerOutcome, GameDb, PlayerRuntimeStateRow, PlayerStatesView,
+    PlayerStatsBootstrapRow, PlayerSummaryRow, PlayerWriteOutcome, PlayersView, ProfileRow,
+    ProfilesView, SessionsView,
 };
 #[cfg(feature = "db-game")]
 use zohar_domain::Empire as DomainEmpire;
@@ -23,7 +24,7 @@ use zohar_domain::entity::player::PlayerGender as DomainPlayerGender;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerId;
 #[cfg(feature = "db-game")]
-use zohar_domain::entity::player::PlayerRuntimeSnapshot;
+use zohar_domain::entity::player::PlayerSnapshot;
 
 use crate::DbResult;
 
@@ -89,6 +90,7 @@ impl PgGameDb {
 impl GameDb for PgGameDb {
     type Profiles<'a> = PgProfilesView<'a>;
     type Players<'a> = PgPlayersView<'a>;
+    type PlayerStates<'a> = PgPlayerStatesView<'a>;
     type Sessions<'a> = PgSessionsView<'a>;
 
     #[inline]
@@ -99,6 +101,11 @@ impl GameDb for PgGameDb {
     #[inline]
     fn players(&self) -> Self::Players<'_> {
         PgPlayersView { pool: &self.pool }
+    }
+
+    #[inline]
+    fn player_states(&self) -> Self::PlayerStates<'_> {
+        PgPlayerStatesView { pool: &self.pool }
     }
 
     #[inline]
@@ -138,16 +145,23 @@ pub struct PgPlayersView<'a> {
 
 #[cfg(feature = "db-game")]
 impl PlayersView for PgPlayersView<'_> {
-    async fn list_for_user(&self, username: &str) -> DbResult<Vec<PlayerRow>> {
-        queries::game::list_players_for_user(self.pool, username).await
+    async fn list_summaries_for_user(&self, username: &str) -> DbResult<Vec<PlayerSummaryRow>> {
+        queries::game::list_player_summaries_for_user(self.pool, username).await
     }
 
-    async fn find_by_slot(&self, username: &str, slot: u8) -> DbResult<Option<PlayerRow>> {
-        queries::game::find_player_by_slot(self.pool, username, slot).await
+    async fn find_summary_by_slot(
+        &self,
+        username: &str,
+        slot: u8,
+    ) -> DbResult<Option<PlayerSummaryRow>> {
+        queries::game::find_player_summary_by_slot(self.pool, username, slot).await
     }
 
-    async fn find_by_id(&self, id: PlayerId) -> DbResult<Option<PlayerRow>> {
-        queries::game::find_player_by_id(self.pool, id).await
+    async fn find_stats_bootstrap_by_id(
+        &self,
+        id: PlayerId,
+    ) -> DbResult<Option<PlayerStatsBootstrapRow>> {
+        queries::game::find_player_stats_bootstrap_by_id(self.pool, id).await
     }
 
     async fn create(
@@ -158,16 +172,9 @@ impl PlayersView for PgPlayersView<'_> {
         class: DomainPlayerClass,
         gender: DomainPlayerGender,
         appearance: DomainAppearanceVariant,
-        stat_str: u8,
-        stat_vit: u8,
-        stat_dex: u8,
-        stat_int: u8,
     ) -> DbResult<CreatePlayerOutcome> {
-        queries::game::create_player(
-            self.pool, username, slot, name, class, gender, appearance, stat_str, stat_vit,
-            stat_dex, stat_int,
-        )
-        .await
+        queries::game::create_player(self.pool, username, slot, name, class, gender, appearance)
+            .await
     }
 
     async fn delete_with_code(
@@ -178,12 +185,31 @@ impl PlayersView for PgPlayersView<'_> {
     ) -> DbResult<bool> {
         queries::game::delete_player_with_code(self.pool, username, slot, delete_code).await
     }
+}
 
-    async fn save_runtime_state(
+#[cfg(feature = "db-game")]
+pub struct PgPlayerStatesView<'a> {
+    pool: &'a PgPool,
+}
+
+#[cfg(feature = "db-game")]
+impl PlayerStatesView for PgPlayerStatesView<'_> {
+    async fn list_for_user(&self, username: &str) -> DbResult<Vec<PlayerRuntimeStateRow>> {
+        queries::game::list_player_runtime_states_for_user(self.pool, username).await
+    }
+
+    async fn find_by_player_id(
         &self,
-        snapshot: &PlayerRuntimeSnapshot,
-    ) -> DbResult<RuntimeStateSaveOutcome> {
-        queries::game::save_player_runtime_state(self.pool, snapshot).await
+        player_id: PlayerId,
+    ) -> DbResult<Option<PlayerRuntimeStateRow>> {
+        queries::game::find_player_runtime_state_by_player_id(self.pool, player_id).await
+    }
+
+    async fn save_player_snapshot(
+        &self,
+        snapshot: &PlayerSnapshot,
+    ) -> DbResult<PlayerWriteOutcome> {
+        queries::game::save_player_snapshot(self.pool, snapshot).await
     }
 }
 
@@ -287,7 +313,7 @@ impl SessionsView for PgSessionsView<'_> {
         username: &str,
         server_id: &str,
         connection_id: &str,
-        snapshot: &PlayerRuntimeSnapshot,
+        snapshot: &PlayerSnapshot,
     ) -> DbResult<()> {
         queries::game::commit_player_exit(
             self.pool,

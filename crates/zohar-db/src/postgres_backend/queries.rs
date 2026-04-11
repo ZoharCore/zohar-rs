@@ -8,7 +8,8 @@ use crate::parse_enum;
 use crate::traits::AccountRow;
 #[cfg(feature = "db-game")]
 use crate::traits::{
-    AcquireSessionResult, CreatePlayerOutcome, PlayerRow, ProfileRow, RuntimeStateSaveOutcome,
+    AcquireSessionResult, CreatePlayerOutcome, PlayerCoreStatAllocationRow, PlayerRuntimeStateRow,
+    PlayerStatsBootstrapRow, PlayerSummaryRow, PlayerWriteOutcome, ProfileRow,
 };
 use crate::{DbContext, DbResult, OptionDbExt};
 use sqlx::{PgPool, Row};
@@ -23,7 +24,7 @@ use zohar_domain::entity::player::PlayerClass as DomainPlayerClass;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::PlayerGender as DomainPlayerGender;
 #[cfg(feature = "db-game")]
-use zohar_domain::entity::player::PlayerRuntimeSnapshot;
+use zohar_domain::entity::player::PlayerSnapshot;
 #[cfg(feature = "db-game")]
 use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch};
 
@@ -159,30 +160,107 @@ pub mod game {
         .transpose()
     }
 
-    fn parse_player_row(row: &sqlx::postgres::PgRow) -> DbResult<PlayerRow> {
+    fn parse_player_class(row: &sqlx::postgres::PgRow) -> DbResult<DomainPlayerClass> {
         let class_raw = row
             .try_get::<String, _>("class_name")
             .db_ctx("read class_name")?;
+        parse_enum::<DbPlayerClass>("class", &class_raw).map(Into::into)
+    }
+
+    fn parse_player_gender(row: &sqlx::postgres::PgRow) -> DbResult<DomainPlayerGender> {
         let gender_raw = row.try_get::<String, _>("gender").db_ctx("read gender")?;
+        parse_enum::<DbPlayerGender>("gender", &gender_raw).map(Into::into)
+    }
+
+    fn parse_player_appearance(row: &sqlx::postgres::PgRow) -> DbResult<DomainAppearanceVariant> {
         let appearance_raw = row
             .try_get::<String, _>("appearance")
             .db_ctx("read appearance")?;
+        parse_enum::<DbAppearance>("appearance", &appearance_raw).map(Into::into)
+    }
 
-        Ok(PlayerRow {
+    fn parse_player_summary_row(row: &sqlx::postgres::PgRow) -> DbResult<PlayerSummaryRow> {
+        Ok(PlayerSummaryRow {
             id: PlayerId::from(row.try_get::<i64, _>("id").db_ctx("read id")?),
             username: row
                 .try_get::<String, _>("username")
                 .db_ctx("read username")?,
             slot: row.try_get::<i32, _>("slot").db_ctx("read slot")?,
             name: row.try_get::<String, _>("name").db_ctx("read name")?,
+            class: parse_player_class(row)?,
+            gender: parse_player_gender(row)?,
+            appearance: parse_player_appearance(row)?,
             level: row.try_get::<i32, _>("level").db_ctx("read level")?,
-            class: parse_enum::<DbPlayerClass>("class", &class_raw)?.into(),
-            gender: parse_enum::<DbPlayerGender>("gender", &gender_raw)?.into(),
-            appearance: parse_enum::<DbAppearance>("appearance", &appearance_raw)?.into(),
-            stat_str: row.try_get::<i32, _>("stat_str").db_ctx("read stat_str")?,
-            stat_vit: row.try_get::<i32, _>("stat_vit").db_ctx("read stat_vit")?,
-            stat_dex: row.try_get::<i32, _>("stat_dex").db_ctx("read stat_dex")?,
-            stat_int: row.try_get::<i32, _>("stat_int").db_ctx("read stat_int")?,
+            playtime_secs: row
+                .try_get::<i64, _>("playtime_secs")
+                .db_ctx("read playtime_secs")?,
+            core_stat_allocations: parse_player_core_stat_allocation_row(row)?,
+        })
+    }
+
+    fn parse_player_stats_bootstrap_row(
+        row: &sqlx::postgres::PgRow,
+    ) -> DbResult<PlayerStatsBootstrapRow> {
+        Ok(PlayerStatsBootstrapRow {
+            id: PlayerId::from(row.try_get::<i64, _>("id").db_ctx("read id")?),
+            username: row
+                .try_get::<String, _>("username")
+                .db_ctx("read username")?,
+            slot: row.try_get::<i32, _>("slot").db_ctx("read slot")?,
+            name: row.try_get::<String, _>("name").db_ctx("read name")?,
+            class: parse_player_class(row)?,
+            gender: parse_player_gender(row)?,
+            appearance: parse_player_appearance(row)?,
+            level: row.try_get::<i32, _>("level").db_ctx("read level")?,
+            exp_in_level: row
+                .try_get::<i64, _>("exp_in_level")
+                .db_ctx("read exp_in_level")?,
+            core_stat_allocations: parse_player_core_stat_allocation_row(row)?,
+            stat_reset_count: row
+                .try_get::<i32, _>("stat_reset_count")
+                .db_ctx("read stat_reset_count")?,
+            playtime_secs: row
+                .try_get::<i64, _>("playtime_secs")
+                .db_ctx("read playtime_secs")?,
+            current_hp: row
+                .try_get::<Option<i32>, _>("current_hp")
+                .db_ctx("read current_hp")?,
+            current_sp: row
+                .try_get::<Option<i32>, _>("current_sp")
+                .db_ctx("read current_sp")?,
+            current_stamina: row
+                .try_get::<Option<i32>, _>("current_stamina")
+                .db_ctx("read current_stamina")?,
+        })
+    }
+
+    fn parse_player_core_stat_allocation_row(
+        row: &sqlx::postgres::PgRow,
+    ) -> DbResult<PlayerCoreStatAllocationRow> {
+        Ok(PlayerCoreStatAllocationRow {
+            allocated_str: row
+                .try_get::<i32, _>("allocated_str")
+                .db_ctx("read allocated_str")?,
+            allocated_vit: row
+                .try_get::<i32, _>("allocated_vit")
+                .db_ctx("read allocated_vit")?,
+            allocated_dex: row
+                .try_get::<i32, _>("allocated_dex")
+                .db_ctx("read allocated_dex")?,
+            allocated_int: row
+                .try_get::<i32, _>("allocated_int")
+                .db_ctx("read allocated_int")?,
+        })
+    }
+
+    fn parse_player_runtime_state_row(
+        row: &sqlx::postgres::PgRow,
+    ) -> DbResult<PlayerRuntimeStateRow> {
+        Ok(PlayerRuntimeStateRow {
+            player_id: PlayerId::from(
+                row.try_get::<i64, _>("player_id")
+                    .db_ctx("read player_id")?,
+            ),
             map_key: row
                 .try_get::<Option<String>, _>("map_key")
                 .db_ctx("read map_key")?,
@@ -192,6 +270,15 @@ pub mod game {
             local_y: row
                 .try_get::<Option<f32>, _>("local_y")
                 .db_ctx("read local_y")?,
+            current_hp: row
+                .try_get::<Option<i32>, _>("current_hp")
+                .db_ctx("read current_hp")?,
+            current_sp: row
+                .try_get::<Option<i32>, _>("current_sp")
+                .db_ctx("read current_sp")?,
+            current_stamina: row
+                .try_get::<Option<i32>, _>("current_stamina")
+                .db_ctx("read current_stamina")?,
             runtime_epoch: PlayerRuntimeEpoch::from(
                 row.try_get::<i64, _>("runtime_epoch")
                     .db_ctx("read runtime_epoch")?,
@@ -199,47 +286,73 @@ pub mod game {
         })
     }
 
-    const PLAYER_COLS: &str = "id, username, slot, name, level, class_name, gender, appearance, stat_str, stat_vit, stat_dex, stat_int, map_key, local_x, local_y, runtime_epoch";
+    const PLAYER_SUMMARY_COLS: &str = "p.id, p.username, p.slot, p.name, p.class_name, p.gender, p.appearance, prog.level, prog.playtime_secs, prog.allocated_str, prog.allocated_vit, prog.allocated_dex, prog.allocated_int";
+    const PLAYER_RUNTIME_COLS: &str = "runtime.player_id, runtime.map_key, runtime.local_x, runtime.local_y, runtime.current_hp, runtime.current_sp, runtime.current_stamina, runtime.runtime_epoch";
 
-    pub async fn list_players_for_user(pool: &PgPool, username: &str) -> DbResult<Vec<PlayerRow>> {
+    pub async fn list_player_summaries_for_user(
+        pool: &PgPool,
+        username: &str,
+    ) -> DbResult<Vec<PlayerSummaryRow>> {
         let rows = sqlx::query(&format!(
-            "SELECT {PLAYER_COLS} FROM game.players WHERE username = $1 AND deleted_at IS NULL"
+            "SELECT {PLAYER_SUMMARY_COLS}
+             FROM game.players p
+             JOIN game.player_progression prog ON prog.player_id = p.id
+             WHERE p.username = $1
+               AND p.deleted_at IS NULL
+             ORDER BY p.slot"
         ))
         .bind(username)
         .fetch_all(pool)
         .await
-        .db_ctx("query players")?;
+        .db_ctx("query player summaries")?;
 
-        rows.iter().map(parse_player_row).collect()
+        rows.iter().map(parse_player_summary_row).collect()
     }
 
-    pub async fn find_player_by_slot(
+    pub async fn find_player_summary_by_slot(
         pool: &PgPool,
         username: &str,
         slot: u8,
-    ) -> DbResult<Option<PlayerRow>> {
+    ) -> DbResult<Option<PlayerSummaryRow>> {
         let row = sqlx::query(&format!(
-            "SELECT {PLAYER_COLS} FROM game.players WHERE username = $1 AND slot = $2 AND deleted_at IS NULL LIMIT 1"
+            "SELECT {PLAYER_SUMMARY_COLS}
+             FROM game.players p
+             JOIN game.player_progression prog ON prog.player_id = p.id
+             WHERE p.username = $1
+               AND p.slot = $2
+               AND p.deleted_at IS NULL
+             LIMIT 1"
         ))
         .bind(username)
         .bind(i32::from(slot))
         .fetch_optional(pool)
         .await
-        .db_ctx("query player by slot")?;
+        .db_ctx("query player summary by slot")?;
 
-        row.map(|row| parse_player_row(&row)).transpose()
+        row.map(|row| parse_player_summary_row(&row)).transpose()
     }
 
-    pub async fn find_player_by_id(pool: &PgPool, id: PlayerId) -> DbResult<Option<PlayerRow>> {
+    pub async fn find_player_stats_bootstrap_by_id(
+        pool: &PgPool,
+        id: PlayerId,
+    ) -> DbResult<Option<PlayerStatsBootstrapRow>> {
+        const PLAYER_STATS_BOOTSTRAP_COLS: &str = "p.id, p.username, p.slot, p.name, p.class_name, p.gender, p.appearance, prog.level, prog.exp_in_level, prog.allocated_str, prog.allocated_vit, prog.allocated_dex, prog.allocated_int, prog.stat_reset_count, prog.playtime_secs, runtime.current_hp, runtime.current_sp, runtime.current_stamina";
         let row = sqlx::query(&format!(
-            "SELECT {PLAYER_COLS} FROM game.players WHERE id = $1 AND deleted_at IS NULL LIMIT 1"
+            "SELECT {PLAYER_STATS_BOOTSTRAP_COLS}
+             FROM game.players p
+             JOIN game.player_progression prog ON prog.player_id = p.id
+             LEFT JOIN game.player_runtime_state runtime ON runtime.player_id = p.id
+             WHERE p.id = $1
+               AND p.deleted_at IS NULL
+             LIMIT 1"
         ))
         .bind(i64::from(id))
         .fetch_optional(pool)
         .await
-        .db_ctx("query player by id")?;
+        .db_ctx("query player stats bootstrap by id")?;
 
-        row.map(|row| parse_player_row(&row)).transpose()
+        row.map(|row| parse_player_stats_bootstrap_row(&row))
+            .transpose()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -251,36 +364,68 @@ pub mod game {
         class: DomainPlayerClass,
         gender: DomainPlayerGender,
         appearance: DomainAppearanceVariant,
-        stat_str: u8,
-        stat_vit: u8,
-        stat_dex: u8,
-        stat_int: u8,
     ) -> DbResult<CreatePlayerOutcome> {
-        let row = sqlx::query(&format!(
-            "INSERT INTO game.players (username, slot, name, level, class_name, gender, appearance, stat_str, stat_vit, stat_dex, stat_int) \
-             VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, $10) \
-             ON CONFLICT DO NOTHING \
-             RETURNING {PLAYER_COLS}"
-        ))
+        let mut tx = pool.begin().await.db_ctx("begin create player")?;
+
+        let player_row = sqlx::query(
+            "INSERT INTO game.players (username, slot, name, class_name, gender, appearance)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT DO NOTHING
+             RETURNING id, username, slot, name, class_name, gender, appearance",
+        )
         .bind(username)
         .bind(i32::from(slot))
         .bind(name)
         .bind(DbPlayerClass::from(class).as_ref())
         .bind(DbPlayerGender::from(gender).as_ref())
         .bind(DbAppearance::from(appearance).as_ref())
-        .bind(i32::from(stat_str))
-        .bind(i32::from(stat_vit))
-        .bind(i32::from(stat_dex))
-        .bind(i32::from(stat_int))
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await
-        .db_ctx("create player")?;
+        .db_ctx("insert player identity")?;
 
-        let Some(row) = row else {
+        let Some(player_row) = player_row else {
             return Ok(CreatePlayerOutcome::NameTaken);
         };
 
-        Ok(CreatePlayerOutcome::Created(parse_player_row(&row)?))
+        let player_id = player_row.try_get::<i64, _>("id").db_ctx("read id")?;
+
+        sqlx::query(
+            "INSERT INTO game.player_progression (
+                player_id,
+                level
+             ) VALUES ($1, 1)",
+        )
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await
+        .db_ctx("insert player progression")?;
+
+        sqlx::query(
+            "INSERT INTO game.player_runtime_state (player_id)
+             VALUES ($1)",
+        )
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await
+        .db_ctx("insert player runtime state")?;
+
+        let row = sqlx::query(&format!(
+            "SELECT {PLAYER_SUMMARY_COLS}
+             FROM game.players p
+             JOIN game.player_progression prog ON prog.player_id = p.id
+             WHERE p.id = $1
+             LIMIT 1"
+        ))
+        .bind(player_id)
+        .fetch_one(&mut *tx)
+        .await
+        .db_ctx("fetch created player summary")?;
+
+        tx.commit().await.db_ctx("commit create player")?;
+
+        Ok(CreatePlayerOutcome::Created(parse_player_summary_row(
+            &row,
+        )?))
     }
 
     pub async fn delete_player_with_code(
@@ -316,51 +461,120 @@ pub mod game {
             .db_ctx("read deleted outcome")
     }
 
-    pub async fn save_player_runtime_state(
+    pub async fn list_player_runtime_states_for_user(
         pool: &PgPool,
-        snapshot: &PlayerRuntimeSnapshot,
-    ) -> DbResult<RuntimeStateSaveOutcome> {
+        username: &str,
+    ) -> DbResult<Vec<PlayerRuntimeStateRow>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {PLAYER_RUNTIME_COLS}
+             FROM game.player_runtime_state runtime
+             JOIN game.players p ON p.id = runtime.player_id
+             WHERE p.username = $1
+               AND p.deleted_at IS NULL
+             ORDER BY p.slot"
+        ))
+        .bind(username)
+        .fetch_all(pool)
+        .await
+        .db_ctx("query player runtime states")?;
+
+        rows.iter().map(parse_player_runtime_state_row).collect()
+    }
+
+    pub async fn find_player_runtime_state_by_player_id(
+        pool: &PgPool,
+        player_id: PlayerId,
+    ) -> DbResult<Option<PlayerRuntimeStateRow>> {
+        let row = sqlx::query(&format!(
+            "SELECT {PLAYER_RUNTIME_COLS}
+             FROM game.player_runtime_state runtime
+             JOIN game.players p ON p.id = runtime.player_id
+             WHERE runtime.player_id = $1
+               AND p.deleted_at IS NULL
+             LIMIT 1"
+        ))
+        .bind(i64::from(player_id))
+        .fetch_optional(pool)
+        .await
+        .db_ctx("query player runtime state by player id")?;
+
+        row.map(|row| parse_player_runtime_state_row(&row))
+            .transpose()
+    }
+
+    pub async fn save_player_snapshot(
+        pool: &PgPool,
+        snapshot: &PlayerSnapshot,
+    ) -> DbResult<PlayerWriteOutcome> {
+        let runtime = &snapshot.runtime;
+        let progression = &snapshot.progression;
         let row = sqlx::query(
             "WITH target AS (
                 SELECT 1
-                FROM game.players
-                WHERE id = $4
-                  AND deleted_at IS NULL
+                FROM game.player_runtime_state runtime
+                JOIN game.players p ON p.id = runtime.player_id
+                WHERE runtime.player_id = $1
+                  AND p.deleted_at IS NULL
             ),
-            updated AS (
-                UPDATE game.players
-                SET map_key = $1,
-                    local_x = $2,
-                    local_y = $3
-                WHERE id = $4
-                  AND deleted_at IS NULL
-                  AND runtime_epoch = $5
-                RETURNING 1
+            updated_runtime AS (
+                UPDATE game.player_runtime_state runtime
+                SET map_key = $3,
+                    local_x = $4,
+                    local_y = $5,
+                    current_hp = $6,
+                    current_sp = $7,
+                    current_stamina = $8,
+                    updated_at = NOW()
+                WHERE runtime.player_id = $1
+                  AND runtime.runtime_epoch = $2
+                RETURNING runtime.player_id
+            ),
+            updated_progression AS (
+                UPDATE game.player_progression prog
+                SET playtime_secs = GREATEST(prog.playtime_secs, $9),
+                    allocated_str = $10,
+                    allocated_vit = $11,
+                    allocated_dex = $12,
+                    allocated_int = $13,
+                    stat_reset_count = $14
+                FROM updated_runtime runtime
+                WHERE prog.player_id = $1
+                  AND runtime.player_id = prog.player_id
+                RETURNING prog.player_id
             )
             SELECT
                 EXISTS(SELECT 1 FROM target) AS player_exists,
-                EXISTS(SELECT 1 FROM updated) AS updated",
+                EXISTS(SELECT 1 FROM updated_progression) AS updated",
         )
-        .bind(&snapshot.map_key)
-        .bind(snapshot.local_pos.x)
-        .bind(snapshot.local_pos.y)
-        .bind(i64::from(snapshot.id))
-        .bind(i64::from(snapshot.runtime_epoch))
+        .bind(i64::from(runtime.id))
+        .bind(i64::from(runtime.runtime_epoch))
+        .bind(&runtime.map_key)
+        .bind(runtime.local_pos.x)
+        .bind(runtime.local_pos.y)
+        .bind(runtime.current_hp)
+        .bind(runtime.current_sp)
+        .bind(runtime.current_stamina)
+        .bind(runtime.playtime.as_secs_i64())
+        .bind(progression.core_stat_allocations.allocated_str)
+        .bind(progression.core_stat_allocations.allocated_vit)
+        .bind(progression.core_stat_allocations.allocated_dex)
+        .bind(progression.core_stat_allocations.allocated_int)
+        .bind(progression.stat_reset_count)
         .fetch_one(pool)
         .await
-        .db_ctx("save player runtime state")?;
+        .db_ctx("save player snapshot")?;
 
         let player_exists = row
             .try_get::<bool, _>("player_exists")
             .db_ctx("read player_exists")?;
         if !player_exists {
             Err(crate::DbError::Invariant(
-                "active player should exist when saving runtime state",
+                "active player should exist when saving player snapshot",
             ))
         } else if row.try_get::<bool, _>("updated").db_ctx("read updated")? {
-            Ok(RuntimeStateSaveOutcome::Saved)
+            Ok(PlayerWriteOutcome::Saved)
         } else {
-            Ok(RuntimeStateSaveOutcome::StaleOwner)
+            Ok(PlayerWriteOutcome::StaleOwner)
         }
     }
 
@@ -605,25 +819,54 @@ pub mod game {
         username: &str,
         server_id: &str,
         connection_id: &str,
-        snapshot: &PlayerRuntimeSnapshot,
+        snapshot: &PlayerSnapshot,
     ) -> DbResult<()> {
         let mut tx = pool.begin().await.db_ctx("begin commit player exit")?;
+        let runtime = &snapshot.runtime;
+        let progression = &snapshot.progression;
 
         let player_result = sqlx::query(
-            "UPDATE game.players
-             SET map_key = $1,
-                 local_x = $2,
-                 local_y = $3,
-                 runtime_epoch = runtime_epoch + 1
-             WHERE id = $4
-               AND deleted_at IS NULL
-               AND runtime_epoch = $5",
+            "WITH updated_runtime AS (
+                 UPDATE game.player_runtime_state runtime
+                 SET map_key = $1,
+                     local_x = $2,
+                     local_y = $3,
+                     current_hp = $6,
+                     current_sp = $7,
+                     current_stamina = $8,
+                     runtime_epoch = runtime_epoch + 1,
+                     updated_at = NOW()
+                 FROM game.players p
+                 WHERE runtime.player_id = $4
+                   AND p.id = runtime.player_id
+                   AND p.deleted_at IS NULL
+                   AND runtime_epoch = $5
+                 RETURNING runtime.player_id
+             )
+             UPDATE game.player_progression prog
+             SET playtime_secs = GREATEST(prog.playtime_secs, $9),
+                 allocated_str = $10,
+                 allocated_vit = $11,
+                 allocated_dex = $12,
+                 allocated_int = $13,
+                 stat_reset_count = $14
+             FROM updated_runtime runtime
+             WHERE prog.player_id = runtime.player_id",
         )
-        .bind(&snapshot.map_key)
-        .bind(snapshot.local_pos.x)
-        .bind(snapshot.local_pos.y)
-        .bind(i64::from(snapshot.id))
-        .bind(i64::from(snapshot.runtime_epoch))
+        .bind(&runtime.map_key)
+        .bind(runtime.local_pos.x)
+        .bind(runtime.local_pos.y)
+        .bind(i64::from(runtime.id))
+        .bind(i64::from(runtime.runtime_epoch))
+        .bind(runtime.current_hp)
+        .bind(runtime.current_sp)
+        .bind(runtime.current_stamina)
+        .bind(runtime.playtime.as_secs_i64())
+        .bind(progression.core_stat_allocations.allocated_str)
+        .bind(progression.core_stat_allocations.allocated_vit)
+        .bind(progression.core_stat_allocations.allocated_dex)
+        .bind(progression.core_stat_allocations.allocated_int)
+        .bind(progression.stat_reset_count)
         .execute(&mut *tx)
         .await
         .db_ctx("save player runtime state during player exit")?;

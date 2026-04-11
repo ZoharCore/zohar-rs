@@ -35,9 +35,6 @@ pub enum LoadingS2cSpecific {
         empire: game_pkt::Empire,
         skill_branch: game_pkt::ZeroOpt<game_pkt::SkillBranch>,
     },
-
-    #[brw(magic = 0x10_u8)]
-    SetMainCharacterStats { stats: [u32; 255] },
 }
 
 crate::route_packets! {
@@ -52,6 +49,7 @@ crate::route_packets! {
     /// Server-to-client packets for Loading phase.
     pub enum LoadingS2c {
         Control(ControlS2c) from 0x2C | 0xFF | 0xFC | 0xFD,
-        Specific(LoadingS2cSpecific) from 0x71 | 0x10,
+        Specific(LoadingS2cSpecific) from 0x71,
+        Stats(game_pkt::ingame::stats::StatsS2c) from 0x10 | 0x11,
     }
 }

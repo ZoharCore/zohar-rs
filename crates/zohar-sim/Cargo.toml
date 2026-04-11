@@ -15,6 +15,7 @@ admin-brp = [
 [dependencies]
 zohar-domain = { path = "../zohar-domain" }
 zohar-map-port = { path = "../zohar-map-port" }
+zohar-gameplay = { path = "../zohar-gameplay" }
 
 anyhow.workspace = true
 thiserror.workspace = true

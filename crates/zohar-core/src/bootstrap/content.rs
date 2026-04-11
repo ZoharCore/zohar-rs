@@ -1,18 +1,18 @@
 use crate::adapters::content::{
     build_entity_motion_speeds, build_map_navigators, build_mob_chat_content, build_mob_proto,
-    build_spawn_rules,
+    build_player_stat_rules, build_spawn_rules,
 };
 use crate::app::CoreRuntimeConfig;
 use anyhow::anyhow;
 use std::sync::Arc;
 use zohar_content::ContentRuntimeBuilder;
+use zohar_gameplay::stats::game::PlayerStatRules;
 use zohar_gamesrv::ContentCoords;
-use zohar_gamesrv::PlayerCreateBaseStatTable;
 use zohar_sim::{MapConfig, MapInstanceKey, SharedConfig, WanderConfig};
 
 pub(crate) struct LoadedContent {
     pub(crate) coords: Arc<ContentCoords>,
-    pub(crate) player_create_base_stats: Arc<PlayerCreateBaseStatTable>,
+    pub(crate) player_stats: Arc<PlayerStatRules>,
     pub(crate) map_key: MapInstanceKey,
     pub(crate) shared_config: SharedConfig,
     pub(crate) map_config: MapConfig,
@@ -30,9 +30,7 @@ pub(crate) fn load_content(
     })?;
     let catalog = content_runtime.catalog();
     let coords = Arc::new(ContentCoords::from_catalog(catalog)?);
-    let player_create_base_stats = Arc::new(PlayerCreateBaseStatTable::from_content_rows(
-        &catalog.player_class_base_stats,
-    ));
+    let player_stats = Arc::new(build_player_stat_rules(catalog));
 
     let map_id = require_map_id(coords.map_id_by_code(&config.map), &config.map)?;
     let map_key = MapInstanceKey::shared(config.channel, map_id);
@@ -47,6 +45,7 @@ pub(crate) fn load_content(
     let shared_config = SharedConfig {
         motion_speeds: entity_motion_speeds,
         mobs: all_mobs,
+        player_stats: player_stats.clone(),
         wander: WanderConfig::default(),
         mob_chat,
     };
@@ -63,7 +62,7 @@ pub(crate) fn load_content(
 
     Ok(LoadedContent {
         coords,
-        player_create_base_stats,
+        player_stats,
         map_key,
         shared_config,
         map_config,

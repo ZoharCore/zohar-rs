@@ -4,12 +4,15 @@ use zohar_map_port::{ChatChannel, ClientIntent, ClientIntentMsg, GlobalShoutMsg,
 
 use crate::bridge::InboundEvent;
 
-use super::super::player::persistence::leave_player_and_snapshot;
+use super::super::player::persistence::{
+    capture_active_player_snapshot, leave_player_and_snapshot,
+};
 use super::players::{handle_player_enter, handle_player_leave, player_entities_on_map};
 use super::state::{
     ChatIntent, ChatIntentQueue, MAX_ATTACK_INTENTS_PER_TICK, MAX_CHAT_INTENTS_PER_TICK,
-    MAX_MOVE_INTENTS_PER_TICK, PlayerAppearanceComp, PlayerCommand, PlayerCommandQueue,
-    PlayerIndex, PlayerOutboxComp, RuntimeState,
+    MAX_MOVE_INTENTS_PER_TICK, MAX_PROGRESSION_INTENTS_PER_TICK, PlayerAppearanceComp,
+    PlayerCommand, PlayerCommandQueue, PlayerIndex, PlayerOutboxComp, PlayerProgressionIntentQueue,
+    RuntimeState,
 };
 use super::util::{format_global_shout, next_entity_id};
 
@@ -33,6 +36,9 @@ pub(crate) fn drain_inbound(world: &mut World) {
             }
             InboundEvent::PlayerEnter { msg, outbox } => handle_player_enter(world, msg, outbox),
             InboundEvent::PlayerLeave { msg } => handle_player_leave(world, msg),
+            InboundEvent::CapturePlayerSnapshot { msg, reply } => {
+                let _ = reply.send(capture_active_player_snapshot(world, msg));
+            }
             InboundEvent::PlayerLeaveAndSnapshot { msg, reply } => {
                 let _ = reply.send(leave_player_and_snapshot(world, msg));
             }
@@ -105,6 +111,18 @@ pub(crate) fn handle_client_intent(mut world: DeferredWorld, msg: ClientIntentMs
                         attack: intent.attack,
                     },
                 );
+            }
+        }
+        ClientIntent::Progression(intent) => {
+            if let Some(mut queue) = world
+                .entity_mut(player_entity)
+                .get_mut::<PlayerProgressionIntentQueue>()
+            {
+                queue.0.push(intent);
+                if queue.0.len() > MAX_PROGRESSION_INTENTS_PER_TICK {
+                    let overflow = queue.0.len() - MAX_PROGRESSION_INTENTS_PER_TICK;
+                    queue.0.drain(0..overflow);
+                }
             }
         }
     }

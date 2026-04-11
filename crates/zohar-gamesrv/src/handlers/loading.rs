@@ -19,15 +19,20 @@ use crate::adapters::ToProtocol;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
-use zohar_db::{GameDb, PlayersView, ProfilesView, SessionsView};
-use zohar_domain::appearance::PlayerAppearance;
-use zohar_domain::entity::player::skill::SkillBranch;
+use zohar_db::{
+    GameDb, PlayerStatesView, PlayerStatsBootstrapRow, PlayersView, ProfilesView, SessionsView,
+};
+use zohar_domain::appearance::PlayerVisualProfile;
+use zohar_domain::entity::player::{
+    CoreStatAllocations, PlayerGameplayBootstrap, PlayerPlaytime, skill::SkillBranch,
+};
 use zohar_net::connection::NextConnection;
 use zohar_net::connection::game_conn::LoadedPlayer;
 use zohar_net::connection::game_conn::Loading as ThisPhase;
 use zohar_net::{Connection, ConnectionPhaseExt};
 use zohar_protocol::decode_cstr;
 use zohar_protocol::game_pkt::ControlS2c;
+use zohar_protocol::game_pkt::ingame::stats::{StatsS2c, WireStatSnapshot};
 use zohar_protocol::game_pkt::loading::{LoadingC2s, LoadingC2sSpecific, LoadingS2cSpecific};
 
 struct LoadingCtx<'a> {
@@ -37,6 +42,13 @@ struct LoadingCtx<'a> {
     username: String,
     player_id: zohar_domain::entity::player::PlayerId,
     entry: LoadedPlayer,
+    initial_stats: WireStatSnapshot,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedLoadingStats {
+    gameplay: PlayerGameplayBootstrap,
+    packet_points: WireStatSnapshot,
 }
 
 async fn handle_enter(state: &LoadingCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
@@ -58,16 +70,57 @@ async fn handle_enter(state: &LoadingCtx<'_>) -> PhaseResult<PhaseEffects<ThisPh
     Ok(PhaseEffects::send_many([
         LoadingS2cSpecific::SetMainCharacter {
             net_id: state.entry.net_id,
-            class_gender: (state.entry.appearance.class, state.entry.appearance.gender)
+            class_gender: (
+                state.entry.gameplay.class,
+                state.entry.visual_profile.gender,
+            )
                 .to_protocol(),
-            name: state.entry.appearance.name.clone().into(),
+            name: state.entry.visual_profile.name.clone().into(),
             pos,
-            empire: state.entry.appearance.empire.to_protocol(),
+            empire: state.entry.visual_profile.empire.to_protocol(),
             skill_branch: None::<SkillBranch>.to_protocol(),
         }
         .into(),
-        LoadingS2cSpecific::SetMainCharacterStats { stats: [0; 255] }.into(),
+        StatsS2c::SetMainCharacterStats {
+            stats: state.initial_stats.clone(),
+        }
+        .into(),
     ]))
+}
+
+fn prepare_loading_stats(
+    ctx: &GameContext,
+    player: &PlayerStatsBootstrapRow,
+) -> Option<PreparedLoadingStats> {
+    let gameplay = gameplay_bootstrap_from_row(player);
+    let bootstrap = ctx
+        .select
+        .player_stats
+        .hydrate_player(&gameplay)?
+        .bootstrap_sync;
+    Some(PreparedLoadingStats {
+        gameplay,
+        packet_points: (&bootstrap.stat_snapshot).to_protocol(),
+    })
+}
+
+fn gameplay_bootstrap_from_row(player: &PlayerStatsBootstrapRow) -> PlayerGameplayBootstrap {
+    PlayerGameplayBootstrap {
+        player_id: player.id,
+        class: player.class,
+        level: player.level,
+        exp_in_level: player.exp_in_level,
+        core_stat_allocations: CoreStatAllocations {
+            allocated_str: player.core_stat_allocations.allocated_str,
+            allocated_vit: player.core_stat_allocations.allocated_vit,
+            allocated_dex: player.core_stat_allocations.allocated_dex,
+            allocated_int: player.core_stat_allocations.allocated_int,
+        },
+        stat_reset_count: player.stat_reset_count,
+        current_hp: player.current_hp,
+        current_sp: player.current_sp,
+        current_stamina: player.current_stamina,
+    }
 }
 
 async fn handle_tick(
@@ -197,19 +250,20 @@ pub(crate) async fn run_loading(
     let player_name = conn.player_name().to_string();
 
     // Fetch player data from database
-    let player = ctx
-        .db
-        .players()
-        .find_by_id(player_id)
-        .await
-        .map_err(|_e| SessionEnd::AfterLogin {
-            username: username.clone(),
-            lease_action: SessionLeaseAction::Release,
-        })?
-        .ok_or_else(|| SessionEnd::AfterLogin {
-            username: username.clone(),
-            lease_action: SessionLeaseAction::Release,
-        })?;
+    let players_view = ctx.db.players();
+    let runtime_states_view = ctx.db.player_states();
+    let (player, runtime_state) = tokio::try_join!(
+        players_view.find_stats_bootstrap_by_id(player_id),
+        runtime_states_view.find_by_player_id(player_id),
+    )
+    .map_err(|_e| SessionEnd::AfterLogin {
+        username: username.clone(),
+        lease_action: SessionLeaseAction::Release,
+    })?;
+    let player = player.ok_or_else(|| SessionEnd::AfterLogin {
+        username: username.clone(),
+        lease_action: SessionLeaseAction::Release,
+    })?;
 
     // Compute spawn position from DB or empire default
     let player_empire = ctx
@@ -224,13 +278,13 @@ pub(crate) async fn run_loading(
         .expect("need empire for fallback spawn");
     let resolved_spawn = ctx
         .coords
-        .resolve_spawn_for_player(Some(&player), player_empire);
+        .resolve_spawn_for_player(runtime_state.as_ref(), player_empire);
     if resolved_spawn.used_fallback {
         warn!(
             username = %username,
-            map_key = ?player.map_key,
-            local_x = ?player.local_x,
-            local_y = ?player.local_y,
+            map_key = runtime_state.as_ref().and_then(|state| state.map_key.clone()),
+            local_x = runtime_state.as_ref().and_then(|state| state.local_x),
+            local_y = runtime_state.as_ref().and_then(|state| state.local_y),
             empire = ?player_empire,
             "Falling back to empire start spawn"
         );
@@ -243,23 +297,29 @@ pub(crate) async fn run_loading(
             username: username.clone(),
             lease_action: SessionLeaseAction::Release,
         })?;
-    let appearance = PlayerAppearance {
+    let prepared_stats =
+        prepare_loading_stats(ctx.as_ref(), &player).ok_or_else(|| SessionEnd::AfterLogin {
+            username: username.clone(),
+            lease_action: SessionLeaseAction::Release,
+        })?;
+    let visual_profile = PlayerVisualProfile {
         name: player_name.clone(),
-        class: player.class,
         gender: player.gender,
         empire: player_empire,
         body_part: player.appearance.to_protocol() as u16,
-        level: player.level as u32,
-        move_speed: 100,
-        attack_speed: 100,
         guild_id: 0,
     };
     let entry = LoadedPlayer {
         net_id: entity_id.to_protocol(),
         map_id: resolved_spawn.map_id,
-        runtime_epoch: player.runtime_epoch,
+        runtime_epoch: runtime_state
+            .as_ref()
+            .map(|state| state.runtime_epoch)
+            .unwrap_or_default(),
+        playtime: PlayerPlaytime::from_secs_i64(player.playtime_secs),
         initial_pos: resolved_spawn.local_pos,
-        appearance,
+        visual_profile,
+        gameplay: prepared_stats.gameplay.clone(),
     };
 
     let mut state = LoadingCtx {
@@ -269,6 +329,7 @@ pub(crate) async fn run_loading(
         username,
         player_id,
         entry,
+        initial_stats: prepared_stats.packet_points,
     };
 
     let span = base_phase_span::<ThisPhase>();

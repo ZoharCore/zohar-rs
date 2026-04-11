@@ -9,6 +9,7 @@ admin-brp = ["bevy"]
 [dependencies]
 bevy = { workspace = true, optional = true }
 bitflags.workspace = true
+enum-map = "2.7.3"
 rand.workspace = true
 
 euclid = "0.22"

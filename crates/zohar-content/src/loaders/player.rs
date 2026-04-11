@@ -1,7 +1,7 @@
 use sqlx::{Row, SqlitePool};
 
 use crate::error::{ContentError, parse_enum};
-use crate::types::player::PlayerClassBaseStats;
+use crate::types::player::{LevelExp, PlayerClassBaseStats};
 
 pub async fn load_player_class_base_stats(
     conn: &SqlitePool,
@@ -45,4 +45,55 @@ pub async fn load_player_class_base_stats(
             })
         })
         .collect()
+}
+
+pub async fn load_level_exp(conn: &SqlitePool) -> Result<Vec<LevelExp>, ContentError> {
+    let rows = sqlx::query(
+        "SELECT level, next_exp, death_loss_pct
+         FROM level_exp
+         ORDER BY level",
+    )
+    .fetch_all(conn)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(LevelExp {
+                level: row.try_get(0)?,
+                next_exp: row.try_get(1)?,
+                death_loss_pct: row.try_get(2)?,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_level_exp;
+    use crate::db::open_fresh_connection;
+    use crate::migrations::schema::apply_schema_migrations;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn load_level_exp_returns_sorted_curve_rows() {
+        let dir = tempdir().expect("tempdir");
+        let pool = open_fresh_connection(&dir.path().join("content.db"))
+            .await
+            .expect("pool");
+        apply_schema_migrations(&pool).await.expect("schema");
+
+        sqlx::query(
+            "INSERT INTO level_exp (level, next_exp, death_loss_pct)
+             VALUES (2, 800, 5), (1, 300, 5), (3, 1500, 4)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed level exp");
+
+        let rows = load_level_exp(&pool).await.expect("level exp");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].level, 1);
+        assert_eq!(rows[1].next_exp, 800_i64);
+        assert_eq!(rows[2].death_loss_pct, 4);
+    }
 }

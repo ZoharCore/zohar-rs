@@ -1,9 +1,10 @@
 use zohar_domain::Empire;
 use zohar_domain::appearance::{EntityDetails, ShowEntity};
 use zohar_domain::coords::{LocalPos, WorldPos};
-use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::player::skill::SkillId;
+use zohar_domain::entity::player::{CoreStatKind, PlayerId};
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
+use zohar_domain::stat::Stat;
 
 use crate::values::{ChatChannel, ClientTimestamp, Facing72, MovementArg, PacketDuration};
 
@@ -40,6 +41,27 @@ pub struct ChatIntent {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreStatAllocationIntent {
+    pub stat: CoreStatKind,
+    pub delta: i8,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillLevelIntent {
+    pub skill: SkillId,
+    pub delta: i8,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerProgressionIntent {
+    CoreStat(CoreStatAllocationIntent),
+    SkillLevel(SkillLevelIntent),
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MovementEvent {
     pub entity_id: EntityId,
@@ -59,6 +81,7 @@ pub enum ClientIntent {
     SetMovementAnimation(MovementAnimation),
     Chat(ChatIntent),
     Attack(AttackTargetIntent),
+    Progression(PlayerProgressionIntent),
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
@@ -80,6 +103,12 @@ pub enum PlayerEvent {
     EntitySpawn {
         show: ShowEntity,
         details: Option<EntityDetails>,
+    },
+    SetEntityStat {
+        entity_id: EntityId,
+        stat: Stat,
+        delta: i32,
+        absolute: i32,
     },
     EntityMove(MovementEvent),
     SetEntityMovementAnimation {

@@ -17,3 +17,9 @@ CREATE TABLE player_class_base_stats (
   stamina_per_level_min INTEGER NOT NULL,
   stamina_per_level_max INTEGER NOT NULL
 );
+
+CREATE TABLE level_exp (
+  level INTEGER PRIMARY KEY,
+  next_exp INTEGER NOT NULL CHECK (next_exp BETWEEN 0 AND 4294967295),
+  death_loss_pct INTEGER NOT NULL DEFAULT 0 CHECK (death_loss_pct BETWEEN 0 AND 100)
+);

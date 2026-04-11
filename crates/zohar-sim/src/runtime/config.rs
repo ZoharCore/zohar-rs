@@ -11,6 +11,7 @@ use zohar_domain::coords::LocalSize;
 use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::MobPrototype;
 use zohar_domain::entity::mob::spawn::SpawnRule;
+use zohar_gameplay::stats::game::PlayerStatRules;
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone)]
@@ -46,6 +47,8 @@ pub struct SharedConfig {
     pub motion_speeds: Arc<EntityMotionSpeedTable>,
     #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub mobs: Arc<HashMap<MobId, MobPrototype>>,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
+    pub player_stats: Arc<PlayerStatRules>,
     pub wander: WanderConfig,
     #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub mob_chat: Arc<MobChatContent>,

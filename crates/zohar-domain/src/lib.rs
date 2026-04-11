@@ -1,6 +1,7 @@
 pub mod appearance;
 pub mod coords;
 pub mod entity;
+pub mod stat;
 pub mod terrain;
 pub mod util;
 

@@ -8,21 +8,43 @@ CREATE TABLE IF NOT EXISTS game.players (
     class_name TEXT NOT NULL DEFAULT 'WARRIOR',
     gender TEXT NOT NULL DEFAULT 'M',
     appearance TEXT NOT NULL DEFAULT 'A',
-    level INTEGER NOT NULL DEFAULT 1,
-    stat_str INTEGER NOT NULL DEFAULT 0,
-    stat_vit INTEGER NOT NULL DEFAULT 0,
-    stat_dex INTEGER NOT NULL DEFAULT 0,
-    stat_int INTEGER NOT NULL DEFAULT 0,
-    map_key TEXT,
-    local_x REAL,
-    local_y REAL,
-    runtime_epoch BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ,
     CHECK (class_name IN ('WARRIOR', 'NINJA', 'SURA', 'SHAMAN')),
     CHECK (gender IN ('M', 'F')),
     CHECK (appearance IN ('A', 'B')),
     CHECK (slot >= 0 AND slot < 4)
+);
+
+CREATE TABLE IF NOT EXISTS game.player_progression (
+    player_id BIGINT PRIMARY KEY REFERENCES game.players (id) ON DELETE CASCADE,
+    level INTEGER NOT NULL DEFAULT 1,
+    exp_in_level BIGINT NOT NULL DEFAULT 0,
+    allocated_str INTEGER NOT NULL DEFAULT 0,
+    allocated_vit INTEGER NOT NULL DEFAULT 0,
+    allocated_dex INTEGER NOT NULL DEFAULT 0,
+    allocated_int INTEGER NOT NULL DEFAULT 0,
+    stat_reset_count INTEGER NOT NULL DEFAULT 0,
+    playtime_secs BIGINT NOT NULL DEFAULT 0,
+    CHECK (level >= 1),
+    CHECK (exp_in_level >= 0),
+    CHECK (playtime_secs >= 0),
+    CHECK (allocated_str >= 0),
+    CHECK (allocated_vit >= 0),
+    CHECK (allocated_dex >= 0),
+    CHECK (allocated_int >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS game.player_runtime_state (
+    player_id BIGINT PRIMARY KEY REFERENCES game.players (id) ON DELETE CASCADE,
+    map_key TEXT,
+    local_x REAL,
+    local_y REAL,
+    current_hp INTEGER,
+    current_sp INTEGER,
+    current_stamina INTEGER,
+    runtime_epoch BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_players_name_active
@@ -43,14 +65,28 @@ INSERT INTO game.players (
     name,
     class_name,
     gender,
-    appearance,
-    level,
+    appearance
+)
+VALUES (1, 'admin', 0, 'Admin', 'WARRIOR', 'M', 'A'),
+       (2, 'guest', 0, 'Guest', 'SHAMAN', 'F', 'B')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO game.player_progression (
+    player_id,
+    level
+)
+VALUES (1, 99),
+       (2, 35)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO game.player_runtime_state (
+    player_id,
     map_key,
     local_x,
     local_y
 )
-VALUES (1, 'admin', 0, 'Admin', 'WARRIOR', 'M', 'A', 99, 'metin2_map_c1', 480, 736),
-       (2, 'guest', 0, 'Guest', 'SHAMAN', 'F', 'B', 35, 'metin2_map_c1', 480, 736)
+VALUES (1, 'metin2_map_c1', 480, 736),
+       (2, 'metin2_map_c1', 480, 736)
 ON CONFLICT DO NOTHING;
 
 SELECT setval(

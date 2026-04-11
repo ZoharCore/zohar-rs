@@ -1,7 +1,12 @@
 use anyhow::anyhow;
 use bevy::prelude::*;
+use std::time::Duration;
 use tracing::warn;
-use zohar_domain::entity::player::{PlayerId, PlayerRuntimeEpoch, PlayerRuntimeSnapshot};
+use zohar_domain::entity::player::{
+    PlayerId, PlayerPlaytime, PlayerProgressionSnapshot, PlayerRuntimeEpoch, PlayerRuntimeSnapshot,
+    PlayerSnapshot,
+};
+use zohar_gameplay::stats::game::{GameStatsApi, Stat};
 use zohar_map_port::LeaveMsg;
 
 use crate::persistence::PlayerPersistencePort;
@@ -9,7 +14,10 @@ use crate::runtime::spatial::sample_player_visual_position_at;
 
 use super::super::common::{LocalTransform, MapConfig, PlayerIndex, RuntimeState};
 use super::super::time::{SimDuration, SimInstant};
-use super::{PlayerMarker, PlayerMotion, PlayerPersistenceState};
+use super::{
+    PlayerMarker, PlayerMotion, PlayerPendingDurableFlush, PlayerPersistenceState,
+    PlayerProgressionComp, PlayerStatsComp,
+};
 
 const AUTOSAVE_INTERVAL: SimDuration = SimDuration::from_millis(30_000);
 const AUTOSAVE_RETRY_DELAY: SimDuration = SimDuration::from_millis(1_000);
@@ -18,11 +26,14 @@ impl PlayerPersistenceState {
     pub(crate) fn initial(
         player_id: PlayerId,
         runtime_epoch: PlayerRuntimeEpoch,
+        persisted_playtime: PlayerPlaytime,
         now: SimInstant,
     ) -> Self {
         Self {
             dirty: false,
             runtime_epoch,
+            persisted_playtime,
+            entered_map_at: now,
             next_autosave_at: Self::initial_autosave_deadline(player_id, now),
         }
     }
@@ -50,6 +61,7 @@ pub(crate) fn mark_player_dirty(world: &mut World, player_entity: Entity) {
     persistence.dirty = true;
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn enqueue_due_autosaves(
     map: Res<MapConfig>,
     persistence_port: Res<PlayerPersistencePort>,
@@ -58,13 +70,22 @@ pub(crate) fn enqueue_due_autosaves(
         &PlayerMarker,
         &LocalTransform,
         Option<&PlayerMotion>,
+        &PlayerProgressionComp,
+        &PlayerStatsComp,
+        Option<&PlayerPendingDurableFlush>,
         &mut PlayerPersistenceState,
     )>,
 ) {
     let now = state.sim_now;
 
-    for (marker, transform, motion, mut persistence) in &mut query {
+    for (marker, transform, motion, progression, stats, pending_flush, mut persistence) in
+        &mut query
+    {
         if persistence.next_autosave_at > now {
+            continue;
+        }
+
+        if pending_flush.is_some_and(|pending| pending.0.is_some()) {
             continue;
         }
 
@@ -73,12 +94,19 @@ pub(crate) fn enqueue_due_autosaves(
             continue;
         }
 
-        let snapshot = PlayerRuntimeSnapshot {
-            id: marker.player_id,
-            runtime_epoch: persistence.runtime_epoch,
-            map_key: map.map_code.clone(),
-            local_pos: snapshot_local_pos(&map, &state, transform, motion.map(|motion| motion.0)),
-        };
+        let snapshot = player_snapshot(
+            player_runtime_snapshot(
+                &map,
+                &state,
+                marker.player_id,
+                persistence.runtime_epoch,
+                current_playtime(&persistence, now),
+                transform,
+                motion.map(|motion| motion.0),
+                current_resources(stats),
+            ),
+            player_progression_snapshot(progression),
+        );
 
         match persistence_port.handle().try_schedule_autosave(snapshot) {
             Ok(()) => {
@@ -97,10 +125,45 @@ pub(crate) fn enqueue_due_autosaves(
     }
 }
 
-pub(crate) fn leave_player_and_snapshot(
-    world: &mut World,
-    msg: LeaveMsg,
-) -> anyhow::Result<PlayerRuntimeSnapshot> {
+pub(crate) fn capture_player_snapshot(
+    world: &World,
+    player_entity: Entity,
+    progression: PlayerProgressionSnapshot,
+) -> anyhow::Result<PlayerSnapshot> {
+    let Some(marker) = world.entity(player_entity).get::<PlayerMarker>() else {
+        return Err(anyhow!("player entity is missing player marker"));
+    };
+    let Some(transform) = world.entity(player_entity).get::<LocalTransform>() else {
+        return Err(anyhow!("player entity is missing local transform"));
+    };
+    let Some(persistence) = world.entity(player_entity).get::<PlayerPersistenceState>() else {
+        return Err(anyhow!("player entity is missing persistence state"));
+    };
+    let Some(stats) = world.entity(player_entity).get::<PlayerStatsComp>() else {
+        return Err(anyhow!("player entity is missing stats state"));
+    };
+
+    let map = world.resource::<MapConfig>();
+    let state = world.resource::<RuntimeState>();
+    Ok(player_snapshot(
+        player_runtime_snapshot(
+            map,
+            state,
+            marker.player_id,
+            persistence.runtime_epoch,
+            current_playtime(persistence, state.sim_now),
+            transform,
+            world
+                .entity(player_entity)
+                .get::<PlayerMotion>()
+                .map(|motion| motion.0),
+            current_resources(stats),
+        ),
+        progression,
+    ))
+}
+
+fn active_player_entity(world: &World, msg: &LeaveMsg) -> anyhow::Result<Entity> {
     let Some(entity) = world
         .resource::<PlayerIndex>()
         .0
@@ -132,6 +195,29 @@ pub(crate) fn leave_player_and_snapshot(
         ));
     }
 
+    Ok(entity)
+}
+
+pub(crate) fn capture_active_player_snapshot(
+    world: &World,
+    msg: LeaveMsg,
+) -> anyhow::Result<PlayerSnapshot> {
+    let entity = active_player_entity(world, &msg)?;
+    let Some(progression) = world.entity(entity).get::<PlayerProgressionComp>() else {
+        return Err(anyhow!(
+            "player {:?} is missing progression state",
+            msg.player_id
+        ));
+    };
+    capture_player_snapshot(world, entity, player_progression_snapshot(progression))
+}
+
+pub(crate) fn leave_player_and_snapshot(
+    world: &mut World,
+    msg: LeaveMsg,
+) -> anyhow::Result<PlayerSnapshot> {
+    let entity = active_player_entity(world, &msg)?;
+
     let Some(transform) = world.entity(entity).get::<LocalTransform>() else {
         return Err(anyhow!(
             "player {:?} is missing a local transform",
@@ -144,24 +230,89 @@ pub(crate) fn leave_player_and_snapshot(
             msg.player_id
         ));
     };
-    let map_code = world.resource::<MapConfig>().map_code.clone();
-    let snapshot_pos = snapshot_local_pos(
-        world.resource::<MapConfig>(),
-        world.resource::<RuntimeState>(),
-        transform,
-        world
-            .entity(entity)
-            .get::<PlayerMotion>()
-            .map(|motion| motion.0),
-    );
-    let snapshot = PlayerRuntimeSnapshot {
-        id: msg.player_id,
-        runtime_epoch: persistence.runtime_epoch,
-        map_key: map_code,
-        local_pos: snapshot_pos,
+    let Some(progression) = world.entity(entity).get::<PlayerProgressionComp>() else {
+        return Err(anyhow!(
+            "player {:?} is missing progression state",
+            msg.player_id
+        ));
     };
+    let Some(stats) = world.entity(entity).get::<PlayerStatsComp>() else {
+        return Err(anyhow!("player {:?} is missing stats state", msg.player_id));
+    };
+    let snapshot = player_snapshot(
+        player_runtime_snapshot(
+            world.resource::<MapConfig>(),
+            world.resource::<RuntimeState>(),
+            msg.player_id,
+            persistence.runtime_epoch,
+            current_playtime(persistence, world.resource::<RuntimeState>().sim_now),
+            transform,
+            world
+                .entity(entity)
+                .get::<PlayerMotion>()
+                .map(|motion| motion.0),
+            current_resources(stats),
+        ),
+        player_progression_snapshot(progression),
+    );
     let _ = world.despawn(entity);
     Ok(snapshot)
+}
+
+fn player_snapshot(
+    runtime: PlayerRuntimeSnapshot,
+    progression: PlayerProgressionSnapshot,
+) -> PlayerSnapshot {
+    PlayerSnapshot {
+        runtime,
+        progression,
+    }
+}
+
+fn player_progression_snapshot(progression: &PlayerProgressionComp) -> PlayerProgressionSnapshot {
+    PlayerProgressionSnapshot {
+        core_stat_allocations: progression.0.core_stat_allocations,
+        stat_reset_count: progression.0.stat_reset_count,
+    }
+}
+
+fn player_runtime_snapshot(
+    map: &MapConfig,
+    state: &RuntimeState,
+    player_id: PlayerId,
+    runtime_epoch: PlayerRuntimeEpoch,
+    playtime: PlayerPlaytime,
+    transform: &LocalTransform,
+    motion: Option<super::PlayerMotionState>,
+    resources: CurrentResources,
+) -> PlayerRuntimeSnapshot {
+    PlayerRuntimeSnapshot {
+        id: player_id,
+        runtime_epoch,
+        map_key: map.map_code.clone(),
+        playtime,
+        current_hp: resources.hp,
+        current_sp: resources.sp,
+        current_stamina: resources.stamina,
+        local_pos: snapshot_local_pos(map, state, transform, motion),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CurrentResources {
+    hp: Option<i32>,
+    sp: Option<i32>,
+    stamina: Option<i32>,
+}
+
+fn current_resources(stats: &PlayerStatsComp) -> CurrentResources {
+    let mut state = stats.state.clone();
+    let api = GameStatsApi::new(&stats.source, &mut state);
+    CurrentResources {
+        hp: Some(api.read_packet(Stat::Hp)),
+        sp: Some(api.read_packet(Stat::Sp)),
+        stamina: Some(api.read_packet(Stat::Stamina)),
+    }
 }
 
 fn advance_autosave_deadline(persistence: &mut PlayerPersistenceState, now: SimInstant) {
@@ -170,6 +321,11 @@ fn advance_autosave_deadline(persistence: &mut PlayerPersistenceState, now: SimI
             .next_autosave_at
             .saturating_add(AUTOSAVE_INTERVAL);
     }
+}
+
+fn current_playtime(persistence: &PlayerPersistenceState, now: SimInstant) -> PlayerPlaytime {
+    let elapsed: Duration = now.saturating_sub(persistence.entered_map_at).into();
+    persistence.persisted_playtime.saturating_add(elapsed)
 }
 
 fn snapshot_local_pos(
@@ -203,27 +359,74 @@ mod tests {
     use crate::motion::EntityMotionSpeedTable;
     use crate::navigation::{MapNavigator, TerrainFlagsGrid};
     use crate::persistence::{
-        PlayerPersistencePort, PlayerPersistenceRequest, SnapshotSaveKind,
-        player_persistence_channel,
+        PlayerPersistencePort, PlayerPersistenceRequest, SaveUrgency, player_persistence_channel,
     };
     use crate::runtime::common::NetEntityId;
-    use crate::runtime::player::PlayerMotionState;
+    use crate::runtime::player::{
+        PendingDurableFlush, PlayerMotionState, PlayerPendingDurableFlush, PlayerProgressionComp,
+        PlayerStatsComp,
+    };
     use crate::runtime::time::SimInstant;
     use crate::types::MapInstanceKey;
     use crate::{MapConfig, SharedConfig, WanderConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::oneshot;
     use zohar_domain::MapId;
     use zohar_domain::TerrainFlags;
     use zohar_domain::coords::{LocalPos, LocalSize};
     use zohar_domain::entity::EntityId;
+    use zohar_domain::entity::player::{
+        CoreStatAllocations, PlayerClass, PlayerGameplayBootstrap, PlayerProgressionSnapshot,
+    };
+    use zohar_gameplay::stats::game::{
+        ActorStatSource, CoreStatBlock, DeterministicGrowthVersion, PlayerGrowthFormula,
+        PlayerResourceFormula, PlayerStatSource, SourceSpeeds,
+    };
     use zohar_map_port::ClientTimestamp;
     use zohar_map_port::Facing72;
+
+    fn test_player_stat_rules() -> crate::PlayerStatRules {
+        crate::PlayerStatRules::new(
+            crate::PlayerClassStatsTable::new(vec![(
+                PlayerClass::Warrior,
+                crate::PlayerClassStatsConfig {
+                    base_stats: CoreStatBlock::new(6, 4, 3, 3),
+                    stat_source: ActorStatSource::Player(PlayerStatSource {
+                        resources: PlayerResourceFormula {
+                            base_max_hp: 600,
+                            base_max_sp: 200,
+                            base_max_stamina: 800,
+                            hp_per_ht: 40,
+                            sp_per_iq: 20,
+                            stamina_per_ht: 5,
+                        },
+                        growth: PlayerGrowthFormula {
+                            hp_per_level: (36, 44),
+                            sp_per_level: (18, 22),
+                            stamina_per_level: (5, 8),
+                            version: DeterministicGrowthVersion::V1,
+                        },
+                        balance: zohar_gameplay::stats::game::default_player_balance_rules(
+                            PlayerClass::Warrior,
+                        ),
+                        speeds: SourceSpeeds::default(),
+                    }),
+                },
+            )]),
+            crate::LevelExpTable::new((1..=120).map(|level| crate::LevelExpEntry {
+                level,
+                next_exp: i64::from(level) * 1_000,
+                death_loss_pct: 5,
+            })),
+        )
+    }
 
     fn test_shared_config() -> SharedConfig {
         SharedConfig {
             motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
             mobs: Arc::new(HashMap::new()),
+            player_stats: Arc::new(test_player_stat_rules()),
             wander: WanderConfig::default(),
             mob_chat: Arc::default(),
         }
@@ -254,6 +457,34 @@ mod tests {
         ))
     }
 
+    fn test_progression() -> PlayerProgressionComp {
+        PlayerProgressionComp(PlayerGameplayBootstrap {
+            player_id: PlayerId::from(1),
+            class: PlayerClass::Warrior,
+            level: 1,
+            exp_in_level: 0,
+            core_stat_allocations: CoreStatAllocations::default(),
+            stat_reset_count: 0,
+            current_hp: None,
+            current_sp: None,
+            current_stamina: None,
+        })
+    }
+
+    fn test_stats(current_hp: i32, current_sp: i32, current_stamina: i32) -> PlayerStatsComp {
+        let mut gameplay = test_progression().0;
+        gameplay.current_hp = Some(current_hp);
+        gameplay.current_sp = Some(current_sp);
+        gameplay.current_stamina = Some(current_stamina);
+        let hydrated = test_player_stat_rules()
+            .hydrate_player(&gameplay)
+            .expect("player stats should hydrate for tests");
+        PlayerStatsComp {
+            source: hydrated.source,
+            state: hydrated.state,
+        }
+    }
+
     #[test]
     fn enqueue_due_autosaves_enqueues_dirty_players_and_clears_dirty_state() {
         let (handle, mut rx) = player_persistence_channel(4);
@@ -276,9 +507,13 @@ mod tests {
                     pos: LocalPos::new(11.0, 22.0),
                     rot: Facing72::from_wrapped(0),
                 },
+                test_progression(),
+                test_stats(321, 123, 777),
                 PlayerPersistenceState {
                     dirty: true,
                     runtime_epoch: Default::default(),
+                    persisted_playtime: PlayerPlaytime::from_secs(120),
+                    entered_map_at: SimInstant::from_millis(5_000),
                     next_autosave_at: SimInstant::ZERO,
                 },
             ))
@@ -290,14 +525,25 @@ mod tests {
         match request {
             PlayerPersistenceRequest::SaveSnapshot {
                 snapshot,
-                kind,
+                urgency,
                 reply,
             } => {
-                assert_eq!(snapshot.id, player_id);
-                assert!(matches!(kind, SnapshotSaveKind::Autosave));
+                assert_eq!(snapshot.player_id(), player_id);
+                assert!(matches!(urgency, SaveUrgency::Autosave));
                 assert!(reply.is_none());
-                assert_eq!(snapshot.map_key, "zohar_map_a1");
-                assert_eq!(snapshot.local_pos, LocalPos::new(11.0, 22.0));
+                assert_eq!(snapshot.runtime.map_key, "zohar_map_a1");
+                assert_eq!(snapshot.runtime.playtime.as_secs(), 145);
+                assert_eq!(snapshot.runtime.local_pos, LocalPos::new(11.0, 22.0));
+                assert_eq!(snapshot.runtime.current_hp, Some(321));
+                assert_eq!(snapshot.runtime.current_sp, Some(123));
+                assert_eq!(snapshot.runtime.current_stamina, Some(777));
+                assert_eq!(
+                    snapshot.progression,
+                    PlayerProgressionSnapshot {
+                        core_stat_allocations: CoreStatAllocations::default(),
+                        stat_reset_count: 0,
+                    }
+                );
             }
             other => panic!("unexpected request: {other:?}"),
         }
@@ -331,6 +577,8 @@ mod tests {
                 pos: LocalPos::new(8.0, 4.0),
                 rot: Facing72::from_wrapped(0),
             },
+            test_progression(),
+            test_stats(450, 210, 699),
             PlayerMotion(PlayerMotionState {
                 segment_start_pos: LocalPos::new(4.0, 4.0),
                 segment_end_pos: LocalPos::new(8.0, 4.0),
@@ -341,6 +589,8 @@ mod tests {
             PlayerPersistenceState {
                 dirty: true,
                 runtime_epoch: Default::default(),
+                persisted_playtime: PlayerPlaytime::ZERO,
+                entered_map_at: SimInstant::ZERO,
                 next_autosave_at: SimInstant::ZERO,
             },
         ));
@@ -350,10 +600,65 @@ mod tests {
         let request = rx.try_recv().expect("autosave request");
         match request {
             PlayerPersistenceRequest::SaveSnapshot { snapshot, .. } => {
-                assert_eq!(snapshot.local_pos, LocalPos::new(6.0, 4.0));
+                assert_eq!(snapshot.runtime.playtime.as_secs(), 3);
+                assert_eq!(snapshot.runtime.local_pos, LocalPos::new(6.0, 4.0));
+                assert_eq!(snapshot.runtime.current_hp, Some(450));
+                assert_eq!(snapshot.runtime.current_sp, Some(210));
+                assert_eq!(snapshot.runtime.current_stamina, Some(699));
             }
             other => panic!("unexpected request: {other:?}"),
         }
+    }
+
+    #[test]
+    fn enqueue_due_autosaves_skips_players_with_pending_flush() {
+        let (handle, mut rx) = player_persistence_channel(4);
+        let mut app = App::new();
+        app.insert_resource(test_map_config(None));
+        app.insert_resource(test_shared_config());
+        app.insert_resource(PlayerPersistencePort::new(handle));
+        app.insert_resource(RuntimeState {
+            sim_now: SimInstant::from_millis(30_000),
+            ..Default::default()
+        });
+        app.add_systems(Update, enqueue_due_autosaves);
+
+        let player_id = PlayerId::from(1);
+        let (_reply_tx, reply_rx) = oneshot::channel();
+        let entity = app
+            .world_mut()
+            .spawn((
+                PlayerMarker { player_id },
+                LocalTransform {
+                    pos: LocalPos::new(11.0, 22.0),
+                    rot: Facing72::from_wrapped(0),
+                },
+                test_progression(),
+                test_stats(321, 123, 777),
+                PlayerPendingDurableFlush(Some(PendingDurableFlush { reply_rx })),
+                PlayerPersistenceState {
+                    dirty: true,
+                    runtime_epoch: Default::default(),
+                    persisted_playtime: PlayerPlaytime::from_secs(120),
+                    entered_map_at: SimInstant::from_millis(5_000),
+                    next_autosave_at: SimInstant::ZERO,
+                },
+            ))
+            .id();
+
+        app.update();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "pending flush should suppress autosave"
+        );
+        let persistence = app
+            .world()
+            .entity(entity)
+            .get::<PlayerPersistenceState>()
+            .expect("persistence state");
+        assert!(persistence.dirty);
+        assert_eq!(persistence.next_autosave_at, SimInstant::ZERO);
     }
 
     #[test]
@@ -385,9 +690,13 @@ mod tests {
                     segment_end_ts: ClientTimestamp::new(1_000),
                     last_client_ts: ClientTimestamp::new(0),
                 }),
+                test_progression(),
+                test_stats(555, 222, 444),
                 PlayerPersistenceState {
                     dirty: true,
                     runtime_epoch: Default::default(),
+                    persisted_playtime: PlayerPlaytime::from_secs(90),
+                    entered_map_at: SimInstant::ZERO,
                     next_autosave_at: SimInstant::ZERO,
                 },
             ))
@@ -407,9 +716,14 @@ mod tests {
         .expect("snapshot");
 
         assert!(!world.entities().contains(entity));
-        assert!(navigator.can_stand(snapshot.local_pos));
-        assert!(snapshot.local_pos.x < 2.0);
-        assert!(snapshot.local_pos.x > 1.9);
-        assert_eq!(snapshot.local_pos.y, 1.2);
+        assert!(navigator.can_stand(snapshot.runtime.local_pos));
+        assert_eq!(snapshot.runtime.playtime.as_secs(), 90);
+        assert_eq!(snapshot.runtime.current_hp, Some(555));
+        assert_eq!(snapshot.runtime.current_sp, Some(222));
+        assert_eq!(snapshot.runtime.current_stamina, Some(444));
+        assert!(snapshot.runtime.local_pos.x < 2.0);
+        assert!(snapshot.runtime.local_pos.x > 1.9);
+        assert_eq!(snapshot.runtime.local_pos.y, 1.2);
+        assert_eq!(snapshot.progression.stat_reset_count, 0);
     }
 }

@@ -19,7 +19,7 @@
 //!
 //! // Use traits for type-safe access
 //! let account = auth_db.accounts().find_by_username("admin").await?;
-//! let players = game_db.players().list_for_user("admin").await?;
+//! let players = game_db.players().list_summaries_for_user("admin").await?;
 //! ```
 
 // =============================================================================
@@ -62,8 +62,9 @@ pub use traits::{
 };
 #[cfg(feature = "db-game")]
 pub use traits::{
-    AcquireSessionResult, CreatePlayerOutcome, GameDb, PlayerRow, PlayersView, ProfileRow,
-    ProfilesView, RuntimeStateSaveOutcome, SessionsView,
+    AcquireSessionResult, CreatePlayerOutcome, GameDb, PlayerCoreStatAllocationRow,
+    PlayerRuntimeStateRow, PlayerStatesView, PlayerStatsBootstrapRow, PlayerSummaryRow,
+    PlayerWriteOutcome, PlayersView, ProfileRow, ProfilesView, SessionsView,
 };
 
 // =============================================================================

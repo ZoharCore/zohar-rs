@@ -70,7 +70,7 @@ pub fn run_core(
         token_signer,
         loaded.coords.clone(),
         CoreSelectConfig {
-            player_create_base_stats: loaded.player_create_base_stats.clone(),
+            player_stats: loaded.player_stats.clone(),
         },
         map_events.clone(),
         player_persistence,

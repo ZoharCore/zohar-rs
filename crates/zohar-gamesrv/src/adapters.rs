@@ -1,5 +1,5 @@
 use tracing::warn;
-use zohar_db::PlayerRow;
+use zohar_db::PlayerSummaryRow;
 use zohar_domain::Empire as DomainEmpire;
 use zohar_domain::appearance::EntityKind;
 use zohar_domain::entity::mob::MobKind;
@@ -8,18 +8,22 @@ use zohar_domain::entity::player::skill::{
     SkillId as DomainSkillId, SuraSkillBranch, WarriorSkillBranch,
 };
 use zohar_domain::entity::player::{
-    PlayerBaseAppearance as DomainPlayerAppearance, PlayerClass as DomainPlayerClass,
-    PlayerGender as DomainPlayerGender, PlayerSlot, PlayerStats, PlayerSummary,
+    CoreStatAllocations, PlayerBaseAppearance as DomainPlayerAppearance,
+    PlayerClass as DomainPlayerClass, PlayerGender as DomainPlayerGender, PlayerPlaytime,
+    PlayerSlot, PlayerStats, PlayerSummary,
 };
 use zohar_domain::entity::{
     EntityId, MovementAnimation as DomainMovementAnimation, MovementKind as DomainMovementKind,
 };
+use zohar_domain::stat::Stat as DomainStat;
+use zohar_gameplay::stats::game::{PlayerStatRules, StatSnapshot};
 use zohar_map_port::{AttackIntent as PortAttackIntent, ChatChannel};
 use zohar_protocol::game_pkt::ChatKind;
 use zohar_protocol::game_pkt::ingame::Skill;
 use zohar_protocol::game_pkt::ingame::movement::{
     MovementAnimation as ProtocolMovementAnimation, MovementKind,
 };
+use zohar_protocol::game_pkt::ingame::stats::{WireStatPoint, WireStatSnapshot};
 use zohar_protocol::game_pkt::ingame::world::EntityType;
 use zohar_protocol::game_pkt::select::{Player, PlayerBaseAppearance};
 use zohar_protocol::game_pkt::{
@@ -32,6 +36,37 @@ pub(crate) trait ToDomain<T> {
 
 pub(crate) trait ToProtocol<T> {
     fn to_protocol(self) -> T;
+}
+
+pub(crate) trait PlayerSummaryRowExt {
+    fn to_domain_with_stats(&self, stats: PlayerSummaryStats<'_>) -> PlayerSummary;
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PlayerSummaryStats<'a> {
+    Rules(&'a PlayerStatRules),
+    CreateBase(&'a crate::PlayerCreateBaseStatTable),
+}
+
+impl PlayerSummaryStats<'_> {
+    fn resolve_player_stats(
+        self,
+        class: DomainPlayerClass,
+        allocations: zohar_db::PlayerCoreStatAllocationRow,
+    ) -> Option<PlayerStats> {
+        match self {
+            Self::Rules(rules) => rules.resolve_player_stats(
+                class,
+                CoreStatAllocations {
+                    allocated_str: allocations.allocated_str,
+                    allocated_vit: allocations.allocated_vit,
+                    allocated_dex: allocations.allocated_dex,
+                    allocated_int: allocations.allocated_int,
+                },
+            ),
+            Self::CreateBase(base_stats) => base_stats.resolve_player_stats(class, allocations),
+        }
+    }
 }
 
 impl ToDomain<EntityId> for NetId {
@@ -202,8 +237,8 @@ impl ToProtocol<Empire> for DomainEmpire {
     }
 }
 
-impl ToDomain<PlayerSummary> for &PlayerRow {
-    fn to_domain(self) -> PlayerSummary {
+impl PlayerSummaryRowExt for PlayerSummaryRow {
+    fn to_domain_with_stats(&self, stats: PlayerSummaryStats<'_>) -> PlayerSummary {
         let slot = match self.slot {
             0 => PlayerSlot::First,
             1 => PlayerSlot::Second,
@@ -218,6 +253,22 @@ impl ToDomain<PlayerSummary> for &PlayerRow {
             }
         };
 
+        let stats = stats
+            .resolve_player_stats(self.class, self.core_stat_allocations)
+            .unwrap_or_else(|| {
+                warn!(
+                    class = ?self.class,
+                    player_id = ?self.id,
+                    "Missing class stats; defaulting visible stats to zero"
+                );
+                PlayerStats {
+                    stat_str: 0,
+                    stat_vit: 0,
+                    stat_dex: 0,
+                    stat_int: 0,
+                }
+            });
+
         PlayerSummary {
             id: self.id,
             slot,
@@ -226,12 +277,8 @@ impl ToDomain<PlayerSummary> for &PlayerRow {
             gender: self.gender,
             appearance: self.appearance,
             level: self.level,
-            stats: PlayerStats {
-                stat_str: self.stat_str,
-                stat_vit: self.stat_vit,
-                stat_dex: self.stat_dex,
-                stat_int: self.stat_int,
-            },
+            playtime: PlayerPlaytime::from_secs_i64(self.playtime_secs),
+            stats,
         }
     }
 }
@@ -448,7 +495,7 @@ impl ToProtocolPlayer for PlayerSummary {
             name: self.name.as_str().into(),
             class_gendered: (self.class, self.gender).to_protocol(),
             level: u8::try_from(self.level).unwrap_or(u8::MAX),
-            playtime_minutes: 0,
+            playtime_minutes: self.playtime.whole_minutes_u32(),
             stat_str: u8::try_from(self.stats.stat_str).unwrap_or(0),
             stat_vit: u8::try_from(self.stats.stat_vit).unwrap_or(0),
             stat_dex: u8::try_from(self.stats.stat_dex).unwrap_or(0),
@@ -457,7 +504,6 @@ impl ToProtocolPlayer for PlayerSummary {
             changed_name: 0,
             hair_part: 0,
             server_addr: endpoint,
-            skill_branch: None::<DomainSkillBranch>.to_protocol(),
         }
     }
 }
@@ -484,5 +530,71 @@ impl ToProtocol<(EntityType, u16)> for EntityKind {
                 (entity_type, mob_id.get() as u16)
             }
         }
+    }
+}
+
+impl ToProtocol<Option<WireStatPoint>> for DomainStat {
+    fn to_protocol(self) -> Option<WireStatPoint> {
+        Some(match self {
+            DomainStat::ArmorDefence
+            | DomainStat::MaxHpPrePctBonus
+            | DomainStat::BonusMaxHp
+            | DomainStat::BonusMaxSp
+            | DomainStat::BonusMaxStamina => return None,
+            DomainStat::Level => WireStatPoint::Level,
+            DomainStat::Exp => WireStatPoint::Exp,
+            DomainStat::NextExp => WireStatPoint::NextExp,
+            DomainStat::Hp => WireStatPoint::Hp,
+            DomainStat::MaxHp => WireStatPoint::MaxHp,
+            DomainStat::Sp => WireStatPoint::Sp,
+            DomainStat::MaxSp => WireStatPoint::MaxSp,
+            DomainStat::Stamina => WireStatPoint::Stamina,
+            DomainStat::MaxStamina => WireStatPoint::MaxStamina,
+            DomainStat::Gold => WireStatPoint::Gold,
+            DomainStat::St => WireStatPoint::St,
+            DomainStat::Ht => WireStatPoint::Ht,
+            DomainStat::Dx => WireStatPoint::Dx,
+            DomainStat::Iq => WireStatPoint::Iq,
+            DomainStat::DefGrade => WireStatPoint::DefGrade,
+            DomainStat::AttSpeed => WireStatPoint::AttSpeed,
+            DomainStat::AttGrade => WireStatPoint::AttGrade,
+            DomainStat::MovSpeed => WireStatPoint::MovSpeed,
+            DomainStat::DisplayedDefGrade => WireStatPoint::ClientDefGrade,
+            DomainStat::CastingSpeed => WireStatPoint::CastingSpeed,
+            DomainStat::MagicAttGrade => WireStatPoint::MagicAttGrade,
+            DomainStat::MagicDefGrade => WireStatPoint::MagicDefGrade,
+            DomainStat::LevelStep => WireStatPoint::LevelStep,
+            DomainStat::StatPoints => WireStatPoint::StatPoints,
+            DomainStat::HpRecovery => WireStatPoint::HpRecovery,
+            DomainStat::SpRecovery => WireStatPoint::SpRecovery,
+            DomainStat::ImmuneStun => WireStatPoint::ImmuneStun,
+            DomainStat::ImmuneSlow => WireStatPoint::ImmuneSlow,
+            DomainStat::ImmuneFall => WireStatPoint::ImmuneFall,
+            DomainStat::PartyTankerBonus => WireStatPoint::PartyTankerBonus,
+            DomainStat::AttGradeBonus => WireStatPoint::AttGradeBonus,
+            DomainStat::DefGradeBonus => WireStatPoint::DefGradeBonus,
+            DomainStat::MagicAttGradeBonus => WireStatPoint::MagicAttGradeBonus,
+            DomainStat::MagicDefGradeBonus => WireStatPoint::MagicDefGradeBonus,
+            DomainStat::PartySkillMasterBonus => WireStatPoint::PartySkillMasterBonus,
+            DomainStat::Polymorph => WireStatPoint::Polymorph,
+            DomainStat::Mount => WireStatPoint::Mount,
+            DomainStat::PartyHasteBonus => WireStatPoint::PartyHasteBonus,
+            DomainStat::PartyDefenderBonus => WireStatPoint::PartyDefenderBonus,
+            DomainStat::StatResetCount => WireStatPoint::StatResetCount,
+            DomainStat::MaxHpPct => WireStatPoint::MaxHpPct,
+            DomainStat::MaxSpPct => WireStatPoint::MaxSpPct,
+        })
+    }
+}
+
+impl ToProtocol<WireStatSnapshot> for &StatSnapshot {
+    fn to_protocol(self) -> WireStatSnapshot {
+        let mut wire = WireStatSnapshot::default();
+        for (stat, value) in self.iter() {
+            if let Some(point) = stat.to_protocol() {
+                wire.set(point, value);
+            }
+        }
+        wire
     }
 }

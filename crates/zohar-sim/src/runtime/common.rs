@@ -16,6 +16,8 @@ pub(crate) use crate::runtime::mob::{
 pub(crate) use crate::runtime::player::{
     ChatIntent, ChatIntentQueue, PlayerAppearanceComp, PlayerCommand, PlayerCommandQueue,
     PlayerMarker, PlayerMotion, PlayerMotionState, PlayerMovementAnimation, PlayerOutboxComp,
+    PlayerPendingDurableFlush, PlayerProgressionComp, PlayerProgressionIntentQueue,
+    PlayerStatsComp,
 };
 pub(crate) use crate::runtime::resources::{
     NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, PortalPollState, RuntimeState,
@@ -30,6 +32,7 @@ pub(crate) const MAX_MOVE_PACKET_STEP_M: f32 = 25.0;
 pub(crate) const MAX_MOVE_INTENTS_PER_TICK: usize = 64;
 pub(crate) const MAX_CHAT_INTENTS_PER_TICK: usize = 16;
 pub(crate) const MAX_ATTACK_INTENTS_PER_TICK: usize = 16;
+pub(crate) const MAX_PROGRESSION_INTENTS_PER_TICK: usize = 8;
 pub(crate) const MAX_MOB_STIMULI_PER_TICK: usize = 16;
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]

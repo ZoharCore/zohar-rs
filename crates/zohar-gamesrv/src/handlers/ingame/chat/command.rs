@@ -6,6 +6,7 @@ use zohar_map_port::{ClientIntent, ClientIntentMsg};
 
 mod prefs;
 mod session;
+mod stats;
 mod teleport;
 
 #[derive(Parser, Debug)]
@@ -28,6 +29,8 @@ pub(super) enum KnownCommand {
     #[command(flatten)]
     Preferences(prefs::PreferencesCommand),
     #[command(flatten)]
+    Stats(stats::StatsCommand),
+    #[command(flatten)]
     Teleport(teleport::TeleportCommand),
 }
 
@@ -36,6 +39,7 @@ impl KnownCommand {
         match self {
             Self::Session(command) => command.execute(),
             Self::Preferences(command) => command.execute(state),
+            Self::Stats(command) => command.execute(state),
             Self::Teleport(command) => command.execute(state).await,
         }
     }
@@ -43,7 +47,7 @@ impl KnownCommand {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum ParsedCommand {
-    Unknown { spelled: String },
+    Unknown { spelled: String, raw_full: String },
     Feedback { message: String },
     Known(KnownCommand),
 }
@@ -61,16 +65,20 @@ pub(super) fn parse(input: &str) -> Option<ParsedCommand> {
     {
         return match command_summary(command) {
             Some(message) => Some(ParsedCommand::Feedback { message }),
-            None => Some(ParsedCommand::Unknown { spelled }),
+            None => Some(ParsedCommand::Unknown {
+                spelled,
+                raw_full: input.to_string(),
+            }),
         };
     }
 
     let argv = std::iter::once("chat-command").chain(tokens.iter().map(String::as_str));
     match SlashCommandLine::try_parse_from(argv) {
         Ok(parsed) => Some(ParsedCommand::Known(parsed.command)),
-        Err(err) if err.kind() == ErrorKind::InvalidSubcommand => {
-            Some(ParsedCommand::Unknown { spelled })
-        }
+        Err(err) if err.kind() == ErrorKind::InvalidSubcommand => Some(ParsedCommand::Unknown {
+            spelled,
+            raw_full: input.to_string(),
+        }),
         Err(err) => Some(ParsedCommand::Feedback {
             message: format_clap_feedback(&spelled, &err),
         }),
@@ -84,8 +92,8 @@ pub(super) async fn execute(
     match command {
         ParsedCommand::Known(command) => command.execute(state).await,
         ParsedCommand::Feedback { message } => info_feedback(message),
-        ParsedCommand::Unknown { spelled } => {
-            prefixed_info_feedback(&spelled, format!("Unimplemented command: `{spelled}`."))
+        ParsedCommand::Unknown { spelled, raw_full } => {
+            prefixed_info_feedback(&spelled, format!("Unimplemented command: `{raw_full}`."))
         }
     }
 }
@@ -309,6 +317,7 @@ mod tests {
             parse("/FoObAr later"),
             Some(ParsedCommand::Unknown {
                 spelled: "/FoObAr".to_string(),
+                raw_full: "/FoObAr later".to_string(),
             })
         );
     }

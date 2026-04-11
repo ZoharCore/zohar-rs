@@ -1,5 +1,7 @@
 use bevy::prelude::*;
+use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::entity::player::PlayerId;
+use zohar_gameplay::stats::game::HydratedPlayerStats;
 use zohar_map_port::{ClientTimestamp, EnterMsg, Facing72, LeaveMsg, PlayerEvent};
 
 use crate::outbox::PlayerOutbox;
@@ -10,7 +12,8 @@ use super::state::{
     ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovementAnimations,
     MapPendingMovements, MapReplication, MapSpatial, NetEntityId, NetEntityIndex,
     PlayerAppearanceComp, PlayerCommandQueue, PlayerCount, PlayerIndex, PlayerMarker, PlayerMotion,
-    PlayerMotionState, PlayerMovementAnimation, PlayerOutboxComp, RuntimeState,
+    PlayerMotionState, PlayerMovementAnimation, PlayerOutboxComp, PlayerPendingDurableFlush,
+    PlayerProgressionComp, PlayerProgressionIntentQueue, PlayerStatsComp, RuntimeState,
 };
 use tracing::{info, warn};
 
@@ -121,6 +124,26 @@ pub(crate) fn on_player_removed(
 
 pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: PlayerOutbox) {
     let now = world.resource::<RuntimeState>().sim_now;
+    let hydrated = world
+        .resource::<super::state::SharedConfig>()
+        .player_stats
+        .hydrate_player(&msg.gameplay)
+        .expect("player gameplay bootstrap must hydrate with shared player stat rules");
+    let appearance = PlayerAppearance::from_parts(
+        &msg.visual_profile,
+        msg.gameplay.class,
+        hydrated.bootstrap_sync.character_update.appearance.level,
+        hydrated
+            .bootstrap_sync
+            .character_update
+            .appearance
+            .move_speed,
+        hydrated
+            .bootstrap_sync
+            .character_update
+            .appearance
+            .attack_speed,
+    );
 
     if let Some(existing_entity) = world
         .resource::<PlayerIndex>()
@@ -132,12 +155,8 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
     }
 
     let initial_rot = Facing72::from_wrapped(0);
-    let (show, details) = make_player_spawn_payload(
-        msg.player_net_id,
-        msg.initial_pos,
-        initial_rot,
-        &msg.appearance,
-    );
+    let (show, details) =
+        make_player_spawn_payload(msg.player_net_id, msg.initial_pos, initial_rot, &appearance);
 
     outbox.set_owner_player_id(msg.player_id);
     outbox.push_reliable(PlayerEvent::EntitySpawn {
@@ -164,12 +183,16 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
                 segment_end_ts: ClientTimestamp::ZERO,
                 last_client_ts: ClientTimestamp::ZERO,
             }),
-            PlayerAppearanceComp(msg.appearance.clone()),
+            PlayerAppearanceComp(appearance),
+            PlayerProgressionComp(msg.gameplay.clone()),
+            PlayerProgressionIntentQueue::default(),
+            PlayerPendingDurableFlush::default(),
+            player_stats_comp(hydrated),
             PlayerMovementAnimation::default(),
             PlayerOutboxComp(outbox),
             PlayerCommandQueue::default(),
             ChatIntentQueue::default(),
-            PlayerPersistenceState::initial(msg.player_id, msg.runtime_epoch, now),
+            PlayerPersistenceState::initial(msg.player_id, msg.runtime_epoch, msg.playtime, now),
         ))
         .id();
 
@@ -183,6 +206,13 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
     }
 
     world.resource_mut::<RuntimeState>().is_dirty = true;
+}
+
+fn player_stats_comp(hydrated: HydratedPlayerStats) -> PlayerStatsComp {
+    PlayerStatsComp {
+        source: hydrated.source,
+        state: hydrated.state,
+    }
 }
 
 pub(crate) fn handle_player_leave(world: &mut World, msg: LeaveMsg) {

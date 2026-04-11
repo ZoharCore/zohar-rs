@@ -21,21 +21,26 @@ use zohar_content::types::ContentCatalog;
 use zohar_content::types::empires::{Empire as ContentEmpire, EmpireStartConfig};
 use zohar_content::types::maps::ContentMap;
 use zohar_content::types::player::{
-    PlayerClass as ContentPlayerClass, PlayerClassBaseStats as ContentPlayerClassBaseStats,
+    LevelExp, PlayerClass as ContentPlayerClass,
+    PlayerClassBaseStats as ContentPlayerClassBaseStats,
 };
 use zohar_db::{Game, GameDb, PlayersView, ProfilesView, SessionsView, postgres_backend};
 use zohar_domain::Empire as DomainEmpire;
 use zohar_domain::MapId;
 use zohar_domain::coords::LocalSize;
 use zohar_domain::entity::player::{PlayerBaseAppearance, PlayerClass, PlayerGender};
+use zohar_gameplay::stats::game::{
+    ActorStatSource, CoreStatBlock, DeterministicGrowthVersion, LevelExpEntry, LevelExpTable,
+    PlayerClassStatsConfig, PlayerClassStatsTable, PlayerGrowthFormula, PlayerResourceFormula,
+    PlayerStatRules, PlayerStatSource, SourceSpeeds, default_player_balance_rules,
+};
 use zohar_gamesrv::infra::{
     ClusterEventBus, MapEndpointResolver, StaticMapResolver, in_process_cluster_event_bus,
 };
-use zohar_gamesrv::{
-    ContentCoords, CoreSelectConfig, GameContext, PlayerCreateBaseStatTable, ServerDrainController,
-};
+use zohar_gamesrv::{ContentCoords, CoreSelectConfig, GameContext, ServerDrainController};
 use zohar_net::SimpleBinRwCodec;
 use zohar_protocol::game_pkt::handshake::{HandshakeGameC2s, HandshakeGameS2c};
+use zohar_protocol::game_pkt::ingame::stats::{StatsS2c, WireStatPoint};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
 use zohar_protocol::game_pkt::ingame::world::{EntityType, WorldS2c};
 use zohar_protocol::game_pkt::ingame::{InGameC2s, InGameS2c};
@@ -75,6 +80,7 @@ fn spawn_test_map_runtime() -> zohar_sim::MapEventSender {
         SharedConfig {
             motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
             mobs: Arc::new(HashMap::new()),
+            player_stats: Arc::new(test_player_stat_rules()),
             wander: WanderConfig::default(),
             mob_chat: Arc::default(),
         },
@@ -89,6 +95,63 @@ fn spawn_test_map_runtime() -> zohar_sim::MapEventSender {
         PlayerPersistenceCoordinatorHandle::disabled(),
         256,
     )
+}
+
+fn test_player_stat_rules() -> PlayerStatRules {
+    let class_stats = PlayerClassStatsTable::new(
+        test_player_class_base_stats()
+            .into_iter()
+            .map(|row| {
+                let class = match row.player_class {
+                    ContentPlayerClass::Warrior => PlayerClass::Warrior,
+                    ContentPlayerClass::Ninja => PlayerClass::Ninja,
+                    ContentPlayerClass::Sura => PlayerClass::Sura,
+                    ContentPlayerClass::Shaman => PlayerClass::Shaman,
+                };
+
+                (
+                    class,
+                    PlayerClassStatsConfig {
+                        base_stats: CoreStatBlock::new(
+                            row.base_strength,
+                            row.base_vitality,
+                            row.base_dexterity,
+                            row.base_intelligence,
+                        ),
+                        stat_source: ActorStatSource::Player(PlayerStatSource {
+                            resources: PlayerResourceFormula {
+                                base_max_hp: row.base_hp,
+                                base_max_sp: row.base_sp,
+                                base_max_stamina: row.base_stamina,
+                                hp_per_ht: row.hp_per_vitality,
+                                sp_per_iq: row.sp_per_intelligence,
+                                stamina_per_ht: row.stamina_per_vitality,
+                            },
+                            growth: PlayerGrowthFormula {
+                                hp_per_level: (row.hp_per_level_min, row.hp_per_level_max),
+                                sp_per_level: (row.sp_per_level_min, row.sp_per_level_max),
+                                stamina_per_level: (
+                                    row.stamina_per_level_min,
+                                    row.stamina_per_level_max,
+                                ),
+                                version: DeterministicGrowthVersion::V1,
+                            },
+                            balance: default_player_balance_rules(class),
+                            speeds: SourceSpeeds::default(),
+                        }),
+                    },
+                )
+            })
+            .collect(),
+    );
+    let level_exp =
+        LevelExpTable::new(test_level_exp_rows().into_iter().map(|row| LevelExpEntry {
+            level: row.level,
+            next_exp: row.next_exp,
+            death_loss_pct: row.death_loss_pct,
+        }));
+
+    PlayerStatRules::new(class_stats, level_exp)
 }
 
 /// Test that concurrent login attempts are properly serialized by session lock.
@@ -209,6 +272,68 @@ async fn test_login_key_survives_select_reconnect() -> anyhow::Result<()> {
         reconnect.is_some(),
         "second LOGIN2 with same token should succeed after select reconnect"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_loading_sends_initialized_main_character_stats() -> anyhow::Result<()> {
+    if !has_test_db_url() {
+        return Ok(());
+    }
+    let _ = tracing_subscriber::fmt::try_init();
+    let (addr, _resolver, ctx, username) = setup_test_env().await?;
+    let valid_token = issue_login_key(&ctx.db, &username).await?;
+
+    let (mut select, mut sequencer) = connect_through_login(addr, &username, valid_token, [0; 16])
+        .await?
+        .ok_or(anyhow::anyhow!("login unexpectedly failed"))?;
+    let _ = await_set_player_choices(&mut select).await?;
+
+    send_sequenced(
+        select.get_mut(),
+        &SelectC2s::Specific(SelectC2sSpecific::SubmitPlayerChoice {
+            slot: PlayerSelectSlot::First,
+        }),
+        &mut sequencer,
+    )
+    .await?;
+    await_phase_transition_select(&mut select, PhaseId::Loading).await?;
+
+    let mut loading = switch_select_to_loading(select);
+    let mut received_stats = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+
+    while tokio::time::Instant::now() < deadline {
+        let packet = timeout(Duration::from_secs(1), loading.next())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for loading stats"))?
+            .ok_or(anyhow::anyhow!("stream closed before loading stats"))??;
+        if let LoadingS2c::Stats(StatsS2c::SetMainCharacterStats { stats }) = packet {
+            received_stats = Some(stats);
+            break;
+        }
+    }
+
+    let stats = received_stats.ok_or_else(|| anyhow::anyhow!("missing main character stats"))?;
+    assert_eq!(stats.get(WireStatPoint::Level), 1);
+    assert_eq!(stats.get(WireStatPoint::Exp), 0);
+    assert_eq!(stats.get(WireStatPoint::NextExp), 300);
+    assert_eq!(stats.get(WireStatPoint::Hp), 760);
+    assert_eq!(stats.get(WireStatPoint::MaxHp), 760);
+    assert_eq!(stats.get(WireStatPoint::Sp), 260);
+    assert_eq!(stats.get(WireStatPoint::MaxSp), 260);
+    assert_eq!(stats.get(WireStatPoint::Stamina), 820);
+    assert_eq!(stats.get(WireStatPoint::MaxStamina), 820);
+    assert_eq!(stats.get(WireStatPoint::Gold), 0);
+    assert_eq!(stats.get(WireStatPoint::St), 6);
+    assert_eq!(stats.get(WireStatPoint::Ht), 4);
+    assert_eq!(stats.get(WireStatPoint::Dx), 3);
+    assert_eq!(stats.get(WireStatPoint::Iq), 3);
+    assert_eq!(stats.get(WireStatPoint::AttSpeed), 100);
+    assert_eq!(stats.get(WireStatPoint::MovSpeed), 100);
+    assert_eq!(stats.get(WireStatPoint::LevelStep), 0);
+    assert_eq!(stats.get(WireStatPoint::StatPoints), 0);
 
     Ok(())
 }
@@ -466,9 +591,7 @@ async fn setup_test_env_with_options_and_heartbeat(
     let ctx = Arc::new(GameContext {
         db: game_db,
         select: CoreSelectConfig {
-            player_create_base_stats: Arc::new(PlayerCreateBaseStatTable::from_content_rows(
-                &test_player_class_base_stats(),
-            )),
+            player_stats: Arc::new(test_player_stat_rules()),
         },
         token_signer: test_token_signer(),
         login_token_idle_ttl: Duration::from_secs(7 * 24 * 60 * 60),
@@ -516,10 +639,6 @@ async fn seed_player_slot_zero<DB: GameDb>(db: &DB, username: &str) -> anyhow::R
             PlayerClass::Warrior,
             PlayerGender::Male,
             PlayerBaseAppearance::VariantA,
-            4,
-            4,
-            4,
-            4,
         )
         .await?;
     Ok(())
@@ -883,6 +1002,7 @@ fn encode_username(s: &str) -> [u8; 31] {
 fn test_content_catalog() -> ContentCatalog {
     ContentCatalog {
         player_class_base_stats: test_player_class_base_stats(),
+        level_exp: test_level_exp_rows(),
         maps: vec![
             ContentMap {
                 map_id: 1,
@@ -937,6 +1057,21 @@ fn test_content_catalog() -> ContentCatalog {
         ],
         ..ContentCatalog::default()
     }
+}
+
+fn test_level_exp_rows() -> Vec<LevelExp> {
+    vec![
+        LevelExp {
+            level: 1,
+            next_exp: 300,
+            death_loss_pct: 0,
+        },
+        LevelExp {
+            level: 2,
+            next_exp: 800,
+            death_loss_pct: 0,
+        },
+    ]
 }
 
 fn test_player_class_base_stats() -> Vec<ContentPlayerClassBaseStats> {

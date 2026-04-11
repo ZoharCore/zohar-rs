@@ -145,14 +145,16 @@ pub struct Player {
     pub _reserved_pos: u64,
 
     pub server_addr: game_pkt::WireServerAddr,
-    pub skill_branch: game_pkt::ZeroOpt<game_pkt::SkillBranch>,
+
+    #[bw(calc = 0)]
+    pub _reserved_skill_branch: u8,
 }
 
 impl Player {
     pub fn empty() -> Self {
         Self {
             db_id: 0,
-            name: Default::default(),
+            name: game_pkt::EntityName::default(),
             class_gendered: game_pkt::PlayerClassGendered::WarriorMale,
             level: 0,
             playtime_minutes: 0,
@@ -164,7 +166,6 @@ impl Player {
             changed_name: 0,
             hair_part: 0,
             server_addr: game_pkt::WireServerAddr::UNROUTABLE,
-            skill_branch: game_pkt::ZeroOpt::none(),
         }
     }
 }

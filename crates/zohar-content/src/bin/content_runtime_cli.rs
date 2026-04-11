@@ -14,6 +14,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = builder.run().await?;
 
     println!("content runtime ready");
+    println!(
+        "player_class_base_stats: {}",
+        runtime.catalog().player_class_base_stats.len()
+    );
+    println!("level_exp: {}", runtime.catalog().level_exp.len());
     println!("maps: {}", runtime.catalog().maps.len());
     println!(
         "map_terrain_flags: {}",

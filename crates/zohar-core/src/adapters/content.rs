@@ -24,6 +24,11 @@ use zohar_domain::entity::mob::{
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 use zohar_domain::util::FlagsMapper;
 use zohar_domain::{BehaviorFlags, DefId, MapId, TerrainFlags};
+use zohar_gameplay::stats::game::{
+    ActorStatSource, CoreStatBlock, DeterministicGrowthVersion, LevelExpEntry, LevelExpTable,
+    PlayerClassStatsConfig, PlayerClassStatsTable, PlayerGrowthFormula, PlayerResourceFormula,
+    PlayerStatRules, PlayerStatSource, SourceSpeeds, default_player_balance_rules,
+};
 use zohar_sim::{
     EntityMotionSpeedTable, MapNavigator, MobChatContent, MobChatLine, MobChatStrategyInterval,
     MotionEntityKey, MotionMoveMode, PlayerMotionProfileKey, TerrainFlagsGrid,
@@ -99,6 +104,58 @@ pub(crate) fn build_entity_motion_speeds(catalog: &ContentCatalog) -> EntityMoti
     }
 
     table
+}
+
+pub(crate) fn build_player_stat_rules(catalog: &ContentCatalog) -> PlayerStatRules {
+    PlayerStatRules::new(
+        PlayerClassStatsTable::new(
+            catalog
+                .player_class_base_stats
+                .iter()
+                .map(|row| {
+                    let player_class = row.player_class.to_domain();
+                    let base_stats = CoreStatBlock::new(
+                        row.base_strength,
+                        row.base_vitality,
+                        row.base_dexterity,
+                        row.base_intelligence,
+                    );
+                    let resources = PlayerResourceFormula {
+                        base_max_hp: row.base_hp,
+                        base_max_sp: row.base_sp,
+                        base_max_stamina: row.base_stamina,
+                        hp_per_ht: row.hp_per_vitality,
+                        sp_per_iq: row.sp_per_intelligence,
+                        stamina_per_ht: row.stamina_per_vitality,
+                    };
+                    let growth = PlayerGrowthFormula {
+                        hp_per_level: (row.hp_per_level_min, row.hp_per_level_max),
+                        sp_per_level: (row.sp_per_level_min, row.sp_per_level_max),
+                        stamina_per_level: (row.stamina_per_level_min, row.stamina_per_level_max),
+                        version: DeterministicGrowthVersion::V1,
+                    };
+
+                    (
+                        player_class,
+                        PlayerClassStatsConfig {
+                            base_stats,
+                            stat_source: ActorStatSource::Player(PlayerStatSource {
+                                resources,
+                                growth,
+                                balance: default_player_balance_rules(player_class),
+                                speeds: SourceSpeeds::default(),
+                            }),
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        LevelExpTable::new(catalog.level_exp.iter().map(|row| LevelExpEntry {
+            level: row.level,
+            next_exp: row.next_exp,
+            death_loss_pct: row.death_loss_pct,
+        })),
+    )
 }
 
 pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPrototype> {

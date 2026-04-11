@@ -62,6 +62,10 @@ impl SimDuration {
     pub(crate) const fn as_millis(self) -> u64 {
         self.0
     }
+
+    pub(crate) fn as_duration(self) -> Duration {
+        Duration::from_millis(self.0)
+    }
 }
 
 impl From<u64> for SimDuration {
@@ -73,5 +77,17 @@ impl From<u64> for SimDuration {
 impl From<SimDuration> for u64 {
     fn from(value: SimDuration) -> Self {
         value.0
+    }
+}
+
+impl From<Duration> for SimDuration {
+    fn from(value: Duration) -> Self {
+        Self::from_millis(value.as_millis().min(u64::MAX as u128) as u64)
+    }
+}
+
+impl From<SimDuration> for Duration {
+    fn from(value: SimDuration) -> Self {
+        value.as_duration()
     }
 }

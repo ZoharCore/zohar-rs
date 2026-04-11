@@ -16,6 +16,7 @@ use super::mob_ai::process_mob_ai;
 use super::mob_motion::sample_mob_motion;
 use super::outbox::outbox_flush;
 use super::player::persistence::enqueue_due_autosaves;
+use super::player::progression::process_player_progression;
 use super::player_actions::process_player_actions;
 use super::players::{on_player_added, on_player_removed};
 use super::portal::process_portal_entries;
@@ -198,6 +199,7 @@ impl Plugin for SimulationPlugin {
             (
                 sample_mob_motion,
                 spawn_rules,
+                process_player_progression,
                 process_player_actions,
                 process_portal_entries,
                 route_mob_aggro,

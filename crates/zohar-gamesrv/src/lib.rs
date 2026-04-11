@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use zohar_db::Game;
+use zohar_gameplay::stats::game::PlayerStatRules;
 use zohar_net::{listen, listen_on, listen_with_ready};
 use zohar_protocol::token::TokenSigner;
 use zohar_sim::{MapEventSender, PlayerPersistenceCoordinatorHandle};
@@ -20,12 +21,15 @@ pub use coords::{ContentCoords, PersistedPlayerPos, ResolvedSpawn};
 pub use drain::ServerDrainController;
 pub use infra::{ChannelDirectory, ClusterEventBus, MapEndpointResolver};
 pub use new_player_defaults::{EmpireStartMaps, PlayerCreateBaseStatTable, PlayerCreateBaseStats};
+pub use zohar_gameplay::stats::game::{
+    LevelExpTable, PlayerClassStatsConfig, PlayerClassStatsTable,
+};
 
 pub const SERVER_DRAIN_GRACE_PERIOD: Duration = Duration::from_secs(20);
 
 #[derive(Clone)]
 pub struct CoreSelectConfig {
-    pub player_create_base_stats: Arc<PlayerCreateBaseStatTable>,
+    pub player_stats: Arc<PlayerStatRules>,
 }
 
 #[derive(Clone)]

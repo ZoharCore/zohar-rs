@@ -75,6 +75,7 @@ async fn load_catalog(conn: &SqlitePool) -> Result<ContentCatalog, ContentError>
 
     Ok(ContentCatalog {
         player_class_base_stats: player::load_player_class_base_stats(conn).await?,
+        level_exp: player::load_level_exp(conn).await?,
         maps,
         map_terrain_flags,
         town_spawns: maps::load_town_spawns(conn).await?,
