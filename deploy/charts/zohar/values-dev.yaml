@@ -11,16 +11,16 @@ postgres:
 auth:
   service:
     type: LoadBalancer
-  logFilter: info,zohar_authsrv=info,zohar_db=info,sqlx::query=debug
+  logFilter: info,zohar_authsrv=info,zohar_db=info,zohar_net=trace,sqlx::query=debug
 
 channelGateway:
   service:
     type: LoadBalancer
-  logFilter: info,zohar_gamesrv=info,zohar_db=info,sqlx::query=debug
+  logFilter: info,zohar_gamesrv=info,zohar_db=info,zohar_net=trace,sqlx::query=debug
 
 network:
   # For service-nodeport mode, set this to a LAN-routable host IPv4.
-  mapAdvertiseIp: "192.168.0.143"
+  mapAdvertiseIp: "192.168.1.9"
   mapEndpointMode: service-nodeport
 
 topology:

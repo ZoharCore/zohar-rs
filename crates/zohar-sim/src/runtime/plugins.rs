@@ -18,12 +18,13 @@ use super::outbox::outbox_flush;
 use super::player::persistence::enqueue_due_autosaves;
 use super::player_actions::process_player_actions;
 use super::players::{on_player_added, on_player_removed};
+use super::portal::process_portal_entries;
 use super::replication::{aoi_reconcile, replication_flush};
 use super::schedule::{advance_sim_time, has_active_players, sync_fixed_tick_rate};
 use super::spawn::{bootstrap_map_runtime, signal_startup_ready, spawn_rules};
 use super::state::{
-    MapConfig, NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, RuntimeState,
-    SharedConfig, SimSet,
+    MapConfig, NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, PortalPollState,
+    RuntimeState, SharedConfig, SimSet,
 };
 
 pub(crate) struct ContentPlugin {
@@ -152,6 +153,7 @@ impl Plugin for MapPlugin {
             .init_resource::<PlayerIndex>()
             .init_resource::<NetEntityIndex>()
             .init_resource::<PlayerCount>()
+            .init_resource::<PortalPollState>()
             .init_resource::<ActionBuffer>()
             .init_resource::<MobAggroDispatchBuffer>();
     }
@@ -197,6 +199,7 @@ impl Plugin for SimulationPlugin {
                 sample_mob_motion,
                 spawn_rules,
                 process_player_actions,
+                process_portal_entries,
                 route_mob_aggro,
             )
                 .chain()

@@ -18,6 +18,21 @@ use super::time::SimInstant;
 pub struct PlayerCount(pub u32);
 
 #[derive(Resource)]
+pub(crate) struct PortalPollState {
+    pub(crate) next_poll_at: SimInstant,
+    pub(crate) overlaps: HashMap<Entity, Entity>,
+}
+
+impl Default for PortalPollState {
+    fn default() -> Self {
+        Self {
+            next_poll_at: SimInstant::ZERO,
+            overlaps: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Resource)]
 pub(crate) struct NetworkBridgeRx {
     pub(crate) inbound_rx: Receiver<InboundEvent>,
 }

@@ -73,6 +73,7 @@ pub enum EntityType {
     Monster = 0,
     Npc = 1,
     Stone = 2,
-    Portal = 3,
+    Warp = 3,
     Player = 6,
+    Goto = 9,
 }

@@ -7,6 +7,7 @@ pub(crate) mod mob;
 pub(crate) mod net;
 pub(crate) mod player;
 mod plugins;
+pub(crate) mod portal;
 pub(crate) mod resources;
 pub(crate) mod rules;
 pub(crate) mod schedule;

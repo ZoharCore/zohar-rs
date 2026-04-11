@@ -15,7 +15,14 @@ pub enum MobKind {
     Monster,
     Npc,
     Stone,
-    Portal,
+    Portal(PortalBehavior),
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PortalBehavior {
+    MapTransfer,
+    LocalReposition,
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]

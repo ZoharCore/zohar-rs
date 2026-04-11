@@ -10,6 +10,7 @@ use super::runtime::{
 };
 use super::session_health::{SessionTick, SessionTracker};
 use super::types::{PhaseResult, SessionEnd, SessionLeaseAction};
+use crate::handlers::ingame::relocation::handle_portal_entry;
 use crate::{GameContext, SERVER_DRAIN_GRACE_PERIOD};
 use std::future::Future;
 use std::sync::Arc;
@@ -19,15 +20,19 @@ use tokio::time::Instant as TokioInstant;
 use tracing::warn;
 use uuid::Uuid;
 use zohar_db::{GameDb, SessionsView};
-use zohar_domain::entity::player::{PlayerRuntimeEpoch, PlayerRuntimeSnapshot};
-use zohar_domain::{Empire as DomainEmpire, MapId, PlayerExitKind};
+use zohar_domain::{
+    Empire as DomainEmpire, MapId, PlayerExitKind,
+    entity::player::{PlayerRuntimeEpoch, PlayerRuntimeSnapshot},
+};
 use zohar_map_port::{EnterMsg, LeaveMsg, PlayerEvent};
-use zohar_net::connection::NextConnection;
-use zohar_net::{Connection, ConnectionPhaseExt};
-use zohar_protocol::game_pkt::ControlS2c;
-use zohar_protocol::game_pkt::ingame::system::SystemS2c;
-use zohar_protocol::game_pkt::ingame::{InGameC2s, InGameS2c};
-use zohar_protocol::handshake::HandshakeState;
+use zohar_net::{Connection, ConnectionPhaseExt, connection::NextConnection};
+use zohar_protocol::{
+    game_pkt::{
+        ControlS2c,
+        ingame::{InGameC2s, InGameS2c, system::SystemS2c},
+    },
+    handshake::HandshakeState,
+};
 use zohar_sim::{PlayerPersistenceQueueError, PlayerPersistenceResult};
 
 pub(super) mod chat;
@@ -35,6 +40,7 @@ pub(super) mod combat;
 pub(super) mod fishing;
 pub(super) mod guild;
 pub(super) mod movement;
+pub(super) mod relocation;
 pub(super) mod trading;
 pub(super) mod world;
 
@@ -237,6 +243,21 @@ fn map_event_to_packets(
             empire,
             message,
         } => chat::encode_chat_event(channel, sender_entity_id, empire, message),
+        PlayerEvent::PortalEntered { .. } => Vec::new(),
+    }
+}
+
+async fn map_event_to_effects(
+    event: PlayerEvent,
+    state: &mut InGameCtx<'_>,
+) -> PhaseResult<InGamePhaseEffects> {
+    match event {
+        PlayerEvent::PortalEntered { destination } => handle_portal_entry(state, destination).await,
+        other => Ok(InGamePhaseEffects::send_many(map_event_to_packets(
+            other,
+            state.map_id,
+            state.ctx.coords.as_ref(),
+        ))),
     }
 }
 
@@ -263,19 +284,16 @@ async fn send_outbound_packet(
 
 async fn drain_outbound_burst(
     conn: &mut Connection<ThisPhase>,
+    state: &mut InGameCtx<'_>,
     map_rx: &mut tokio::sync::mpsc::Receiver<PlayerEvent>,
     max_events: usize,
-    map_id: MapId,
-    coords: &crate::ContentCoords,
 ) -> PhaseResult<()> {
     for _ in 0..max_events {
         let Ok(event) = map_rx.try_recv() else {
             break;
         };
-        let packets = map_event_to_packets(event, map_id, coords);
-        for packet in packets {
-            send_outbound_packet(conn, packet).await?;
-        }
+        let effects = map_event_to_effects(event, state).await?;
+        let _ = apply_runtime_effects(conn, effects).await?;
     }
     Ok(())
 }
@@ -300,14 +318,7 @@ async fn drive_ingame(
     loop {
         // Keep outbound map traffic progressing even when inbound client traffic is
         // continuously ready, preventing observer movement starvation.
-        drain_outbound_burst(
-            &mut conn,
-            &mut map_rx,
-            MAP_EVENT_BURST_LIMIT,
-            state.map_id,
-            state.ctx.coords.as_ref(),
-        )
-        .await?;
+        drain_outbound_burst(&mut conn, state, &mut map_rx, MAP_EVENT_BURST_LIMIT).await?;
 
         let effects = tokio::select! {
             _ = wait_for_server_drain(&mut drain_rx) => {
@@ -322,9 +333,8 @@ async fn drive_ingame(
             }
             outbound = map_rx.recv() => {
                 if let Some(event) = outbound {
-                    for packet in map_event_to_packets(event, state.map_id, state.ctx.coords.as_ref()) {
-                        send_outbound_packet(&mut conn, packet).await?;
-                    }
+                    let effects = map_event_to_effects(event, state).await?;
+                    let _ = apply_runtime_effects(&mut conn, effects).await?;
                 }
                 continue;
             }

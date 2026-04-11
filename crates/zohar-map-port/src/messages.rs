@@ -1,6 +1,6 @@
 use zohar_domain::Empire;
 use zohar_domain::appearance::{EntityDetails, ShowEntity};
-use zohar_domain::coords::LocalPos;
+use zohar_domain::coords::{LocalPos, WorldPos};
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::player::skill::SkillId;
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
@@ -62,6 +62,19 @@ pub enum ClientIntent {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PortalDestination {
+    MapTransfer {
+        #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::WorldPosReflect))]
+        world_pos: WorldPos,
+    },
+    LocalReposition {
+        #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
+        local_pos: LocalPos,
+    },
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
     EntitySpawn {
@@ -81,6 +94,9 @@ pub enum PlayerEvent {
         sender_entity_id: Option<EntityId>,
         empire: Option<Empire>,
         message: Vec<u8>,
+    },
+    PortalEntered {
+        destination: PortalDestination,
     },
 }
 

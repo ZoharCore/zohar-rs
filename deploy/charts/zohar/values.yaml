@@ -123,6 +123,12 @@ topology:
     - metin2_map_a1
     - metin2_map_b1
     - metin2_map_c1
+    - metin2_map_a3
+    - metin2_map_b3
+    - metin2_map_c3
+    - metin2_map_guild_01
+    - metin2_map_guild_02
+    - metin2_map_guild_03
 
 core:
   image:

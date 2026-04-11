@@ -18,7 +18,8 @@ pub(crate) use crate::runtime::player::{
     PlayerMarker, PlayerMotion, PlayerMotionState, PlayerMovementAnimation, PlayerOutboxComp,
 };
 pub(crate) use crate::runtime::resources::{
-    NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, RuntimeState, StartupReadySignal,
+    NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, PortalPollState, RuntimeState,
+    StartupReadySignal,
 };
 pub(crate) use crate::runtime::schedule::SimSet;
 pub(crate) use crate::runtime::time::{SimDuration, SimInstant};

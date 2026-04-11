@@ -19,7 +19,7 @@ use zohar_domain::entity::mob::spawn::{
     WeightedGroupChoice,
 };
 use zohar_domain::entity::mob::{
-    MobBattleType, MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank,
+    MobBattleType, MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank, PortalBehavior,
 };
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 use zohar_domain::util::FlagsMapper;
@@ -188,7 +188,7 @@ fn default_mob_combat_extent_m(mob_kind: MobKind) -> f32 {
         // The client checks melee click range against authored defending spheres.
         // Until we load those extents directly, keep a per-kind fallback here.
         MobKind::Monster | MobKind::Stone => 1.0,
-        MobKind::Npc | MobKind::Portal => 0.0,
+        MobKind::Npc | MobKind::Portal(_) => 0.0,
     }
 }
 
@@ -486,7 +486,8 @@ impl ToDomain<Option<MobKind>> for MobType {
             MobType::Npc => MobKind::Npc,
             MobType::Monster => MobKind::Monster,
             MobType::Stone => MobKind::Stone,
-            MobType::Warp => MobKind::Portal,
+            MobType::Warp => MobKind::Portal(PortalBehavior::MapTransfer),
+            MobType::Goto => MobKind::Portal(PortalBehavior::LocalReposition),
             _ => return None,
         })
     }

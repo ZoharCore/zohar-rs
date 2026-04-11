@@ -16,6 +16,17 @@ pub type LocalVec = Vector2D<f32, LocalMeters>;
 pub type LocalRotation = Rotation2D<f32, LocalMeters, LocalMeters>;
 
 #[cfg(feature = "admin-brp")]
+#[bevy::reflect::reflect_remote(Point2D<f32, GlobalMeters>)]
+#[derive(Debug, Clone, Copy)]
+#[reflect(Debug)]
+pub struct WorldPosReflect {
+    pub x: f32,
+    pub y: f32,
+    #[reflect(ignore)]
+    pub _unit: PhantomData<GlobalMeters>,
+}
+
+#[cfg(feature = "admin-brp")]
 #[bevy::reflect::reflect_remote(Point2D<f32, LocalMeters>)]
 #[derive(Debug, Clone, Copy)]
 #[reflect(Debug)]

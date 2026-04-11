@@ -26,7 +26,9 @@ use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation
 use zohar_domain::entity::mob::spawn::{
     Direction, FacingStrategy, SpawnArea, SpawnRuleDef, SpawnTemplate,
 };
-use zohar_domain::entity::mob::{MobBattleType, MobId, MobKind, MobPrototypeDef, MobRank};
+use zohar_domain::entity::mob::{
+    MobBattleType, MobId, MobKind, MobPrototypeDef, MobRank, PortalBehavior,
+};
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::player::skill::SkillId;
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
@@ -34,6 +36,7 @@ use zohar_domain::{BehaviorFlags, MapId, TerrainFlags};
 use zohar_map_port::{
     AttackIntent, AttackTargetIntent, ChatChannel, ChatIntent as PortChatIntent, ClientIntent,
     ClientIntentMsg, ClientTimestamp, EnterMsg, Facing72, MoveIntent, MovementArg, PlayerEvent,
+    PortalDestination,
 };
 
 fn sim_ms(value: u64) -> super::state::SimInstant {
@@ -116,6 +119,28 @@ fn test_mob_proto(
         attack_range: 150,
         combat_extent_m: 1.0,
         bhv_flags,
+        empire: None,
+    })
+}
+
+fn test_portal_proto(
+    mob_id: MobId,
+    portal_behavior: PortalBehavior,
+    name: impl Into<String>,
+) -> Arc<MobPrototypeDef> {
+    Arc::new(MobPrototypeDef {
+        mob_id,
+        mob_kind: MobKind::Portal(portal_behavior),
+        name: name.into(),
+        rank: MobRank::Pawn,
+        battle_type: MobBattleType::Melee,
+        level: 1,
+        move_speed: 0,
+        attack_speed: 0,
+        aggressive_sight: 0,
+        attack_range: 0,
+        combat_extent_m: 1.0,
+        bhv_flags: BehaviorFlags::empty(),
         empire: None,
     })
 }
@@ -325,6 +350,16 @@ fn spawn_event_ids(events: &[PlayerEvent]) -> Vec<EntityId> {
         .iter()
         .filter_map(|event| match event {
             PlayerEvent::EntitySpawn { show, .. } => Some(show.entity_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn portal_entry_destinations(events: &[PlayerEvent]) -> Vec<PortalDestination> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::PortalEntered { destination, .. } => Some(*destination),
             _ => None,
         })
         .collect()
@@ -756,6 +791,146 @@ fn player_move_ignores_navigation_blockers_in_pre_alpha_policy() {
         .get::<LocalTransform>()
         .expect("transform");
     assert_eq!(transform.pos, LocalPos::new(5.0, 0.0));
+}
+
+#[test]
+fn moving_into_map_transfer_portal_emits_portal_entry_event() {
+    let map_id = MapId::new(41);
+    let portal_mob_id = MobId::new(19_001);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    let portal_pos = LocalPos::new(100.0, 100.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(portal_mob_id),
+        area: SpawnArea::new(portal_pos, LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        portal_mob_id,
+        test_portal_proto(
+            portal_mob_id,
+            PortalBehavior::MapTransfer,
+            "Yayang_Area 4002 8995",
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let mut map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        EntityId(5_101),
+        LocalPos::new(94.0, 100.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    set_sim_now(&mut app, 1_000);
+    move_player(&inbound_tx, player_id, portal_pos, 1_000);
+    advance_tick(&mut app);
+
+    assert!(
+        portal_entry_destinations(&drain_player_events(&mut map_rx)).is_empty(),
+        "portal entry should wait until the in-flight position reaches the trigger"
+    );
+
+    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
+    let motion = app
+        .world()
+        .entity(player_entity)
+        .get::<PlayerMotion>()
+        .expect("player motion")
+        .0;
+    set_sim_now(&mut app, u64::from(motion.segment_end_ts.get()));
+    run_fixed_update(&mut app);
+    run_fixed_post_update(&mut app);
+
+    assert_eq!(
+        portal_entry_destinations(&drain_player_events(&mut map_rx)),
+        vec![PortalDestination::MapTransfer {
+            world_pos: zohar_domain::coords::WorldPos::new(4002.0, 8995.0),
+        }]
+    );
+
+    advance_tick(&mut app);
+    assert!(
+        portal_entry_destinations(&drain_player_events(&mut map_rx)).is_empty(),
+        "portal entry should only emit once while the player remains inside the trigger"
+    );
+}
+
+#[test]
+fn moving_across_map_transfer_portal_segment_waits_for_visual_entry() {
+    let map_id = MapId::new(41);
+    let portal_mob_id = MobId::new(19_011);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    let portal_pos = LocalPos::new(100.0, 100.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(portal_mob_id),
+        area: SpawnArea::new(portal_pos, LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        portal_mob_id,
+        test_portal_proto(
+            portal_mob_id,
+            PortalBehavior::MapTransfer,
+            "Yayang_Area 4002 8995",
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let mut map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        EntityId(5_111),
+        LocalPos::new(94.0, 100.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    set_sim_now(&mut app, 1_000);
+    move_player(&inbound_tx, player_id, LocalPos::new(106.0, 100.0), 1_000);
+    advance_tick(&mut app);
+
+    assert!(
+        portal_entry_destinations(&drain_player_events(&mut map_rx)).is_empty(),
+        "accepting a long movement segment should not immediately trigger the portal"
+    );
+
+    let player_entity = app.world().resource::<PlayerIndex>().0[&player_id];
+    let motion = app
+        .world()
+        .entity(player_entity)
+        .get::<PlayerMotion>()
+        .expect("player motion")
+        .0;
+    set_sim_now(
+        &mut app,
+        1_000
+            + u64::from(
+                motion
+                    .segment_end_ts
+                    .saturating_sub(motion.segment_start_ts)
+                    .get()
+                    / 2,
+            ),
+    );
+    run_fixed_update(&mut app);
+    run_fixed_post_update(&mut app);
+
+    assert_eq!(
+        portal_entry_destinations(&drain_player_events(&mut map_rx)),
+        vec![PortalDestination::MapTransfer {
+            world_pos: zohar_domain::coords::WorldPos::new(4002.0, 8995.0),
+        }]
+    );
 }
 
 #[test]

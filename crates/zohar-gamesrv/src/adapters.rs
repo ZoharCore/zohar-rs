@@ -476,7 +476,12 @@ impl ToProtocol<(EntityType, u16)> for EntityKind {
                     MobKind::Npc => EntityType::Npc,
                     MobKind::Monster => EntityType::Monster,
                     MobKind::Stone => EntityType::Stone,
-                    MobKind::Portal => EntityType::Portal,
+                    MobKind::Portal(zohar_domain::entity::mob::PortalBehavior::MapTransfer) => {
+                        EntityType::Warp
+                    }
+                    MobKind::Portal(zohar_domain::entity::mob::PortalBehavior::LocalReposition) => {
+                        EntityType::Goto
+                    }
                 };
                 (entity_type, mob_id.get() as u16)
             }
