@@ -54,3 +54,4 @@ jobs:
           args: >
             -Dsonar.organization=zoharcore
             -Dsonar.projectKey=ZoharCore_zohar-rs
+            -Dsonar.scm.provider=git
