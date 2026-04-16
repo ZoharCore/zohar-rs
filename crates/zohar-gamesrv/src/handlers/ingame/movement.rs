@@ -23,20 +23,19 @@ pub(super) async fn handle_packet(
             kind,
             arg,
             rot,
-            x,
-            y,
+            pos,
             ts,
         } => {
             let kind = kind.to_domain();
             let packet_ts = u32::from(ts);
             let facing = Facing72::from_wrapped(rot);
 
-            let Some(local_pos) = state.ctx.coords.world_wire_to_local(state.map_id, x, y) else {
+            let Some(local_pos) = state.ctx.coords.world_wire_to_local(state.map_id, pos) else {
                 warn!(
                     player_id = ?state.player_id,
                     map_id = state.map_id.get(),
-                    wire_x = i32::from(x),
-                    wire_y = i32::from(y),
+                    wire_x = pos.x_cm,
+                    wire_y = pos.y_cm,
                     "Ignoring out-of-bounds movement position"
                 );
                 return Ok(InGamePhaseEffects::empty());
@@ -85,12 +84,9 @@ pub(super) fn encode_entity_move(
         return Vec::new();
     };
 
-    let (x, y) = world_pos.to_protocol();
-
     vec![
         MovementS2c::SyncEntityMovement {
-            x,
-            y,
+            pos: world_pos.to_protocol(),
             kind: movement.kind.to_protocol(),
             arg: movement.arg.get(),
             rot: movement.facing.get(),

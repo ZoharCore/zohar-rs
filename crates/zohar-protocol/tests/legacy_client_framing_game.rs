@@ -11,8 +11,7 @@ use zohar_protocol::game_pkt::ingame::world::{EntityType, WorldS2c};
 use zohar_protocol::game_pkt::select::{CreatePlayerError, Player};
 use zohar_protocol::game_pkt::{
     Empire, HandshakeGameC2s, HandshakeGameS2c, LoadingC2s, LoadingS2c, LoginC2s, LoginS2c, NetId,
-    SelectC2s, SelectS2c, ServerInfo, ServerStatus, WireMillis32, WireServerAddr, WireWorldCm,
-    ZeroOpt,
+    SelectC2s, SelectS2c, ServerInfo, ServerStatus, WireMillis32, WireServerAddr, ZeroOpt,
 };
 
 #[test]
@@ -287,8 +286,7 @@ fn loading_s2c_packets_keep_their_legacy_lengths() {
                 net_id: zohar_protocol::game_pkt::NetId(0x0102_0304),
                 class_gender: zohar_protocol::game_pkt::PlayerClassGendered::WarriorMale,
                 name: "legacy".into(),
-                x: 100.into(),
-                y: 200.into(),
+                pos: (100, 200).into(),
                 empire: Empire::Blue,
                 skill_branch: zohar_protocol::game_pkt::ZeroOpt::some(
                     zohar_protocol::game_pkt::SkillBranch::BranchA,
@@ -316,8 +314,7 @@ fn movement_c2s_packets_keep_their_legacy_lengths() {
             kind: MovementKind::Move,
             arg: 0,
             rot: 0,
-            x: WireWorldCm::new(100),
-            y: WireWorldCm::new(200),
+            pos: (100, 200).into(),
             ts: WireMillis32::from(0u32),
         },
         0x07,
@@ -333,8 +330,7 @@ fn movement_s2c_packets_keep_their_legacy_lengths() {
             arg: 0,
             rot: 0,
             net_id: NetId(0x0102_0304),
-            x: WireWorldCm::new(100),
-            y: WireWorldCm::new(200),
+            pos: (100, 200).into(),
             ts: WireMillis32::from(0u32),
             duration: WireMillis32::from(500u32),
         },
@@ -375,8 +371,7 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
         &WorldS2c::SpawnEntity {
             net_id: NetId(1),
             angle: 0.0,
-            x: WireWorldCm::new(0),
-            y: WireWorldCm::new(0),
+            pos: (0, 0).into(),
             entity_type: EntityType::Player,
             race_num: 0,
             move_speed: 100,
@@ -393,7 +388,6 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
             name: "test".into(),
             body_part: 0,
             wep_part: 0,
-            _reserved_part: 0,
             hair_part: 0,
             empire: ZeroOpt::none(),
             guild_id: 0,

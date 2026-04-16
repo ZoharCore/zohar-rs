@@ -286,29 +286,19 @@ impl ZeroFallback for NetId {
 }
 
 #[binrw::binrw]
+#[brw(little)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(transparent)]
-pub struct WireWorldCm(i32);
-
-impl WireWorldCm {
-    pub const fn new(value: i32) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> i32 {
-        self.0
-    }
+pub struct WireWorldPos {
+    pub x_cm: i32,
+    pub y_cm: i32,
 }
 
-impl From<i32> for WireWorldCm {
-    fn from(value: i32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<WireWorldCm> for i32 {
-    fn from(value: WireWorldCm) -> Self {
-        value.0
+impl From<(i32, i32)> for WireWorldPos {
+    fn from(value: (i32, i32)) -> Self {
+        Self {
+            x_cm: value.0,
+            y_cm: value.1,
+        }
     }
 }
 

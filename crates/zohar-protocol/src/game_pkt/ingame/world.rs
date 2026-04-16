@@ -12,10 +12,8 @@ pub enum WorldS2c {
 
         /// Rotation
         angle: f32,
-        /// Absolute world position X
-        x: game_pkt::WireWorldCm,
-        /// Absolute world position Y
-        y: game_pkt::WireWorldCm,
+        /// Absolute world position
+        pos: game_pkt::WireWorldPos,
         /// World position Z
         #[bw(calc = 0)]
         _z_unused: i32,
@@ -45,6 +43,7 @@ pub enum WorldS2c {
         // cosmetics
         body_part: u16,
         wep_part: u16,
+        #[bw(calc = 0)]
         _reserved_part: u16,
         hair_part: u16,
 

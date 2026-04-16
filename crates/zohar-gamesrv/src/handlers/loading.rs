@@ -53,8 +53,7 @@ async fn handle_enter(state: &LoadingCtx<'_>) -> PhaseResult<PhaseEffects<ThisPh
         "Loading player data"
     );
 
-    // Convert meter float world coords into centimeter i32 world coords
-    let (x, y) = spawn_pos.to_protocol();
+    let pos = spawn_pos.to_protocol();
 
     Ok(PhaseEffects::send_many([
         LoadingS2cSpecific::SetMainCharacter {
@@ -62,8 +61,7 @@ async fn handle_enter(state: &LoadingCtx<'_>) -> PhaseResult<PhaseEffects<ThisPh
             class_gender: (state.entry.appearance.class, state.entry.appearance.gender)
                 .to_protocol(),
             name: state.entry.appearance.name.clone().into(),
-            x,
-            y,
+            pos,
             empire: state.entry.appearance.empire.to_protocol(),
             skill_branch: None::<SkillBranch>.to_protocol(),
         }

@@ -456,8 +456,6 @@ impl ToProtocolPlayer for PlayerSummary {
             body_part: self.appearance.to_protocol() as u16,
             changed_name: 0,
             hair_part: 0,
-            pos_x: 0.into(),
-            pos_y: 0.into(),
             server_addr: endpoint,
             skill_branch: None::<DomainSkillBranch>.to_protocol(),
         }

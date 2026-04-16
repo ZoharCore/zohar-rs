@@ -11,8 +11,7 @@ pub enum MovementC2s {
         arg: u8,
         /// Rotation (0-71) - degrees / 5
         rot: u8,
-        x: game_pkt::WireWorldCm,
-        y: game_pkt::WireWorldCm,
+        pos: game_pkt::WireWorldPos,
         /// Client timestamp
         ts: game_pkt::WireMillis32,
     },
@@ -29,8 +28,7 @@ pub enum MovementS2c {
         /// Rotation (0-71) - degrees / 5
         rot: u8,
         net_id: game_pkt::NetId,
-        x: game_pkt::WireWorldCm,
-        y: game_pkt::WireWorldCm,
+        pos: game_pkt::WireWorldPos,
         /// Timestamp
         ts: game_pkt::WireMillis32,
         /// Movement duration in milliseconds

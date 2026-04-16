@@ -7,21 +7,24 @@ use zohar_content::types::empires::Empire as ContentEmpire;
 use zohar_db::PlayerRow;
 use zohar_domain::coords::{LocalPos, LocalSize, WorldPos};
 use zohar_domain::{Empire as DomainEmpire, Empire, MapId};
-use zohar_protocol::game_pkt::WireWorldCm;
+use zohar_protocol::game_pkt::WireWorldPos;
 
 const CM_PER_METER: f32 = 100.0;
 
-pub(crate) fn wire_cm_to_meters(coord_cm: WireWorldCm) -> f32 {
-    coord_cm.get() as f32 / CM_PER_METER
+pub(crate) fn wire_cm_to_meters(coord_cm: i32) -> f32 {
+    coord_cm as f32 / CM_PER_METER
 }
 
-pub(crate) fn meters_to_wire_cm(coord_m: f32) -> WireWorldCm {
-    WireWorldCm::new((coord_m * CM_PER_METER).trunc() as i32)
+pub(crate) fn meters_to_wire_cm(coord_m: f32) -> i32 {
+    (coord_m * CM_PER_METER).trunc() as i32
 }
 
-impl ToProtocol<(WireWorldCm, WireWorldCm)> for WorldPos {
-    fn to_protocol(self) -> (WireWorldCm, WireWorldCm) {
-        (meters_to_wire_cm(self.x), meters_to_wire_cm(self.y))
+impl ToProtocol<WireWorldPos> for WorldPos {
+    fn to_protocol(self) -> WireWorldPos {
+        WireWorldPos {
+            x_cm: meters_to_wire_cm(self.x),
+            y_cm: meters_to_wire_cm(self.y),
+        }
     }
 }
 
@@ -36,24 +39,23 @@ struct MapCoordMeta {
 }
 
 impl MapCoordMeta {
-    fn contains_local(&self, local_x: f32, local_y: f32) -> bool {
-        if !local_x.is_finite() || !local_y.is_finite() {
+    fn contains_local(&self, local: LocalPos) -> bool {
+        if !local.x.is_finite() || !local.y.is_finite() {
             return false;
         }
-        local_x >= 0.0 && local_x < self.map_width && local_y >= 0.0 && local_y < self.map_height
+        local.x >= 0.0 && local.x < self.map_width && local.y >= 0.0 && local.y < self.map_height
     }
 
-    fn to_world(&self, local_x: f32, local_y: f32) -> WorldPos {
-        let world_x = self.base_x + local_x;
-        let world_y = self.base_y + local_y;
-        WorldPos::new(world_x, world_y)
+    fn to_world(&self, local: LocalPos) -> WorldPos {
+        WorldPos::new(self.base_x + local.x, self.base_y + local.y)
     }
 
-    fn to_local(&self, world_x: f32, world_y: f32) -> Option<LocalPos> {
-        let local_x = world_x - self.base_x;
-        let local_y = world_y - self.base_y;
-        if self.contains_local(local_x, local_y) {
-            Some(LocalPos::new(local_x, local_y))
+    fn to_local(&self, world: WorldPos) -> Option<LocalPos> {
+        let local_x = world.x - self.base_x;
+        let local_y = world.y - self.base_y;
+        let local = LocalPos::new(local_x, local_y);
+        if self.contains_local(local) {
+            Some(local)
         } else {
             None
         }
@@ -164,38 +166,33 @@ impl ContentCoords {
 
     pub fn local_to_world(&self, map_id: MapId, local_pos: LocalPos) -> Option<WorldPos> {
         self.maps_by_id.get(&map_id).and_then(|map| {
-            if map.contains_local(local_pos.x, local_pos.y) {
-                Some(map.to_world(local_pos.x, local_pos.y))
+            if map.contains_local(local_pos) {
+                Some(map.to_world(local_pos))
             } else {
                 None
             }
         })
     }
 
-    pub fn world_to_local(&self, map_id: MapId, world_x: f32, world_y: f32) -> Option<LocalPos> {
+    pub fn world_to_local(&self, map_id: MapId, world_pos: WorldPos) -> Option<LocalPos> {
         self.maps_by_id
             .get(&map_id)
-            .and_then(|map| map.to_local(world_x, world_y))
+            .and_then(|map| map.to_local(world_pos))
     }
 
-    pub fn world_wire_to_local(
-        &self,
-        map_id: MapId,
-        world_x: WireWorldCm,
-        world_y: WireWorldCm,
-    ) -> Option<LocalPos> {
-        self.world_to_local(
-            map_id,
-            wire_cm_to_meters(world_x),
-            wire_cm_to_meters(world_y),
-        )
+    pub fn world_wire_to_local(&self, map_id: MapId, world_pos: WireWorldPos) -> Option<LocalPos> {
+        let world = WorldPos::new(
+            wire_cm_to_meters(world_pos.x_cm),
+            wire_cm_to_meters(world_pos.y_cm),
+        );
+        self.world_to_local(map_id, world)
     }
 
     pub fn resolve_world_destination(&self, world_pos: WorldPos) -> Option<(MapId, LocalPos)> {
         let mut resolved = None;
 
         for (map_id, map) in &self.maps_by_id {
-            let Some(local_pos) = map.to_local(world_pos.x, world_pos.y) else {
+            let Some(local_pos) = map.to_local(world_pos) else {
                 continue;
             };
 
@@ -336,7 +333,7 @@ impl ContentCoords {
                 )
             })?;
 
-            if !map.contains_local(local_pos.x, local_pos.y) {
+            if !map.contains_local(local_pos) {
                 bail!(
                     "town spawn for empire {:?} on map_id {} is out of bounds at ({}, {})",
                     empire,
@@ -384,7 +381,7 @@ impl ContentCoords {
                 )
             })?;
 
-            if !map.contains_local(local_x, local_y) {
+            if !map.contains_local(LocalPos::new(local_x, local_y)) {
                 bail!(
                     "empire {:?} start ({}, {}) is out of bounds for map_id {}",
                     domain_empire,
@@ -441,13 +438,15 @@ impl ContentCoords {
     ) -> ResolvedSpawn {
         if let Some(saved) = persisted
             && let Some(map) = self.maps_by_code.get(saved.map_key.as_str())
-            && map.contains_local(saved.local_x, saved.local_y)
         {
-            return ResolvedSpawn {
-                map_id: map.map_id,
-                local_pos: LocalPos::new(saved.local_x, saved.local_y),
-                used_fallback: false,
-            };
+            let local_pos = LocalPos::new(saved.local_x, saved.local_y);
+            if map.contains_local(local_pos) {
+                return ResolvedSpawn {
+                    map_id: map.map_id,
+                    local_pos,
+                    used_fallback: false,
+                };
+            }
         }
 
         // fallback to default empire start if position uninitialized or wiped
@@ -651,9 +650,9 @@ mod tests {
     #[test]
     fn edge_cm_to_m_roundtrip_preserves_exact_cm() {
         for cm in [-12345, -1, 0, 1, 12345, 1_000_000] {
-            let meters = wire_cm_to_meters(WireWorldCm::new(cm));
+            let meters = wire_cm_to_meters(cm);
             let back = meters_to_wire_cm(meters);
-            assert_eq!(i32::from(back), cm);
+            assert_eq!(back, cm);
         }
     }
 

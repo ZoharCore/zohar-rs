@@ -28,8 +28,7 @@ pub enum LoadingS2cSpecific {
 
         name: game_pkt::EntityName,
 
-        x: game_pkt::WireWorldCm,
-        y: game_pkt::WireWorldCm,
+        pos: game_pkt::WireWorldPos,
         #[bw(calc = 0)]
         _z_unused: i32,
 
