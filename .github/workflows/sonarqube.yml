@@ -46,6 +46,11 @@ jobs:
         with:
           fetch-depth: 0        # ensure full history for Sonar blame/SCM info
 
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
       - name: Analyze with SonarQube
 
         # You can pin the exact commit or the version.
