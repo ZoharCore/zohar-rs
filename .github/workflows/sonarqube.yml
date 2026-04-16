@@ -33,8 +33,12 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+concurrency:
+  group: sonar-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
-  pull-requests: read # allows SonarQube to decorate PRs with analysis results
+  pull-requests: read
 
 jobs:
   Analysis:
@@ -44,23 +48,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0        # ensure full history for Sonar blame/SCM info
+          fetch-depth: 0
+
+      - name: Cache SonarQube packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: sonar-${{ runner.os }}
+          restore-keys: |
+            sonar-${{ runner.os }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@v3
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Analyze with SonarQube
-
-        # You can pin the exact commit or the version.
-        # uses: SonarSource/sonarqube-scan-action@v1.1.0
         uses: SonarSource/sonarqube-scan-action@v6
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}   # Generate a token on SonarQube, add it to the secrets of this repo with the name SONAR_TOKEN (Settings > Secrets > Actions > add new repository secret)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          # Additional arguments for the sonarcloud scanner
           args: >
             -Dsonar.organization=zoharcore
             -Dsonar.projectKey=ZoharCore_zohar-rs
