@@ -52,5 +52,5 @@ jobs:
         with:
           # Additional arguments for the sonarcloud scanner
           args: >
-            -Dsonar.organization=ZoharCore
+            -Dsonar.organization=zoharcore
             -Dsonar.projectKey=zoharcore
