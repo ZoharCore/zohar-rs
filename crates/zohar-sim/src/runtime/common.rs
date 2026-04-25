@@ -4,20 +4,21 @@ use bevy::prelude::*;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use zohar_domain::Empire;
-use zohar_domain::coords::LocalPos;
+use zohar_domain::coords::{Facing72, LocalPos};
 use zohar_domain::entity::player::PlayerId;
-use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
+use zohar_domain::entity::{EntityId, MovementKind};
 
 pub(crate) use crate::runtime::config::{MapConfig, SharedConfig};
+pub(crate) use crate::runtime::life::ActorLifeComp;
 pub(crate) use crate::runtime::mob::{
     MobAggro, MobAggroQueue, MobBrainMode, MobBrainState, MobChatState, MobHomeAnchor, MobMarker,
-    MobMotion, MobMotionState, MobPackId, MobRef, SpawnRuleState,
+    MobMotion, MobMotionState, MobPackId, MobRef, MobStatsComp, SpawnRuleState,
 };
 pub(crate) use crate::runtime::player::{
-    ChatIntent, ChatIntentQueue, PlayerAppearanceComp, PlayerCommand, PlayerCommandQueue,
-    PlayerMarker, PlayerMotion, PlayerMotionState, PlayerMovementAnimation, PlayerOutboxComp,
-    PlayerPendingDurableFlush, PlayerProgressionComp, PlayerProgressionIntentQueue,
-    PlayerStatsComp,
+    ChatIntent, ChatIntentQueue, PlayerActivityComp, PlayerAppearanceComp, PlayerCommand,
+    PlayerCommandQueue, PlayerMarker, PlayerMotion, PlayerMotionState, PlayerMovementAnimation,
+    PlayerOutboxComp, PlayerPendingDurableFlush, PlayerProgressionComp,
+    PlayerProgressionIntentQueue, PlayerStatTickerComp, PlayerStatsComp, PlayerTargetComp,
 };
 pub(crate) use crate::runtime::resources::{
     NetEntityIndex, NetworkBridgeRx, PlayerCount, PlayerIndex, PortalPollState, RuntimeState,
@@ -25,7 +26,7 @@ pub(crate) use crate::runtime::resources::{
 };
 pub(crate) use crate::runtime::schedule::SimSet;
 pub(crate) use crate::runtime::time::{SimDuration, SimInstant};
-use zohar_map_port::{ChatChannel, ClientTimestamp, Facing72, MovementArg, PacketDuration};
+use zohar_map_port::{ChatChannel, ClientTimestamp, MovementArg, PacketDuration};
 
 pub(crate) const DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC: f32 = 4.5;
 pub(crate) const MAX_MOVE_PACKET_STEP_M: f32 = 25.0;
@@ -59,13 +60,6 @@ pub(crate) struct PendingLocalChat {
     pub(crate) channel: ChatChannel,
     pub(crate) speaker_name: String,
     pub(crate) message: Vec<u8>,
-}
-
-#[cfg_attr(feature = "admin-brp", derive(Reflect))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PendingMovementAnimation {
-    pub(crate) entity_id: EntityId,
-    pub(crate) animation: MovementAnimation,
 }
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
@@ -107,7 +101,15 @@ pub(crate) struct MapPendingLocalChats(pub(crate) Vec<PendingLocalChat>);
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
-pub(crate) struct MapPendingMovementAnimations(pub(crate) Vec<PendingMovementAnimation>);
+pub(crate) struct MapDirtyEntityPublicStates(pub(crate) Vec<EntityId>);
+
+impl MapDirtyEntityPublicStates {
+    pub(crate) fn mark_dirty(&mut self, entity_id: EntityId) {
+        if !self.0.contains(&entity_id) {
+            self.0.push(entity_id);
+        }
+    }
+}
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]

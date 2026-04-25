@@ -1,12 +1,12 @@
 use zohar_domain::Empire;
-use zohar_domain::appearance::{EntityDetails, ShowEntity};
-use zohar_domain::coords::{LocalPos, WorldPos};
+use zohar_domain::appearance::{EntityPublicState, EntitySnapshot};
+use zohar_domain::coords::{Facing72, LocalPos, WorldPos};
 use zohar_domain::entity::player::skill::SkillId;
 use zohar_domain::entity::player::{CoreStatKind, PlayerId};
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 use zohar_domain::stat::Stat;
 
-use crate::values::{ChatChannel, ClientTimestamp, Facing72, MovementArg, PacketDuration};
+use crate::values::{ChatChannel, ClientTimestamp, MovementArg, PacketDuration};
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,29 @@ pub enum AttackIntent {
 pub struct AttackTargetIntent {
     pub target: EntityId,
     pub attack: AttackIntent,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetIntent {
+    pub target: EntityId,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageInfoFlags(pub u8);
+
+impl DamageInfoFlags {
+    pub const NORMAL: Self = Self(1 << 0);
+    pub const POISON: Self = Self(1 << 1);
+    pub const DODGE: Self = Self(1 << 2);
+    pub const BLOCK: Self = Self(1 << 3);
+    pub const PENETRATE: Self = Self(1 << 4);
+    pub const CRITICAL: Self = Self(1 << 5);
+
+    pub fn bits(self) -> u8 {
+        self.0
+    }
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
@@ -75,12 +98,20 @@ pub struct MovementEvent {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatUpdate {
+    pub stat: Stat,
+    pub absolute: i32,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientIntent {
     Move(MoveIntent),
     SetMovementAnimation(MovementAnimation),
     Chat(ChatIntent),
     Attack(AttackTargetIntent),
+    Target(TargetIntent),
     Progression(PlayerProgressionIntent),
 }
 
@@ -101,14 +132,30 @@ pub enum PortalDestination {
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
     EntitySpawn {
-        show: ShowEntity,
-        details: Option<EntityDetails>,
+        snapshot: EntitySnapshot,
     },
-    SetEntityStat {
+    SetEntityStats {
         entity_id: EntityId,
-        stat: Stat,
-        delta: i32,
-        absolute: i32,
+        stats: Vec<StatUpdate>,
+    },
+    SyncEntityHealthBar {
+        entity_id: EntityId,
+        hp_pct: u8,
+    },
+    DamageInfo {
+        entity_id: EntityId,
+        flags: DamageInfoFlags,
+        damage: i32,
+    },
+    EntityStunned {
+        entity_id: EntityId,
+    },
+    EntityDead {
+        entity_id: EntityId,
+    },
+    EntityPublicStateChanged {
+        entity_id: EntityId,
+        state: EntityPublicState,
     },
     EntityMove(MovementEvent),
     SetEntityMovementAnimation {

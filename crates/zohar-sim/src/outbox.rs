@@ -229,10 +229,10 @@ enum MovementFlushOutcome {
 mod tests {
     use super::*;
     use zohar_domain::Empire;
-    use zohar_domain::coords::LocalPos;
+    use zohar_domain::coords::{Facing72, LocalPos};
     use zohar_domain::entity::MovementKind;
     use zohar_map_port::{
-        ChatChannel, ClientTimestamp, Facing72, MovementArg, MovementEvent, PacketDuration,
+        ChatChannel, ClientTimestamp, MovementArg, MovementEvent, PacketDuration,
     };
 
     fn movement(entity_id: EntityId, x: f32, ts: u32) -> MovementEvent {

@@ -113,6 +113,19 @@ pub(crate) fn handle_client_intent(mut world: DeferredWorld, msg: ClientIntentMs
                 );
             }
         }
+        ClientIntent::Target(intent) => {
+            if let Some(mut queue) = world
+                .entity_mut(player_entity)
+                .get_mut::<PlayerCommandQueue>()
+            {
+                push_player_command(
+                    &mut queue.0,
+                    PlayerCommand::SelectTarget {
+                        target: intent.target,
+                    },
+                );
+            }
+        }
         ClientIntent::Progression(intent) => {
             if let Some(mut queue) = world
                 .entity_mut(player_entity)
@@ -146,25 +159,31 @@ fn push_player_command(queue: &mut Vec<PlayerCommand>, command: PlayerCommand) {
 
     queue.push(command);
     match command {
-        PlayerCommand::Move { .. } => trim_player_commands(queue, MAX_MOVE_INTENTS_PER_TICK, true),
-        PlayerCommand::Attack { .. } => {
-            trim_player_commands(queue, MAX_ATTACK_INTENTS_PER_TICK, false)
+        PlayerCommand::Move { .. } => {
+            trim_player_commands(queue, MAX_MOVE_INTENTS_PER_TICK, is_move_command)
         }
-        PlayerCommand::SetMovementAnimation(_) => {}
+        PlayerCommand::Attack { .. } => {
+            trim_player_commands(queue, MAX_ATTACK_INTENTS_PER_TICK, is_attack_command)
+        }
+        PlayerCommand::SetMovementAnimation(_) | PlayerCommand::SelectTarget { .. } => {}
     }
 }
 
-fn trim_player_commands(queue: &mut Vec<PlayerCommand>, max_len: usize, keep_moves: bool) {
+fn trim_player_commands(
+    queue: &mut Vec<PlayerCommand>,
+    max_len: usize,
+    matches_bucket: fn(&PlayerCommand) -> bool,
+) {
     let mut matching = queue
         .iter()
-        .filter(|command| matches!(command, PlayerCommand::Move { .. }) == keep_moves)
+        .filter(|command| matches_bucket(command))
         .count();
     if matching <= max_len {
         return;
     }
 
     queue.retain(|command| {
-        let is_matching = matches!(command, PlayerCommand::Move { .. }) == keep_moves;
+        let is_matching = matches_bucket(command);
         if !is_matching {
             return true;
         }
@@ -175,6 +194,14 @@ fn trim_player_commands(queue: &mut Vec<PlayerCommand>, max_len: usize, keep_mov
             true
         }
     });
+}
+
+fn is_move_command(command: &PlayerCommand) -> bool {
+    matches!(command, PlayerCommand::Move { .. })
+}
+
+fn is_attack_command(command: &PlayerCommand) -> bool {
+    matches!(command, PlayerCommand::Attack { .. })
 }
 
 fn player_move_commands_match(lhs: &PlayerCommand, rhs: &PlayerCommand) -> bool {
@@ -246,10 +273,11 @@ fn handle_global_shout(world: &mut World, msg: GlobalShoutMsg) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zohar_domain::coords::Facing72;
     use zohar_domain::coords::LocalPos;
     use zohar_domain::entity::EntityId;
     use zohar_domain::entity::MovementKind;
-    use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg};
+    use zohar_map_port::{AttackIntent, ClientTimestamp, MovementArg};
 
     fn move_command(kind: MovementKind, ts: u32, x: f32, y: f32) -> PlayerCommand {
         PlayerCommand::Move {

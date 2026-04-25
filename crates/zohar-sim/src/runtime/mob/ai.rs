@@ -2,10 +2,12 @@ use bevy::prelude::*;
 use rand::RngExt;
 use std::f32::consts::TAU;
 use std::sync::Arc;
-use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize};
+use zohar_domain::coords::{
+    Facing72, LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize,
+};
 use zohar_domain::entity::mob::MobPrototypeDef;
 use zohar_domain::entity::{EntityId, MovementKind};
-use zohar_map_port::{ClientTimestamp, Facing72};
+use zohar_map_port::ClientTimestamp;
 
 use crate::navigation::MapNavigator;
 
@@ -76,7 +78,7 @@ pub(crate) fn process_mob_ai(world: &mut World) {
         };
 
         let aggros = drain_mob_aggro(world, mob_entity);
-        state_changed |= apply_new_aggro(&mut brain, &aggros, context.now);
+        state_changed |= apply_new_aggro(world, &mut brain, &aggros, context.now);
         state_changed |= acquire_idle_target(world, &context, &mut brain);
         let target_pos = validate_target(world, &context, &mut brain, &mut state_changed);
 
@@ -106,6 +108,9 @@ pub(crate) fn process_mob_ai(world: &mut World) {
 
 fn collect_mob_context(world: &World, mob_entity: Entity) -> Option<MobContext> {
     let mob_ref = world.entity(mob_entity).get::<MobRef>()?;
+    if !crate::runtime::actor_life::actor_can_act(world, mob_entity) {
+        return None;
+    }
     let proto = world
         .resource::<SharedConfig>()
         .mobs
@@ -169,11 +174,12 @@ fn handle_attack_windup(brain: &mut MobBrainState, now: super::state::SimInstant
 }
 
 fn apply_new_aggro(
+    world: &World,
     brain: &mut MobBrainState,
     aggros: &[MobAggro],
     now: super::state::SimInstant,
 ) -> bool {
-    let Some(target_id) = latest_provoked_by(aggros) else {
+    let Some(target_id) = latest_live_provoker(world, aggros) else {
         return false;
     };
     if brain.target == Some(target_id) && brain.mode == MobBrainMode::Pursuit {
@@ -199,6 +205,12 @@ fn acquire_idle_target(world: &World, context: &MobContext, brain: &mut MobBrain
     ) else {
         return false;
     };
+    let Some(acquired_entity) = query::net_entity(world, acquired) else {
+        return false;
+    };
+    if !crate::runtime::actor_life::actor_can_be_combat_target(world, acquired_entity) {
+        return false;
+    }
 
     brain.target = Some(acquired);
     brain.mode = MobBrainMode::Pursuit;
@@ -213,6 +225,15 @@ fn validate_target(
     state_changed: &mut bool,
 ) -> Option<LocalPos> {
     let target = brain.target?;
+    let target_entity = query::net_entity(world, target);
+    if target_entity
+        .is_none_or(|entity| !crate::runtime::actor_life::actor_can_be_combat_target(world, entity))
+    {
+        brain.target = None;
+        brain.mode = MobBrainMode::Return;
+        *state_changed = true;
+        return None;
+    }
     let target_pos = query::player_position(world, target, context.now_ts);
     let target_exceeded_leash = target_pos.is_some_and(|target_pos| {
         query::has_exceeded_leash(context.current_pos, target_pos, context.home_pos)
@@ -396,6 +417,7 @@ fn handle_pursuit(
         return build_mob_attack_action(
             world,
             mob_entity,
+            target,
             target_pos,
             timing.packet_duration.get(),
             *brain,
@@ -473,14 +495,14 @@ fn drain_mob_aggro(world: &mut World, mob_entity: Entity) -> Vec<MobAggro> {
     std::mem::take(&mut queue.0)
 }
 
-fn latest_provoked_by(aggros: &[MobAggro]) -> Option<EntityId> {
-    aggros
-        .iter()
-        .rev()
-        .map(|aggro| match aggro {
-            MobAggro::ProvokedBy { attacker } => *attacker,
-        })
-        .next()
+fn latest_live_provoker(world: &World, aggros: &[MobAggro]) -> Option<EntityId> {
+    aggros.iter().rev().find_map(|aggro| match aggro {
+        MobAggro::ProvokedBy { attacker } => {
+            let entity = query::net_entity(world, *attacker)?;
+            crate::runtime::actor_life::actor_can_be_combat_target(world, entity)
+                .then_some(*attacker)
+        }
+    })
 }
 
 fn sample_idle_wander_target(

@@ -1,19 +1,22 @@
 use bevy::prelude::*;
 use zohar_domain::appearance::PlayerAppearance;
+use zohar_domain::coords::Facing72;
 use zohar_domain::entity::player::PlayerId;
-use zohar_gameplay::stats::game::HydratedPlayerStats;
-use zohar_map_port::{ClientTimestamp, EnterMsg, Facing72, LeaveMsg, PlayerEvent};
+use zohar_gameplay::stats::game::{HydratedPlayerStats, PlayerStatsRuntime};
+use zohar_map_port::{ClientTimestamp, EnterMsg, LeaveMsg, PlayerEvent};
 
 use crate::outbox::PlayerOutbox;
 use crate::runtime::net::replication::bootstrap_observer_snapshot;
-use crate::runtime::spawn_events::make_player_spawn_payload;
+use crate::runtime::spawn_events::make_player_snapshot;
 
 use super::state::{
-    ChatIntentQueue, LocalTransform, MapPendingLocalChats, MapPendingMovementAnimations,
-    MapPendingMovements, MapReplication, MapSpatial, NetEntityId, NetEntityIndex,
-    PlayerAppearanceComp, PlayerCommandQueue, PlayerCount, PlayerIndex, PlayerMarker, PlayerMotion,
-    PlayerMotionState, PlayerMovementAnimation, PlayerOutboxComp, PlayerPendingDurableFlush,
-    PlayerProgressionComp, PlayerProgressionIntentQueue, PlayerStatsComp, RuntimeState,
+    ActorLifeComp, ChatIntentQueue, LocalTransform, MapDirtyEntityPublicStates,
+    MapPendingLocalChats, MapPendingMovements, MapReplication, MapSpatial, NetEntityId,
+    NetEntityIndex, PlayerActivityComp, PlayerAppearanceComp, PlayerCommandQueue, PlayerCount,
+    PlayerIndex, PlayerMarker, PlayerMotion, PlayerMotionState, PlayerMovementAnimation,
+    PlayerOutboxComp, PlayerPendingDurableFlush, PlayerProgressionComp,
+    PlayerProgressionIntentQueue, PlayerStatTickerComp, PlayerStatsComp, PlayerTargetComp,
+    RuntimeState,
 };
 use tracing::{info, warn};
 
@@ -60,8 +63,8 @@ pub(crate) fn on_player_removed(
         &mut MapSpatial,
         &mut MapReplication,
         &mut MapPendingLocalChats,
-        &mut MapPendingMovementAnimations,
         &mut MapPendingMovements,
+        &mut MapDirtyEntityPublicStates,
     )>,
     mut outbox_query: Query<(Entity, &NetEntityId, &mut PlayerOutboxComp), With<PlayerMarker>>,
     mut state: ResMut<RuntimeState>,
@@ -79,8 +82,8 @@ pub(crate) fn on_player_removed(
             mut spatial,
             mut replication,
             mut pending_chats,
-            mut pending_animations,
             mut pending,
+            mut pending_public_states,
         )) = map_query.get_mut(map_entity)
     {
         let _ = replication.0.remove_observer(net_id.net_id);
@@ -90,13 +93,13 @@ pub(crate) fn on_player_removed(
         pending_chats.0.retain(|chat| {
             chat.speaker_player_id != marker.player_id && chat.speaker_entity_id != net_id.net_id
         });
-        pending_animations
-            .0
-            .retain(|animation| animation.entity_id != net_id.net_id);
         pending.0.retain(|movement| {
             movement.entity_id != net_id.net_id
                 && movement.mover_player_id != Some(marker.player_id)
         });
+        pending_public_states
+            .0
+            .retain(|entity_id| *entity_id != net_id.net_id);
 
         for observer_net in observers {
             if let Some(observer_entity) = net_index.0.get(&observer_net).copied()
@@ -132,17 +135,9 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
     let appearance = PlayerAppearance::from_parts(
         &msg.visual_profile,
         msg.gameplay.class,
-        hydrated.bootstrap_sync.character_update.appearance.level,
-        hydrated
-            .bootstrap_sync
-            .character_update
-            .appearance
-            .move_speed,
-        hydrated
-            .bootstrap_sync
-            .character_update
-            .appearance
-            .attack_speed,
+        hydrated.bootstrap_sync.public_state.stats.level,
+        hydrated.bootstrap_sync.public_state.stats.move_speed,
+        hydrated.bootstrap_sync.public_state.stats.attack_speed,
     );
 
     if let Some(existing_entity) = world
@@ -155,14 +150,11 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
     }
 
     let initial_rot = Facing72::from_wrapped(0);
-    let (show, details) =
-        make_player_spawn_payload(msg.player_net_id, msg.initial_pos, initial_rot, &appearance);
+    let snapshot =
+        make_player_snapshot(msg.player_net_id, msg.initial_pos, initial_rot, &appearance);
 
     outbox.set_owner_player_id(msg.player_id);
-    outbox.push_reliable(PlayerEvent::EntitySpawn {
-        show,
-        details: Some(details),
-    });
+    outbox.push_reliable(PlayerEvent::EntitySpawn { snapshot });
 
     let player_entity = world
         .spawn((
@@ -190,9 +182,15 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
             player_stats_comp(hydrated),
             PlayerMovementAnimation::default(),
             PlayerOutboxComp(outbox),
+            PlayerTargetComp::default(),
             PlayerCommandQueue::default(),
             ChatIntentQueue::default(),
             PlayerPersistenceState::initial(msg.player_id, msg.runtime_epoch, msg.playtime, now),
+        ))
+        .insert((
+            ActorLifeComp::alive(),
+            PlayerActivityComp::default(),
+            PlayerStatTickerComp::initial(msg.player_id, now),
         ))
         .id();
 
@@ -209,10 +207,7 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
 }
 
 fn player_stats_comp(hydrated: HydratedPlayerStats) -> PlayerStatsComp {
-    PlayerStatsComp {
-        source: hydrated.source,
-        state: hydrated.state,
-    }
+    PlayerStatsComp(PlayerStatsRuntime::new(hydrated.source, hydrated.state))
 }
 
 pub(crate) fn handle_player_leave(world: &mut World, msg: LeaveMsg) {

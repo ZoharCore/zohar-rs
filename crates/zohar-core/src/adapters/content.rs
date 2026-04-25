@@ -19,7 +19,8 @@ use zohar_domain::entity::mob::spawn::{
     WeightedGroupChoice,
 };
 use zohar_domain::entity::mob::{
-    MobBattleType, MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank, PortalBehavior,
+    MobBattleType, MobCombatStats, MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank,
+    PortalBehavior,
 };
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 use zohar_domain::util::FlagsMapper;
@@ -190,6 +191,17 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
             aggressive_sight: mob.aggressive_sight as u16,
             attack_range: mob.attack_range as u16,
             combat_extent_m: default_mob_combat_extent_m(mob_kind),
+            combat: MobCombatStats {
+                strength: i64_to_i32_saturating(mob.strength),
+                dexterity: i64_to_i32_saturating(mob.dexterity),
+                vitality: i64_to_i32_saturating(mob.vitality),
+                intelligence: i64_to_i32_saturating(mob.intelligence),
+                damage_min: i64_to_i32_saturating(mob.damage_min),
+                damage_max: i64_to_i32_saturating(mob.damage_max),
+                max_hp: i64_to_i32_saturating(mob.max_hp),
+                defense: i64_to_i32_saturating(mob.defense),
+                damage_multiplier: mob.damage_multiplier as f32,
+            },
             bhv_flags: mob.ai_flags.to_domain(),
             empire: None, // TODO FUTURE: add support for mob empires in catalog
         });
@@ -489,6 +501,10 @@ fn def_id_from_i64<T>(raw: i64, field: &'static str) -> Option<DefId<T>> {
     }
 }
 
+fn i64_to_i32_saturating(raw: i64) -> i32 {
+    i32::try_from(raw).unwrap_or(if raw < 0 { i32::MIN } else { i32::MAX })
+}
+
 impl ToDomain<PlayerClass> for ContentPlayerClass {
     fn to_domain(self) -> PlayerClass {
         match self {
@@ -609,6 +625,15 @@ mod tests {
             attack_speed: 100,
             aggressive_sight: 0,
             attack_range: 150,
+            strength: 3,
+            dexterity: 6,
+            vitality: 5,
+            intelligence: 2,
+            damage_min: 20,
+            damage_max: 24,
+            max_hp: 126,
+            defense: 4,
+            damage_multiplier: 1.0,
         }
     }
 
@@ -659,6 +684,37 @@ mod tests {
         let proto = protos.get(&MobId::new(101)).expect("proto");
         assert!(proto.bhv_flags.contains(BehaviorFlags::NO_MOVE));
         assert!(proto.bhv_flags.contains(BehaviorFlags::AGGRESSIVE));
+    }
+
+    #[test]
+    fn build_mob_proto_preserves_combat_stats() {
+        let mut mob = valid_mob(101, MobType::Monster);
+        mob.strength = 8;
+        mob.dexterity = 11;
+        mob.vitality = 13;
+        mob.intelligence = 5;
+        mob.damage_min = 30;
+        mob.damage_max = 42;
+        mob.max_hp = 900;
+        mob.defense = 27;
+        mob.damage_multiplier = 1.25;
+
+        let catalog = ContentCatalog {
+            mobs: vec![mob],
+            ..ContentCatalog::default()
+        };
+
+        let protos = build_mob_proto(&catalog);
+        let proto = protos.get(&MobId::new(101)).expect("proto");
+        assert_eq!(proto.combat.strength, 8);
+        assert_eq!(proto.combat.dexterity, 11);
+        assert_eq!(proto.combat.vitality, 13);
+        assert_eq!(proto.combat.intelligence, 5);
+        assert_eq!(proto.combat.damage_min, 30);
+        assert_eq!(proto.combat.damage_max, 42);
+        assert_eq!(proto.combat.max_hp, 900);
+        assert_eq!(proto.combat.defense, 27);
+        assert_eq!(proto.combat.damage_multiplier, 1.25);
     }
 
     #[test]

@@ -11,13 +11,14 @@ use rand::{Rng, RngExt};
 use std::time::Duration;
 use zohar_domain::Empire;
 use zohar_domain::appearance::PlayerAppearance;
+use zohar_domain::coords::Facing72;
 use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::mob::spawn::{SpawnTemplate, WeightedGroupChoice};
 use zohar_domain::entity::mob::{MobBattleType, MobId};
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 #[cfg(test)]
 use zohar_map_port::MovementArg;
-use zohar_map_port::{ClientTimestamp, Facing72, PacketDuration};
+use zohar_map_port::{ClientTimestamp, PacketDuration};
 
 use super::rules::{combat, movement};
 use super::time::{SimDuration, SimInstant};
@@ -218,7 +219,7 @@ pub(crate) fn duration_from_motion_speed(
     PacketDuration::new((base_dur * (100.0 / move_speed_attr as f32)) as u32)
 }
 
-pub(crate) fn random_protocol_rot(rng: &mut SmallRng) -> Facing72 {
+pub(crate) fn random_facing(rng: &mut SmallRng) -> Facing72 {
     Facing72::from_wrapped(rng.random_range(0..72))
 }
 
@@ -246,10 +247,10 @@ pub(crate) fn rotation_from_delta(
     // Match the legacy server's facing convention from `GetDegreeFromPosition`:
     // 0=north, 90=east, 180=south, 270=west.
     let angle = delta.x.atan2(delta.y).to_degrees().rem_euclid(360.0);
-    degrees_to_protocol_rot(angle)
+    degrees_to_facing(angle)
 }
 
-pub(crate) fn degrees_to_protocol_rot(degrees: f32) -> Facing72 {
+pub(crate) fn degrees_to_facing(degrees: f32) -> Facing72 {
     let normalized = degrees.rem_euclid(360.0);
     Facing72::from_wrapped(((normalized / 5.0) as i32).rem_euclid(72) as u8)
 }
@@ -343,6 +344,9 @@ pub(crate) fn validate_player_attack(
 ) -> Option<Entity> {
     let target_entity = net_entity(world, target)?;
     if target_entity == net_entity(world, attacker_net_id).unwrap_or(Entity::PLACEHOLDER) {
+        return None;
+    }
+    if !crate::runtime::actor_life::actor_can_take_combat_damage(world, target_entity) {
         return None;
     }
 

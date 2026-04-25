@@ -12,22 +12,30 @@ use tokio::sync::mpsc::Receiver;
 
 use super::aggro::MobAggroDispatchBuffer;
 use super::state::{
-    LocalTransform, MapPendingMovements, MobAggro, MobAggroQueue, MobBrainMode, MobBrainState,
-    MobMarker, MobMotion, MobMotionState, NetEntityId, PendingMovement, PlayerCommandQueue,
-    PlayerIndex, PlayerMotion, PlayerMotionState, RuntimeState,
+    LocalTransform, MapDirtyEntityPublicStates, MapPendingMovements, MapReplication, MapSpawnRules,
+    MobAggro, MobAggroQueue, MobBrainMode, MobBrainState, MobMarker, MobMotion, MobMotionState,
+    MobStatsComp, NetEntityId, PendingMovement, PlayerActivityComp, PlayerCommandQueue,
+    PlayerIndex, PlayerMotion, PlayerMotionState, PlayerMovementAnimation, PlayerStatTickerComp,
+    PlayerStatsComp, RuntimeState, SimDuration,
 };
 use super::util::sample_player_motion_at;
 use crate::MapEventSender;
 use crate::motion::{EntityMotionSpeedTable, MotionMoveMode, PlayerMotionProfileKey};
 use crate::persistence::{PlayerPersistenceCoordinatorHandle, player_persistence_channel};
+use crate::runtime::time::SimTickerClock;
 use crate::types::MapInstanceKey;
-use zohar_domain::appearance::{EntityKind, PlayerAppearance, PlayerVisualProfile};
-use zohar_domain::coords::{LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize};
+use zohar_domain::appearance::{
+    EntityKind, EntityPublicEquipment, EntityPublicFlags, EntityPublicSocial, EntityPublicSpeeds,
+    EntityPublicState, PlayerAppearance, PlayerVisualProfile,
+};
+use zohar_domain::coords::{
+    Facing72, LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize,
+};
 use zohar_domain::entity::mob::spawn::{
     Direction, FacingStrategy, SpawnArea, SpawnRuleDef, SpawnTemplate,
 };
 use zohar_domain::entity::mob::{
-    MobBattleType, MobId, MobKind, MobPrototypeDef, MobRank, PortalBehavior,
+    MobBattleType, MobCombatStats, MobId, MobKind, MobPrototypeDef, MobRank, PortalBehavior,
 };
 use zohar_domain::entity::player::skill::SkillId;
 use zohar_domain::entity::player::{
@@ -37,12 +45,13 @@ use zohar_domain::entity::player::{
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 use zohar_domain::{BehaviorFlags, MapId, TerrainFlags};
 use zohar_gameplay::stats::game::{
-    ActorStatSource, CoreStatBlock, DeterministicGrowthVersion, PlayerGrowthFormula,
-    PlayerResourceFormula, PlayerStatSource, SourceSpeeds, Stat,
+    ActorStatSource, CompiledModifier, CompiledStatContribution, CoreStatBlock,
+    DeterministicGrowthVersion, PlayerGrowthFormula, PlayerResourceFormula, PlayerStatSource,
+    SourceSpeeds, Stat,
 };
 use zohar_map_port::{
     AttackIntent, AttackTargetIntent, ChatChannel, ChatIntent as PortChatIntent, ClientIntent,
-    ClientIntentMsg, ClientTimestamp, CoreStatAllocationIntent, CoreStatKind, EnterMsg, Facing72,
+    ClientIntentMsg, ClientTimestamp, CoreStatAllocationIntent, CoreStatKind, EnterMsg, LeaveMsg,
     MoveIntent, MovementArg, PlayerEvent, PlayerProgressionIntent, PortalDestination,
 };
 
@@ -199,6 +208,7 @@ fn test_mob_proto(
         aggressive_sight: 0,
         attack_range: 150,
         combat_extent_m: 1.0,
+        combat: test_mob_combat(level),
         bhv_flags,
         empire: None,
     })
@@ -221,6 +231,7 @@ fn test_portal_proto(
         aggressive_sight: 0,
         attack_range: 0,
         combat_extent_m: 1.0,
+        combat: test_mob_combat(1),
         bhv_flags: BehaviorFlags::empty(),
         empire: None,
     })
@@ -252,9 +263,26 @@ fn test_mob_proto_with_combat(
         aggressive_sight,
         attack_range,
         combat_extent_m: 1.0,
+        combat: test_mob_combat(level),
         bhv_flags,
         empire: None,
     })
+}
+
+fn test_mob_combat(level: u32) -> MobCombatStats {
+    let level = level.min(i32::MAX as u32) as i32;
+    let damage_min = 18 + level.saturating_mul(2);
+    MobCombatStats {
+        strength: level + 2,
+        dexterity: level + 5,
+        vitality: level + 4,
+        intelligence: level + 1,
+        damage_min,
+        damage_max: damage_min + 4 + level / 4,
+        max_hp: 100 + level.saturating_mul(26),
+        defense: level + 3,
+        damage_multiplier: 1.0,
+    }
 }
 
 fn build_runtime_app(
@@ -390,6 +418,15 @@ fn attack_target(
         .expect("attack intent");
 }
 
+fn select_target(map_events: &MapEventSender, player_id: PlayerId, target: EntityId) {
+    map_events
+        .try_send_client_intent(ClientIntentMsg {
+            player_id,
+            intent: ClientIntent::Target(zohar_map_port::TargetIntent { target }),
+        })
+        .expect("target intent");
+}
+
 fn move_player(map_events: &MapEventSender, player_id: PlayerId, target: LocalPos, ts: u32) {
     map_events
         .try_send_client_intent(ClientIntentMsg {
@@ -481,7 +518,7 @@ fn spawn_event_ids(events: &[PlayerEvent]) -> Vec<EntityId> {
     events
         .iter()
         .filter_map(|event| match event {
-            PlayerEvent::EntitySpawn { show, .. } => Some(show.entity_id),
+            PlayerEvent::EntitySpawn { snapshot } => Some(snapshot.entity_id),
             _ => None,
         })
         .collect()
@@ -497,19 +534,108 @@ fn portal_entry_destinations(events: &[PlayerEvent]) -> Vec<PortalDestination> {
         .collect()
 }
 
-fn stat_events(events: &[PlayerEvent]) -> Vec<(EntityId, Stat, i32, i32)> {
+fn stat_events(events: &[PlayerEvent]) -> Vec<(EntityId, Stat, i32)> {
+    events
+        .iter()
+        .flat_map(|event| match event {
+            PlayerEvent::SetEntityStats { entity_id, stats } => stats
+                .iter()
+                .map(|update| (*entity_id, update.stat, update.absolute))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+fn health_bar_events(events: &[PlayerEvent]) -> Vec<(EntityId, u8)> {
     events
         .iter()
         .filter_map(|event| match event {
-            PlayerEvent::SetEntityStat {
-                entity_id,
-                stat,
-                delta,
-                absolute,
-            } => Some((*entity_id, *stat, *delta, *absolute)),
+            PlayerEvent::SyncEntityHealthBar { entity_id, hp_pct } => Some((*entity_id, *hp_pct)),
             _ => None,
         })
         .collect()
+}
+
+fn damage_info_events(events: &[PlayerEvent]) -> Vec<(EntityId, u8, i32)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::DamageInfo {
+                entity_id,
+                flags,
+                damage,
+            } => Some((*entity_id, flags.bits(), *damage)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn attack_movement_count(events: &[PlayerEvent], entity_id: EntityId) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                PlayerEvent::EntityMove(movement)
+                    if movement.entity_id == entity_id && movement.kind == MovementKind::Attack
+            )
+        })
+        .count()
+}
+
+fn dead_events(events: &[PlayerEvent]) -> Vec<EntityId> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::EntityDead { entity_id } => Some(*entity_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn stunned_events(events: &[PlayerEvent]) -> Vec<EntityId> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::EntityStunned { entity_id } => Some(*entity_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn despawn_events(events: &[PlayerEvent]) -> Vec<EntityId> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::EntityDespawn { entity_id } => Some(*entity_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn public_state_change_events(events: &[PlayerEvent]) -> Vec<(EntityId, EntityPublicState)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::EntityPublicStateChanged { entity_id, state } => {
+                Some((*entity_id, *state))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn test_public_state(move_speed: u8, attack_speed: u8) -> EntityPublicState {
+    EntityPublicState {
+        equipment: EntityPublicEquipment::default(),
+        speeds: EntityPublicSpeeds {
+            move_speed,
+            attack_speed,
+        },
+        flags: EntityPublicFlags::default(),
+        social: EntityPublicSocial::default(),
+    }
 }
 
 fn info_messages(events: &[PlayerEvent]) -> Vec<String> {
@@ -567,6 +693,25 @@ fn first_mob_net_id(app: &mut App) -> EntityId {
         .expect("mob net id")
 }
 
+fn mob_hp(app: &App, mob_entity: Entity) -> i32 {
+    app.world()
+        .entity(mob_entity)
+        .get::<MobStatsComp>()
+        .expect("mob stats")
+        .0
+        .read_packet(Stat::Hp)
+}
+
+fn player_hp(app: &App, player_id: PlayerId) -> i32 {
+    let entity = player_entity(app, player_id);
+    app.world()
+        .entity(entity)
+        .get::<PlayerStatsComp>()
+        .expect("player stats")
+        .0
+        .read_packet(Stat::Hp)
+}
+
 fn map_entity(app: &App) -> Entity {
     app.world()
         .resource::<RuntimeState>()
@@ -592,10 +737,34 @@ fn clear_pending_movements(app: &mut App) {
         .clear();
 }
 
+fn player_entity(app: &App, player_id: PlayerId) -> Entity {
+    app.world()
+        .resource::<PlayerIndex>()
+        .0
+        .get(&player_id)
+        .copied()
+        .expect("player entity")
+}
+
 fn run_mob_ai(app: &mut App) {
     super::mob_motion::sample_mob_motion(app.world_mut());
     super::mob_ai::process_mob_ai(app.world_mut());
     super::action_pipeline::process_actions(app.world_mut());
+    super::combat::process_attack_commands(app.world_mut());
+    super::actor_life::process_life_events(app.world_mut());
+    super::actor_life::process_actor_lifecycle(app.world_mut());
+    super::cleanup::process_cleanup_events(app.world_mut());
+    super::player::persistence::process_player_dirty_events(app.world_mut());
+    super::projection::project_frame_facts(app.world_mut());
+}
+
+fn run_actor_lifecycle(app: &mut App) {
+    super::actor_life::process_life_events(app.world_mut());
+    super::actor_life::process_actor_lifecycle(app.world_mut());
+    super::cleanup::process_cleanup_events(app.world_mut());
+    super::player::persistence::process_player_dirty_events(app.world_mut());
+    super::projection::project_frame_facts(app.world_mut());
+    run_fixed_post_update(app);
 }
 
 fn east_rot() -> Facing72 {
@@ -791,7 +960,7 @@ fn startup_ready_signal_fires_after_map_bootstrap() {
 }
 
 #[test]
-fn player_enter_enqueues_self_spawn_with_details_once() {
+fn player_enter_enqueues_self_spawn_snapshot_once() {
     let map_id = MapId::new(41);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
@@ -823,28 +992,38 @@ fn player_enter_enqueues_self_spawn_with_details_once() {
     let self_spawn = events
         .iter()
         .find_map(|event| match event {
-            PlayerEvent::EntitySpawn { show, details } if show.entity_id == player_net_id => {
-                Some((show, details.as_ref().expect("self spawn details")))
+            PlayerEvent::EntitySpawn { snapshot } if snapshot.entity_id == player_net_id => {
+                Some(snapshot)
             }
             _ => None,
         })
         .expect("self spawn event");
 
-    assert_eq!(self_spawn.0.pos, initial_pos);
-    assert_eq!(self_spawn.0.move_speed, appearance.move_speed);
-    assert_eq!(self_spawn.0.attack_speed, appearance.attack_speed);
+    assert_eq!(self_spawn.pos, initial_pos);
+    assert_eq!(
+        self_spawn.public_state.speeds.move_speed,
+        appearance.move_speed
+    );
+    assert_eq!(
+        self_spawn.public_state.speeds.attack_speed,
+        appearance.attack_speed
+    );
     assert!(matches!(
-        self_spawn.0.kind,
+        self_spawn.kind,
         EntityKind::Player {
             class,
             gender,
         } if class == appearance.class && gender == appearance.gender
     ));
-    assert_eq!(self_spawn.1.name, appearance.name);
-    assert_eq!(self_spawn.1.body_part, appearance.body_part);
-    assert_eq!(self_spawn.1.empire, Some(appearance.empire));
-    assert_eq!(self_spawn.1.guild_id, appearance.guild_id);
-    assert_eq!(self_spawn.1.level, appearance.level);
+    let nameplate = self_spawn.nameplate.as_ref().expect("self spawn nameplate");
+    assert_eq!(nameplate.name, appearance.name);
+    assert_eq!(
+        self_spawn.public_state.equipment.body_part,
+        appearance.body_part
+    );
+    assert_eq!(nameplate.empire, Some(appearance.empire));
+    assert_eq!(self_spawn.public_state.social.guild_id, appearance.guild_id);
+    assert_eq!(nameplate.level, appearance.level);
 
     advance_tick(&mut app);
     let followup_events = drain_player_events(&mut map_rx);
@@ -855,7 +1034,7 @@ fn player_enter_enqueues_self_spawn_with_details_once() {
 }
 
 #[test]
-fn core_stat_progression_intent_emits_stat_deltas() {
+fn core_stat_progression_intent_emits_stat_updates() {
     let map_id = MapId::new(41);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
@@ -889,16 +1068,398 @@ fn core_stat_progression_intent_emits_stat_deltas() {
     let stat_events = stat_events(&events);
 
     assert!(
-        stat_events.iter().any(|(entity_id, _, delta, absolute)| {
-            *entity_id == player_net_id && *delta == 1 && *absolute == 7
-        }),
+        stat_events
+            .iter()
+            .any(|(entity_id, _, absolute)| { *entity_id == player_net_id && *absolute == 7 }),
         "expected core stat increment event, got {stat_events:?}"
     );
     assert!(
-        stat_events.iter().any(|(entity_id, _, delta, absolute)| {
-            *entity_id == player_net_id && *delta == -1 && *absolute == 2
-        }),
+        stat_events
+            .iter()
+            .any(|(entity_id, _, absolute)| { *entity_id == player_net_id && *absolute == 2 }),
         "expected stat point decrement event, got {stat_events:?}"
+    );
+}
+
+#[test]
+fn speed_stat_sync_replicates_public_state_change_to_visible_players() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let alice_id = PlayerId::from(1);
+    let alice_net_id = EntityId(5_102);
+    let bob_id = PlayerId::from(2);
+
+    let mut alice_rx = enter_player(
+        &inbound_tx,
+        alice_id,
+        alice_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    let mut bob_rx = enter_player(
+        &inbound_tx,
+        bob_id,
+        EntityId(5_103),
+        LocalPos::new(10.5, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    {
+        let entity = player_entity(&app, alice_id);
+        let mut entity = app.world_mut().entity_mut(entity);
+        let mut stats = entity.get_mut::<PlayerStatsComp>().expect("player stats");
+        stats
+            .0
+            .with_api_mut(|api| {
+                api.replace_source_bundle(
+                    (),
+                    CompiledStatContribution::new()
+                        .with_modifier(CompiledModifier::plain(Stat::MovSpeed, 25))
+                        .with_modifier(CompiledModifier::plain(Stat::AttSpeed, 10)),
+                )
+            })
+            .expect("speed source bundle");
+    }
+
+    advance_tick(&mut app);
+
+    let alice_updates = public_state_change_events(&drain_player_events(&mut alice_rx));
+    let bob_updates = public_state_change_events(&drain_player_events(&mut bob_rx));
+
+    assert!(
+        alice_updates.iter().any(|(entity_id, state)| {
+            *entity_id == alice_net_id
+                && state.speeds.move_speed == 125
+                && state.speeds.attack_speed == 110
+        }),
+        "subject should receive its own public-state speed change, got {alice_updates:?}"
+    );
+    assert!(
+        bob_updates.iter().any(|(entity_id, state)| {
+            *entity_id == alice_net_id
+                && state.speeds.move_speed == 125
+                && state.speeds.attack_speed == 110
+        }),
+        "visible observers should receive public-state speed change, got {bob_updates:?}"
+    );
+}
+
+#[test]
+fn dirty_public_states_coalesce_by_entity_and_materialize_latest_state() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let alice_net_id = EntityId(5_102);
+    let bob_net_id = EntityId(5_103);
+    let mut alice_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        alice_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    let mut bob_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(2),
+        bob_net_id,
+        LocalPos::new(10.5, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    {
+        let alice_entity = player_entity(&app, PlayerId::from(1));
+        let mut alice = app.world_mut().entity_mut(alice_entity);
+        let mut appearance = alice
+            .get_mut::<super::state::PlayerAppearanceComp>()
+            .expect("alice appearance");
+        appearance.0.move_speed = 145;
+        appearance.0.attack_speed = 130;
+    }
+
+    {
+        let map_entity = map_entity(&app);
+        let mut map_entity = app.world_mut().entity_mut(map_entity);
+        let mut dirty = map_entity
+            .get_mut::<MapDirtyEntityPublicStates>()
+            .expect("dirty public states");
+        dirty.mark_dirty(alice_net_id);
+        dirty.mark_dirty(alice_net_id);
+    }
+
+    run_fixed_post_update(&mut app);
+
+    let bob_updates = public_state_change_events(&drain_player_events(&mut bob_rx));
+    let alice_updates_for_bob: Vec<_> = bob_updates
+        .into_iter()
+        .filter(|(entity_id, _)| *entity_id == alice_net_id)
+        .collect();
+
+    assert_eq!(
+        alice_updates_for_bob,
+        vec![(alice_net_id, test_public_state(145, 130))]
+    );
+}
+
+#[test]
+fn deferred_dirty_marker_for_removed_player_is_ignored() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_107);
+    let mut map_rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    let player_entity = player_entity(&app, player_id);
+    super::player::persistence::mark_player_dirty(app.world_mut(), player_entity);
+    super::players::handle_player_leave(
+        app.world_mut(),
+        LeaveMsg {
+            player_id,
+            player_net_id,
+        },
+    );
+
+    assert!(!app.world().entities().contains(player_entity));
+    super::player::persistence::process_player_dirty_events(app.world_mut());
+}
+
+#[test]
+fn passive_hp_recovery_emits_stat_update_when_cadence_is_due() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1_000);
+    let player_net_id = EntityId(5_104);
+    let initial_pos = LocalPos::new(6_400.0, 6_400.0);
+    let appearance = PlayerAppearance {
+        name: "Alice".to_string(),
+        level: 2,
+        ..Default::default()
+    };
+    let mut gameplay = gameplay_bootstrap_from_appearance(player_id, &appearance);
+    gameplay.current_hp = Some(500);
+    gameplay.current_sp = Some(100);
+
+    let mut map_rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay,
+        player_net_id,
+        initial_pos,
+        appearance,
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    {
+        let entity = player_entity(&app, player_id);
+        let mut entity = app.world_mut().entity_mut(entity);
+        let mut ticker = entity
+            .get_mut::<PlayerStatTickerComp>()
+            .expect("player stat ticker");
+        ticker.passive_hp.clock =
+            SimTickerClock::scheduled(sim_ms(0), sim_ms(1_000), SimDuration::from_millis(250));
+        ticker.passive_sp.clock =
+            SimTickerClock::scheduled(sim_ms(0), sim_ms(1_000), SimDuration::from_millis(250));
+    }
+
+    set_sim_now(&mut app, 999);
+    run_fixed_update(&mut app);
+    run_fixed_post_update(&mut app);
+    assert!(
+        stat_events(&drain_player_events(&mut map_rx)).is_empty(),
+        "passive recovery should not emit before its cadence is due"
+    );
+
+    set_sim_now(&mut app, 1_000);
+    run_fixed_update(&mut app);
+    run_fixed_post_update(&mut app);
+    let stat_events = stat_events(&drain_player_events(&mut map_rx));
+    assert!(
+        stat_events.iter().any(|(entity_id, stat, absolute)| {
+            *entity_id == player_net_id && *stat == Stat::Hp && *absolute > 500
+        }),
+        "expected passive HP recovery stat update, got {stat_events:?}"
+    );
+    assert!(
+        stat_events.iter().any(|(entity_id, stat, absolute)| {
+            *entity_id == player_net_id && *stat == Stat::Sp && *absolute > 100
+        }),
+        "expected passive SP recovery stat update, got {stat_events:?}"
+    );
+}
+
+#[test]
+fn passive_stamina_recovery_restores_after_legacy_stop_delay() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1_001);
+    let player_net_id = EntityId(5_105);
+    let initial_pos = LocalPos::new(6_400.0, 6_400.0);
+    let appearance = PlayerAppearance {
+        name: "Alice".to_string(),
+        level: 2,
+        ..Default::default()
+    };
+    let mut gameplay = gameplay_bootstrap_from_appearance(player_id, &appearance);
+    gameplay.current_stamina = Some(400);
+
+    let mut map_rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay,
+        player_net_id,
+        initial_pos,
+        appearance,
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    {
+        let entity = player_entity(&app, player_id);
+        let mut entity = app.world_mut().entity_mut(entity);
+        let mut stats = entity.get_mut::<PlayerStatsComp>().expect("stats");
+        stats
+            .0
+            .with_api_mut(|api| api.set_resource(Stat::Stamina, 400).expect("set stamina"));
+        let _ = stats.0.drain_sync();
+        drop(stats);
+
+        let mut activity = entity.get_mut::<PlayerActivityComp>().expect("activity");
+        activity.last_movement_start_at = Some(sim_ms(0));
+        drop(activity);
+
+        let mut ticker = entity
+            .get_mut::<PlayerStatTickerComp>()
+            .expect("player stat ticker");
+        ticker.stamina.clock =
+            SimTickerClock::scheduled(sim_ms(0), sim_ms(2_999), SimDuration::from_millis(250));
+    }
+
+    set_sim_now(&mut app, 2_999);
+    run_fixed_update(&mut app);
+    run_fixed_post_update(&mut app);
+    assert!(
+        stat_events(&drain_player_events(&mut map_rx)).is_empty(),
+        "stamina should not restore before the legacy stopped delay"
+    );
+
+    {
+        let entity = player_entity(&app, player_id);
+        let mut entity = app.world_mut().entity_mut(entity);
+        let mut ticker = entity
+            .get_mut::<PlayerStatTickerComp>()
+            .expect("player stat ticker");
+        ticker.stamina.clock =
+            SimTickerClock::scheduled(sim_ms(0), sim_ms(3_000), SimDuration::from_millis(250));
+    }
+
+    set_sim_now(&mut app, 3_000);
+    run_fixed_update(&mut app);
+    run_fixed_post_update(&mut app);
+    let stat_events = stat_events(&drain_player_events(&mut map_rx));
+    assert!(
+        stat_events.iter().any(|(entity_id, stat, absolute)| {
+            *entity_id == player_net_id && *stat == Stat::Stamina && *absolute > 400
+        }),
+        "expected passive stamina recovery stat update, got {stat_events:?}"
+    );
+}
+
+#[test]
+fn stamina_depletion_movement_animation_replicates_to_observers() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let alice_id = PlayerId::from(1_001);
+    let alice_net_id = EntityId(5_105);
+    let bob_id = PlayerId::from(1_002);
+    let bob_net_id = EntityId(5_106);
+    let initial_pos = LocalPos::new(6_400.0, 6_400.0);
+    let appearance = PlayerAppearance {
+        name: "Alice".to_string(),
+        level: 2,
+        ..Default::default()
+    };
+    let mut gameplay = gameplay_bootstrap_from_appearance(alice_id, &appearance);
+    gameplay.current_stamina = Some(1);
+
+    let mut alice_rx =
+        enter_player_with_gameplay(&inbound_tx, gameplay, alice_net_id, initial_pos, appearance);
+    let mut bob_rx = enter_player(
+        &inbound_tx,
+        bob_id,
+        bob_net_id,
+        LocalPos::new(6_401.0, 6_400.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    {
+        let entity = player_entity(&app, alice_id);
+        let mut entity = app.world_mut().entity_mut(entity);
+        let mut stats = entity.get_mut::<PlayerStatsComp>().expect("stats");
+        stats
+            .0
+            .with_api_mut(|api| api.set_resource(Stat::Stamina, 1).expect("set stamina"));
+        let _ = stats.0.drain_sync();
+        drop(stats);
+
+        entity.insert(PlayerMotion(PlayerMotionState {
+            segment_start_pos: initial_pos,
+            segment_end_pos: LocalPos::new(6_404.0, 6_400.0),
+            segment_start_ts: client_ts(0),
+            segment_end_ts: client_ts(2_000),
+            last_client_ts: client_ts(0),
+        }));
+        entity.insert(PlayerMovementAnimation(MovementAnimation::Run));
+
+        let mut activity = entity.get_mut::<PlayerActivityComp>().expect("activity");
+        activity.last_movement_start_at = Some(sim_ms(0));
+        activity.last_attack_at = Some(sim_ms(500));
+        activity.preferred_movement_animation = MovementAnimation::Run;
+        drop(activity);
+
+        let mut ticker = entity
+            .get_mut::<PlayerStatTickerComp>()
+            .expect("player stat ticker");
+        ticker.stamina.clock =
+            SimTickerClock::scheduled(sim_ms(0), sim_ms(1_000), SimDuration::from_millis(250));
+    }
+
+    set_sim_now(&mut app, 1_000);
+    run_fixed_update(&mut app);
+    run_fixed_post_update(&mut app);
+
+    assert_eq!(
+        movement_animation_events(&drain_player_events(&mut alice_rx)),
+        vec![(alice_net_id, MovementAnimation::Walk)]
+    );
+    assert_eq!(
+        movement_animation_events(&drain_player_events(&mut bob_rx)),
+        vec![(alice_net_id, MovementAnimation::Walk)]
     );
 }
 
@@ -1570,6 +2131,463 @@ fn same_tick_move_then_attack_uses_updated_player_position() {
             movement.entity_id == player_net_id && movement.kind == MovementKind::Attack
         }),
         "same-tick attack should be validated from the post-move player position"
+    );
+}
+
+#[test]
+fn player_attack_applies_damage_to_mob_hp_without_stat_replication() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "damage_target_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let mut rx = enter_player(
+        &inbound_tx,
+        player_id,
+        EntityId(5_208),
+        LocalPos::new(10.0, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut rx);
+
+    select_target(&inbound_tx, player_id, mob_net_id);
+    advance_tick(&mut app);
+    assert_eq!(
+        health_bar_events(&drain_player_events(&mut rx)),
+        vec![(mob_net_id, 100)]
+    );
+
+    let hp_before = mob_hp(&app, mob_entity);
+    attack_target(&inbound_tx, player_id, mob_net_id, 0);
+    advance_tick(&mut app);
+    let hp_after = mob_hp(&app, mob_entity);
+    let events = drain_player_events(&mut rx);
+    let updates = stat_events(&events);
+    let health_bars = health_bar_events(&events);
+    let damage_infos = damage_info_events(&events);
+
+    assert!(
+        hp_after < hp_before,
+        "expected player attack to reduce mob HP, before={hp_before}, after={hp_after}"
+    );
+    assert!(
+        updates
+            .iter()
+            .all(|(entity_id, stat, _)| { !(*entity_id == mob_net_id && *stat == Stat::Hp) }),
+        "mob HP should stay out of generic stat replication, got {events:?}"
+    );
+    assert!(
+        health_bars
+            .iter()
+            .any(|(entity_id, hp_pct)| *entity_id == mob_net_id && *hp_pct < 100),
+        "selected mob HP should replicate through target health packet, got {events:?}"
+    );
+    assert!(
+        damage_infos.iter().any(|(entity_id, flags, damage)| {
+            *entity_id == mob_net_id
+                && *flags == zohar_map_port::DamageInfoFlags::NORMAL.bits()
+                && *damage > 0
+        }),
+        "selected mob damage should emit damage info packet, got {events:?}"
+    );
+}
+
+#[test]
+fn selected_target_health_updates_require_current_visibility() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "visibility_target_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_net_id = first_mob_net_id(&mut app);
+    let alice_id = PlayerId::from(1);
+    let bob_id = PlayerId::from(2);
+    let bob_net_id = EntityId(5_216);
+    let mut alice_rx = enter_player(
+        &inbound_tx,
+        alice_id,
+        EntityId(5_215),
+        LocalPos::new(10.0, 10.0),
+    );
+    let mut bob_rx = enter_player(&inbound_tx, bob_id, bob_net_id, LocalPos::new(10.0, 10.5));
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    select_target(&inbound_tx, bob_id, mob_net_id);
+    advance_tick(&mut app);
+    assert_eq!(
+        health_bar_events(&drain_player_events(&mut bob_rx)),
+        vec![(mob_net_id, 100)]
+    );
+
+    {
+        let map_entity = map_entity(&app);
+        let mut map_entity = app.world_mut().entity_mut(map_entity);
+        let mut replication = map_entity
+            .get_mut::<MapReplication>()
+            .expect("map replication");
+        assert!(replication.0.remove_visibility(bob_net_id, mob_net_id));
+    }
+
+    attack_target(&inbound_tx, alice_id, mob_net_id, 0);
+    advance_tick(&mut app);
+
+    let bob_events = drain_player_events(&mut bob_rx);
+    assert!(
+        health_bar_events(&bob_events)
+            .into_iter()
+            .all(|(entity_id, _)| entity_id != mob_net_id),
+        "stale selected targets outside visibility must not receive mob HP updates, got {bob_events:?}"
+    );
+}
+
+#[test]
+fn player_killing_mob_emits_dead_packet_to_visible_players() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "dead_packet_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let mut rx = enter_player(
+        &inbound_tx,
+        player_id,
+        EntityId(5_210),
+        LocalPos::new(10.0, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut rx);
+
+    let mut events = Vec::new();
+    for _ in 0..64 {
+        attack_target(&inbound_tx, player_id, mob_net_id, 0);
+        advance_tick(&mut app);
+        events.extend(drain_player_events(&mut rx));
+        if stunned_events(&events).contains(&mob_net_id) {
+            break;
+        }
+    }
+
+    assert!(
+        stunned_events(&events).contains(&mob_net_id),
+        "lethal mob damage should first emit legacy stun packet, got {events:?}"
+    );
+    assert!(
+        !dead_events(&events).contains(&mob_net_id),
+        "mob should not emit dead packet before the dying delay, got {events:?}"
+    );
+
+    let damage_info_count = damage_info_events(&events).len();
+    attack_target(&inbound_tx, player_id, mob_net_id, 0);
+    advance_tick(&mut app);
+    events.extend(drain_player_events(&mut rx));
+    assert_eq!(
+        damage_info_events(&events).len(),
+        damage_info_count,
+        "dying mob should reject further damage info, got {events:?}"
+    );
+
+    set_sim_now(&mut app, 10_000);
+    run_actor_lifecycle(&mut app);
+    events.extend(drain_player_events(&mut rx));
+
+    assert!(
+        dead_events(&events).contains(&mob_net_id),
+        "mob death should emit legacy dead packet after dying delay, got {events:?}"
+    );
+
+    attack_target(&inbound_tx, player_id, mob_net_id, 0);
+    advance_tick(&mut app);
+    events.extend(drain_player_events(&mut rx));
+    assert_eq!(
+        damage_info_events(&events).len(),
+        damage_info_count,
+        "dead mob should reject ghost damage info, got {events:?}"
+    );
+
+    set_sim_now(&mut app, 30_000);
+    run_actor_lifecycle(&mut app);
+    events.extend(drain_player_events(&mut rx));
+    assert!(
+        despawn_events(&events).contains(&mob_net_id),
+        "dead mob should be eventually destroyed for observers, got {events:?}"
+    );
+
+    {
+        let map_entity = map_entity(&app);
+        let spawn_rules = app
+            .world()
+            .entity(map_entity)
+            .get::<MapSpawnRules>()
+            .expect("map spawn rules");
+        let rule_state = &spawn_rules.rules[0];
+        assert_eq!(rule_state.active_instances, 0);
+        assert!(rule_state.entities.is_empty());
+        assert_eq!(rule_state.respawn_at, Some(sim_ms(90_000)));
+        assert_eq!(
+            spawn_rules
+                .scheduled_spawns
+                .peek()
+                .map(|scheduled| scheduled.0),
+            Some((sim_ms(90_000), 0))
+        );
+    }
+
+    set_sim_now(&mut app, 90_000);
+    super::spawn::spawn_rules(app.world_mut());
+    {
+        let map_entity = map_entity(&app);
+        let spawn_rules = app
+            .world()
+            .entity(map_entity)
+            .get::<MapSpawnRules>()
+            .expect("map spawn rules");
+        let rule_state = &spawn_rules.rules[0];
+        assert_eq!(rule_state.active_instances, 1);
+        assert_eq!(rule_state.respawn_at, None);
+        assert_eq!(rule_state.entities.len(), 1);
+    }
+}
+
+#[test]
+fn mob_attack_applies_damage_to_player_hp() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "damage_source_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_209);
+    let mut rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut rx);
+
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(10.5, 10.0),
+        east_rot(),
+        1_000,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
+
+    let hp_before = player_hp(&app, player_id);
+    run_mob_ai(&mut app);
+    let hp_after = player_hp(&app, player_id);
+    run_fixed_post_update(&mut app);
+    let events = drain_player_events(&mut rx);
+
+    assert!(
+        hp_after < hp_before,
+        "expected mob attack to reduce player HP, before={hp_before}, after={hp_after}"
+    );
+    assert!(
+        damage_info_events(&events)
+            .iter()
+            .any(|(entity_id, flags, damage)| {
+                *entity_id == player_net_id
+                    && *flags == zohar_map_port::DamageInfoFlags::NORMAL.bits()
+                    && *damage > 0
+            }),
+        "player damage should emit damage info packet, got {events:?}"
+    );
+}
+
+#[test]
+fn mob_drops_player_target_after_dead_phase() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "corpse_target_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_211);
+    let mut gameplay = default_gameplay_bootstrap(player_id, PlayerClass::Warrior, 1);
+    gameplay.current_hp = Some(1);
+    let mut rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay,
+        player_net_id,
+        LocalPos::new(10.0, 10.0),
+        PlayerAppearance::default(),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut rx);
+
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(10.5, 10.0),
+        east_rot(),
+        1_000,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
+
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+    let events = drain_player_events(&mut rx);
+    assert!(
+        stunned_events(&events).contains(&player_net_id),
+        "lethal mob attack should put the player into dying/stun, got {events:?}"
+    );
+    assert!(
+        attack_movement_count(&events, mob_net_id) > 0,
+        "initial lethal hit should still replicate the mob attack, got {events:?}"
+    );
+
+    set_sim_now(&mut app, 10_000);
+    run_actor_lifecycle(&mut app);
+    let events = drain_player_events(&mut rx);
+    assert!(
+        dead_events(&events).contains(&player_net_id),
+        "dying player should transition to dead, got {events:?}"
+    );
+
+    set_mob_chasing(&mut app, mob_entity, player_net_id, 10_100, 0);
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+    let events = drain_player_events(&mut rx);
+    assert_eq!(
+        attack_movement_count(&events, mob_net_id),
+        0,
+        "mob should not keep attacking a fully dead player, got {events:?}"
+    );
+    assert!(
+        damage_info_events(&events).is_empty(),
+        "corpse attacks should not produce damage info, got {events:?}"
     );
 }
 

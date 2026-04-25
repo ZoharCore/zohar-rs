@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use tokio::sync::oneshot::error::TryRecvError;
 use zohar_domain::entity::player::{CoreStatKind, PlayerId, PlayerProgressionSnapshot};
-use zohar_gameplay::stats::game::{GameStatsApi, Stat, StatWriteError};
+use zohar_gameplay::stats::game::{Stat, StatWriteError};
 use zohar_map_port::{ChatChannel, PlayerEvent, PlayerProgressionIntent};
 
 use crate::persistence::PlayerPersistencePort;
@@ -9,7 +9,7 @@ use crate::persistence::PlayerPersistencePort;
 use super::PendingDurableFlush;
 use super::persistence::{capture_player_snapshot, mark_player_dirty};
 use super::state::{
-    NetEntityId, PlayerAppearanceComp, PlayerMarker, PlayerOutboxComp, PlayerPendingDurableFlush,
+    PlayerAppearanceComp, PlayerMarker, PlayerOutboxComp, PlayerPendingDurableFlush,
     PlayerProgressionComp, PlayerProgressionIntentQueue, PlayerStatsComp, SharedConfig,
 };
 
@@ -206,10 +206,13 @@ fn validate_core_stat_intent(
         other => return Err(ProgressionError::UnsupportedDelta(other)),
     };
 
-    let mut state = stats.state.clone();
-    let mut api = GameStatsApi::new(&stats.source, &mut state);
-    api.set_stored_stat(core_stat_to_stat(stat), new_absolute)
-        .map_err(|error| map_stat_write_error(core_stat_to_stat(stat), error))?;
+    {
+        let domain_stat = core_stat_to_stat(stat);
+        stats
+            .0
+            .validate_stored_stat(domain_stat, new_absolute)
+            .map_err(|error| map_stat_write_error(domain_stat, error))?;
+    }
 
     Ok(ValidatedCoreStatSave {
         stat,
@@ -228,21 +231,17 @@ fn apply_validated_core_stat_save(
     validated: ValidatedCoreStatSave,
 ) -> Result<(), ProgressionError> {
     let mut query = world.query::<(
-        &NetEntityId,
         &mut PlayerProgressionComp,
         &mut PlayerStatsComp,
         &mut PlayerAppearanceComp,
-        &mut PlayerOutboxComp,
     )>();
-    let (net_id, mut progression, mut stats, mut appearance, mut outbox) = query
+    let (mut progression, mut stats, mut appearance) = query
         .get_mut(world, player_entity)
         .map_err(|_| ProgressionError::MissingPlayerState)?;
 
     apply_stat_kernel_update(
         &mut stats,
         &mut appearance,
-        &mut outbox,
-        net_id.net_id,
         validated.stat,
         validated.new_absolute,
         validated.progression.stat_reset_count,
@@ -257,40 +256,28 @@ fn apply_validated_core_stat_save(
 fn apply_stat_kernel_update(
     stats: &mut PlayerStatsComp,
     appearance: &mut PlayerAppearanceComp,
-    outbox: &mut PlayerOutboxComp,
-    entity_id: zohar_domain::entity::EntityId,
     stat: CoreStatKind,
     new_absolute: i32,
     stat_reset_count: i32,
     stat_points_delta: i32,
 ) -> Result<(), ProgressionError> {
     let stat_id = core_stat_to_stat(stat);
-    let mut api = GameStatsApi::new(&stats.source, &mut stats.state);
-    let before = api.stat_snapshot();
-    let current_stat_points = api.read_packet(Stat::StatPoints);
+    let current_stat_points = stats.0.read_packet(Stat::StatPoints);
 
-    api.set_stored_stat(stat_id, new_absolute)
-        .map_err(|error| map_stat_write_error(stat_id, error))?;
-    api.set_stored_stat(Stat::StatPoints, current_stat_points + stat_points_delta)
-        .map_err(|error| map_stat_write_error(Stat::StatPoints, error))?;
-    api.set_stored_stat(Stat::StatResetCount, stat_reset_count)
-        .map_err(|error| map_stat_write_error(Stat::StatResetCount, error))?;
+    stats.0.with_api_mut(|api| {
+        api.set_stored_stat(stat_id, new_absolute)
+            .map_err(|error| map_stat_write_error(stat_id, error))?;
+        api.set_stored_stat(Stat::StatPoints, current_stat_points + stat_points_delta)
+            .map_err(|error| map_stat_write_error(Stat::StatPoints, error))?;
+        api.set_stored_stat(Stat::StatResetCount, stat_reset_count)
+            .map_err(|error| map_stat_write_error(Stat::StatResetCount, error))
+    })?;
 
-    let sync = api.sync_if_dirty();
-    if let Some(update) = sync.character_update {
-        appearance.0.level = update.appearance.level;
-        appearance.0.move_speed = update.appearance.move_speed;
-        appearance.0.attack_speed = update.appearance.attack_speed;
-    }
-
-    for stat_delta in sync.stat_deltas {
-        let previous = before.get(stat_delta.stat) as i32;
-        outbox.0.push_reliable(PlayerEvent::SetEntityStat {
-            entity_id,
-            stat: stat_delta.stat,
-            delta: stat_delta.value - previous,
-            absolute: stat_delta.value,
-        });
+    let sync = stats.0.normalize();
+    if let Some(update) = sync.public_state {
+        appearance.0.level = update.stats.level;
+        appearance.0.move_speed = update.stats.move_speed;
+        appearance.0.attack_speed = update.stats.attack_speed;
     }
 
     Ok(())
@@ -310,9 +297,7 @@ fn push_feedback(world: &mut World, player_entity: Entity, message: impl Into<St
 }
 
 fn current_stat_points(stats: &PlayerStatsComp) -> i32 {
-    let mut state = stats.state.clone();
-    let api = GameStatsApi::new(&stats.source, &mut state);
-    api.read_packet(Stat::StatPoints)
+    stats.0.read_packet(Stat::StatPoints)
 }
 
 fn core_stat_to_stat(stat: CoreStatKind) -> Stat {

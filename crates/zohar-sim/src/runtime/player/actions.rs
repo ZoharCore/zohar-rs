@@ -7,8 +7,8 @@ use super::action_pipeline::{
 use super::aggro::{MobAggroDispatch, MobAggroDispatchBuffer};
 use super::query::validate_player_attack;
 use super::state::{
-    LocalTransform, MapPendingMovementAnimations, MapSpatial, MobAggro, MobRef, NetEntityId,
-    PlayerCommand, PlayerCommandQueue, PlayerMarker, PlayerMovementAnimation, RuntimeState,
+    LocalTransform, MapSpatial, MobAggro, MobRef, NetEntityId, PlayerActivityComp, PlayerCommand,
+    PlayerCommandQueue, PlayerMarker, PlayerMovementAnimation, RuntimeState,
 };
 
 pub(crate) fn process_player_actions(world: &mut World) {
@@ -42,6 +42,10 @@ pub(crate) fn process_player_actions(world: &mut World) {
             std::mem::take(&mut queue.0)
         };
 
+        if !crate::runtime::actor_life::actor_can_act(world, player_entity) {
+            continue;
+        }
+
         for command in commands {
             match command {
                 PlayerCommand::Move {
@@ -68,14 +72,16 @@ pub(crate) fn process_player_actions(world: &mut World) {
                     }
                 }
                 PlayerCommand::SetMovementAnimation(animation) => {
-                    if set_player_movement_animation(world, map_entity, player_entity, animation) {
-                        queue_player_movement_animation(
-                            world,
-                            map_entity,
-                            attacker_net_id,
-                            animation,
-                        );
-                    }
+                    set_player_movement_animation(world, player_entity, animation);
+                }
+                PlayerCommand::SelectTarget { target } => {
+                    super::target::select_target(
+                        world,
+                        map_entity,
+                        player_entity,
+                        attacker_net_id,
+                        target,
+                    );
                 }
                 PlayerCommand::Attack { target, attack } => {
                     let Some(attacker_pos) = world
@@ -95,9 +101,13 @@ pub(crate) fn process_player_actions(world: &mut World) {
                         continue;
                     };
 
-                    if let Some(action) =
-                        build_player_attack_action(world, player_entity, target, attack)
-                    {
+                    if let Some(action) = build_player_attack_action(
+                        world,
+                        player_entity,
+                        target,
+                        target_entity,
+                        attack,
+                    ) {
                         apply_action(world, action);
                     }
 
@@ -128,33 +138,24 @@ pub(crate) fn process_player_actions(world: &mut World) {
 
 fn set_player_movement_animation(
     world: &mut World,
-    _map_entity: Entity,
     player_entity: Entity,
     animation: MovementAnimation,
-) -> bool {
-    let mut player_entity_ref = world.entity_mut(player_entity);
-    let Some(mut current) = player_entity_ref.get_mut::<PlayerMovementAnimation>() else {
-        return false;
-    };
-    if current.0 == animation {
-        return false;
-    }
-    current.0 = animation;
-    true
-}
-
-fn queue_player_movement_animation(
-    world: &mut World,
-    map_entity: Entity,
-    entity_id: zohar_domain::entity::EntityId,
-    animation: MovementAnimation,
 ) {
-    let mut map_entity_ref = world.entity_mut(map_entity);
-    let Some(mut pending) = map_entity_ref.get_mut::<MapPendingMovementAnimations>() else {
-        return;
-    };
-    pending.0.push(super::state::PendingMovementAnimation {
-        entity_id,
-        animation,
-    });
+    let now = world.resource::<RuntimeState>().sim_now;
+    let mut player_entity_ref = world.entity_mut(player_entity);
+    {
+        let Some(mut current) = player_entity_ref.get_mut::<PlayerMovementAnimation>() else {
+            return;
+        };
+        if current.0 != animation {
+            current.0 = animation;
+        }
+    }
+
+    if let Some(mut activity) = player_entity_ref.get_mut::<PlayerActivityComp>() {
+        activity.preferred_movement_animation = animation;
+        if animation == MovementAnimation::Walk {
+            activity.last_walk_started_at = Some(now);
+        }
+    }
 }

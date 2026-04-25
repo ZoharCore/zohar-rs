@@ -1,9 +1,10 @@
 use bevy::prelude::*;
-use zohar_domain::coords::LocalPos;
+use zohar_domain::coords::{Facing72, LocalPos};
 use zohar_domain::entity::MovementKind;
 use zohar_domain::entity::player::PlayerId;
-use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg, PacketDuration};
+use zohar_map_port::{AttackIntent, ClientTimestamp, MovementArg, PacketDuration};
 
+use super::super::combat::{AttackCommand, AttackCommandBuffer};
 use super::super::state::{MapPendingMovements, RuntimeState};
 use super::{Action, ActionBuffer};
 use crate::runtime::player::persistence::mark_player_dirty;
@@ -40,44 +41,58 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
             ts,
             duration,
             motion,
-        } => (
-            apply_player_motion(
-                world,
-                map_entity,
-                player_entity,
-                player_id,
-                entity_id,
-                kind,
-                arg,
-                rot,
-                end_pos,
-                ts,
-                duration,
-                motion,
-            ),
-            true,
-        ),
+        } => {
+            if !crate::runtime::actor_life::actor_can_act(world, player_entity) {
+                (None, false)
+            } else {
+                (
+                    apply_player_motion(
+                        world,
+                        map_entity,
+                        player_entity,
+                        player_id,
+                        entity_id,
+                        kind,
+                        arg,
+                        rot,
+                        end_pos,
+                        ts,
+                        duration,
+                        motion,
+                    ),
+                    true,
+                )
+            }
+        }
         Action::PlayerAttack {
             player_entity,
             entity_id,
+            target_entity,
             pos,
             rot,
             attack,
             ts,
             duration,
-        } => (
-            Some(apply_player_attack(
-                world,
-                player_entity,
-                entity_id,
-                pos,
-                rot,
-                attack,
-                ts,
-                duration,
-            )),
-            false,
-        ),
+        } => {
+            if !crate::runtime::actor_life::actor_can_act(world, player_entity) {
+                (None, false)
+            } else {
+                (
+                    Some(apply_player_attack(
+                        world,
+                        player_entity,
+                        entity_id,
+                        target_entity,
+                        pos,
+                        rot,
+                        attack,
+                        ts,
+                        duration,
+                    )),
+                    false,
+                )
+            }
+        }
         Action::MobMotion {
             mob_entity,
             entity_id,
@@ -88,27 +103,57 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
             ts,
             duration,
             next_brain,
-        } => (
-            Some(apply_mob_motion(
-                world, map_entity, now, mob_entity, entity_id, start_pos, end_pos, rot, kind, ts,
-                duration, next_brain,
-            )),
-            true,
-        ),
+        } => {
+            if !crate::runtime::actor_life::actor_can_act(world, mob_entity) {
+                (None, false)
+            } else {
+                (
+                    Some(apply_mob_motion(
+                        world, map_entity, now, mob_entity, entity_id, start_pos, end_pos, rot,
+                        kind, ts, duration, next_brain,
+                    )),
+                    true,
+                )
+            }
+        }
         Action::MobAttack {
             mob_entity,
             entity_id,
+            target_entity,
             pos,
             rot,
             ts,
             duration,
             next_brain,
-        } => (
-            Some(apply_mob_attack(
-                world, map_entity, now, mob_entity, entity_id, pos, rot, ts, duration, next_brain,
-            )),
-            true,
-        ),
+        } => {
+            if !crate::runtime::actor_life::actor_can_act(world, mob_entity)
+                || !crate::runtime::actor_life::actor_can_be_combat_target(world, target_entity)
+            {
+                set_mob_brain(
+                    world,
+                    mob_entity,
+                    super::super::state::MobBrainState::default(),
+                );
+                (None, false)
+            } else {
+                (
+                    Some(apply_mob_attack(
+                        world,
+                        map_entity,
+                        now,
+                        mob_entity,
+                        entity_id,
+                        pos,
+                        rot,
+                        ts,
+                        duration,
+                        next_brain,
+                        target_entity,
+                    )),
+                    true,
+                )
+            }
+        }
     };
 
     if dirty {
@@ -133,6 +178,7 @@ fn apply_player_motion(
     duration: PacketDuration,
     motion: super::super::state::PlayerMotionState,
 ) -> Option<super::super::state::PendingMovement> {
+    let now = world.resource::<RuntimeState>().sim_now;
     if let Some(mut transform) = world
         .entity_mut(player_entity)
         .get_mut::<super::super::state::LocalTransform>()
@@ -145,6 +191,12 @@ fn apply_player_motion(
         .get_mut::<super::super::state::PlayerMotion>()
     {
         player_motion.0 = motion;
+    }
+    if let Some(mut activity) = world
+        .entity_mut(player_entity)
+        .get_mut::<super::super::state::PlayerActivityComp>()
+    {
+        activity.last_movement_start_at = Some(now);
     }
     if let Some(mut spatial) = world
         .entity_mut(map_entity)
@@ -171,18 +223,34 @@ fn apply_player_attack(
     world: &mut World,
     player_entity: Entity,
     entity_id: zohar_domain::entity::EntityId,
+    target_entity: Entity,
     pos: LocalPos,
     rot: Facing72,
     _attack: AttackIntent,
     ts: ClientTimestamp,
     duration: PacketDuration,
 ) -> super::super::state::PendingMovement {
+    let now = world.resource::<RuntimeState>().sim_now;
     if let Some(mut transform) = world
         .entity_mut(player_entity)
         .get_mut::<super::super::state::LocalTransform>()
     {
         transform.rot = rot;
     }
+    if let Some(mut activity) = world
+        .entity_mut(player_entity)
+        .get_mut::<super::super::state::PlayerActivityComp>()
+    {
+        activity.last_attack_at = Some(now);
+    }
+
+    world
+        .resource_mut::<AttackCommandBuffer>()
+        .0
+        .push(AttackCommand::PlayerBasicAttack {
+            attacker_entity: player_entity,
+            victim_entity: target_entity,
+        });
 
     super::super::state::PendingMovement {
         mover_player_id: Some(
@@ -257,6 +325,7 @@ fn apply_mob_attack(
     ts: ClientTimestamp,
     duration: PacketDuration,
     next_brain: super::super::state::MobBrainState,
+    target_entity: Entity,
 ) -> super::super::state::PendingMovement {
     if let Some(mut transform) = world
         .entity_mut(mob_entity)
@@ -273,6 +342,13 @@ fn apply_mob_attack(
         spatial.0.update_position(entity_id, pos);
     }
     set_mob_brain(world, mob_entity, next_brain);
+    world
+        .resource_mut::<AttackCommandBuffer>()
+        .0
+        .push(AttackCommand::MobBasicAttack {
+            attacker_entity: mob_entity,
+            victim_entity: target_entity,
+        });
 
     super::super::state::PendingMovement {
         mover_player_id: None,

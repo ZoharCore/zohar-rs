@@ -1,13 +1,19 @@
 pub(crate) mod action;
+pub(crate) mod actor_stats;
 #[cfg(feature = "admin-brp")]
 pub(crate) mod admin;
+pub(crate) mod cleanup;
+pub(crate) mod combat;
 pub(crate) mod common;
 pub(crate) mod config;
+pub(crate) mod facts;
+pub(crate) mod life;
 pub(crate) mod mob;
 pub(crate) mod net;
 pub(crate) mod player;
 mod plugins;
 pub(crate) mod portal;
+pub(crate) mod projection;
 pub(crate) mod resources;
 pub(crate) mod rules;
 pub(crate) mod schedule;
@@ -17,6 +23,7 @@ pub(crate) mod time;
 
 pub(crate) use action as action_pipeline;
 pub(crate) use common as state;
+pub(crate) use life as actor_life;
 pub(crate) use mob::aggro;
 pub(crate) use mob::ai as mob_ai;
 pub(crate) use mob::ambient_chat as idle_chat;

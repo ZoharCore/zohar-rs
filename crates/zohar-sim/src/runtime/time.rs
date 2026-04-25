@@ -31,8 +31,22 @@ impl SimInstant {
         SimDuration(self.0.saturating_sub(earlier.0))
     }
 
+    pub(crate) const fn overflowing_sub(self, earlier: Self) -> (SimDuration, bool) {
+        let (wrapped, did_underflow) = self.0.overflowing_sub(earlier.0);
+        (SimDuration(wrapped), did_underflow)
+    }
+
     pub(crate) fn to_client_timestamp(self) -> ClientTimestamp {
         ClientTimestamp::new(self.0.min(u64::from(u32::MAX)) as u32)
+    }
+
+    pub(crate) fn elapsed_since(self, event: Option<SimInstant>) -> Option<Duration> {
+        let (sim_duration, did_underflow) = self.overflowing_sub(event?);
+        if did_underflow {
+            None
+        } else {
+            Some(sim_duration.as_duration())
+        }
     }
 }
 
@@ -89,5 +103,85 @@ impl From<Duration> for SimDuration {
 impl From<SimDuration> for Duration {
     fn from(value: SimDuration) -> Self {
         value.as_duration()
+    }
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SimTickerClock {
+    last_processed_at: SimInstant,
+    next_due_at: SimInstant,
+    cadence: SimDuration,
+}
+
+impl SimTickerClock {
+    pub(crate) fn phased(seed: i64, now: SimInstant, cadence: SimDuration) -> Self {
+        assert!(
+            cadence > SimDuration::ZERO,
+            "ticker cadence must be non-zero"
+        );
+
+        let cadence_ms = cadence.as_millis();
+        let phase_ms = seed.unsigned_abs() % cadence_ms;
+        let now_phase = u64::from(now) % cadence_ms;
+        let delay_ms = if phase_ms > now_phase {
+            phase_ms - now_phase
+        } else {
+            cadence_ms - (now_phase - phase_ms)
+        };
+
+        Self::scheduled(
+            now,
+            now.saturating_add(SimDuration::from_millis(delay_ms.max(1))),
+            cadence,
+        )
+    }
+
+    pub(crate) fn scheduled(
+        last_processed_at: SimInstant,
+        next_due_at: SimInstant,
+        cadence: SimDuration,
+    ) -> Self {
+        assert!(
+            cadence > SimDuration::ZERO,
+            "ticker cadence must be non-zero"
+        );
+
+        Self {
+            last_processed_at,
+            next_due_at,
+            cadence,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn next_due_at(&self) -> SimInstant {
+        self.next_due_at
+    }
+
+    pub(crate) fn is_due(&self, now: SimInstant) -> bool {
+        self.next_due_at <= now
+    }
+
+    pub(crate) fn advance_due(&mut self, now: SimInstant) -> Option<SimDuration> {
+        if !self.is_due(now) {
+            return None;
+        }
+
+        let elapsed = now.saturating_sub(self.last_processed_at);
+        self.last_processed_at = now;
+        self.advance_past(now);
+        Some(elapsed)
+    }
+
+    pub(crate) fn retry_after(&mut self, now: SimInstant, delay: SimDuration) {
+        self.last_processed_at = now;
+        self.next_due_at = now.saturating_add(delay);
+    }
+
+    fn advance_past(&mut self, now: SimInstant) {
+        while self.next_due_at <= now {
+            self.next_due_at = self.next_due_at.saturating_add(self.cadence);
+        }
     }
 }

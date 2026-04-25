@@ -448,8 +448,8 @@ async fn test_ingame_bootstrap_sends_handshake_before_map_driven_self_spawn() ->
                 assert_eq!(race_num, 0);
                 saw_spawn = true;
             }
-            InGameS2c::World(WorldS2c::SetEntityDetails { name, level, .. }) => {
-                assert!(saw_spawn, "self SetEntityDetails should follow SpawnEntity");
+            InGameS2c::World(WorldS2c::SetEntityProfile { name, level, .. }) => {
+                assert!(saw_spawn, "self SetEntityProfile should follow SpawnEntity");
                 assert_eq!(name.as_str(), "wire_player");
                 assert_eq!(level, 1);
                 return Ok(());
@@ -463,7 +463,7 @@ async fn test_ingame_bootstrap_sends_handshake_before_map_driven_self_spawn() ->
         }
     }
 
-    anyhow::bail!("did not observe map-driven self spawn/details during in-game bootstrap")
+    anyhow::bail!("did not observe map-driven self spawn/profile during in-game bootstrap")
 }
 
 #[tokio::test]

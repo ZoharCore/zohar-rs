@@ -16,7 +16,16 @@ CREATE TABLE mob_proto (
   move_speed INTEGER NOT NULL DEFAULT 100,
   attack_speed INTEGER NOT NULL DEFAULT 100,
   aggressive_sight INTEGER NOT NULL DEFAULT 0,
-  attack_range INTEGER NOT NULL DEFAULT 150
+  attack_range INTEGER NOT NULL DEFAULT 150,
+  strength INTEGER NOT NULL DEFAULT 1 CHECK (strength >= 0),
+  dexterity INTEGER NOT NULL DEFAULT 1 CHECK (dexterity >= 0),
+  vitality INTEGER NOT NULL DEFAULT 1 CHECK (vitality >= 0),
+  intelligence INTEGER NOT NULL DEFAULT 1 CHECK (intelligence >= 0),
+  damage_min INTEGER NOT NULL DEFAULT 1 CHECK (damage_min >= 0),
+  damage_max INTEGER NOT NULL DEFAULT 1 CHECK (damage_max >= damage_min),
+  max_hp INTEGER NOT NULL DEFAULT 1 CHECK (max_hp >= 1),
+  defense INTEGER NOT NULL DEFAULT 0 CHECK (defense >= 0),
+  damage_multiplier REAL NOT NULL DEFAULT 1.0 CHECK (damage_multiplier >= 0.0)
 );
 
 CREATE TABLE mob_chat_strategy (

@@ -34,7 +34,7 @@ pub enum WorldS2c {
     },
 
     #[brw(magic = 0x88_u8)]
-    SetEntityDetails {
+    SetEntityProfile {
         /// Virtual ID for the entity
         net_id: game_pkt::NetId,
 
@@ -51,6 +51,30 @@ pub enum WorldS2c {
 
         guild_id: u32,
         level: u32,
+        rank_pts: i16,
+        pvp_mode: u8,
+
+        mount_id: u32,
+    },
+
+    #[brw(magic = 0x13_u8)]
+    SyncEntity {
+        /// Virtual ID for the entity
+        net_id: game_pkt::NetId,
+
+        body_part: u16,
+        wep_part: u16,
+        #[bw(calc = 0)]
+        _reserved_part: u16,
+        hair_part: u16,
+
+        move_speed: u8,
+        attack_speed: u8,
+
+        state_flags: u8,
+        buff_flags: u64,
+
+        guild_id: u32,
         rank_pts: i16,
         pvp_mode: u8,
 

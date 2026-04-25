@@ -111,8 +111,5 @@ fn player_stat_rules_hydrate_bootstrap_and_packet_projection() {
         .expect("hydrated stats");
 
     assert_eq!(hydrated.bootstrap_sync.stat_snapshot.get(Stat::St), 8);
-    assert_eq!(
-        hydrated.bootstrap_sync.character_update.appearance.level,
-        10
-    );
+    assert_eq!(hydrated.bootstrap_sync.public_state.stats.level, 10);
 }

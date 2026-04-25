@@ -12,11 +12,13 @@ pub enum StatsS2c {
     SetMainCharacterStats { stats: WireStatSnapshot },
 
     #[brw(magic = 0x11_u8)]
-    SetEntityStat {
+    SyncEntityStat {
         #[brw(pad_before = 3)]
         net_id: game_pkt::NetId,
         stat_id: WireStatPoint,
-        delta: i32,
+        #[br(temp)]
+        #[bw(calc = 0)]
+        _delta: i32,
         absolute: i32,
     },
 }

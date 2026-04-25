@@ -3,6 +3,7 @@ mod formulas;
 mod modifiers;
 mod progression;
 mod projection;
+mod recovery;
 mod resources;
 mod state;
 mod sync;

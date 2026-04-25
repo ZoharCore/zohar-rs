@@ -1,10 +1,10 @@
 use crate::Empire;
-use crate::coords::LocalPos;
+use crate::coords::{Facing72, LocalPos};
 use crate::entity::EntityId;
 use crate::entity::mob::{MobId, MobKind};
 use crate::entity::player::{PlayerClass, PlayerGender};
 
-/// Entity kind with variant-specific data for spawn packets.
+/// Entity kind with variant-specific data for observer replication.
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
 pub enum EntityKind {
@@ -20,32 +20,71 @@ pub enum EntityKind {
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone)]
-pub struct ShowEntity {
+pub struct EntityNameplate {
+    pub name: String,
+    pub empire: Option<Empire>,
+    pub level: u32,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone)]
+pub struct EntitySnapshot {
     pub entity_id: EntityId,
-    pub angle: f32,
+    pub facing: Facing72,
     #[cfg_attr(feature = "admin-brp", reflect(remote = crate::coords::LocalPosReflect))]
     pub pos: LocalPos,
     pub kind: EntityKind,
+    pub public_state: EntityPublicState,
+    pub nameplate: Option<EntityNameplate>,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EntityPublicEquipment {
+    pub body_part: u16,
+    pub weapon_part: u16,
+    pub hair_part: u16,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntityPublicSpeeds {
     pub move_speed: u8,
     pub attack_speed: u8,
+}
+
+impl Default for EntityPublicSpeeds {
+    fn default() -> Self {
+        Self {
+            move_speed: 100,
+            attack_speed: 100,
+        }
+    }
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EntityPublicFlags {
     pub state_flags: u8,
     pub buff_flags: u64,
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
-#[derive(Debug, Clone)]
-pub struct EntityDetails {
-    pub entity_id: EntityId,
-    pub name: String,
-    pub body_part: u16,
-    pub wep_part: u16,
-    pub hair_part: u16,
-    pub empire: Option<Empire>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EntityPublicSocial {
     pub guild_id: u32,
-    pub level: u32,
     pub rank_pts: i16,
     pub pvp_mode: u8,
     pub mount_id: u32,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EntityPublicState {
+    pub equipment: EntityPublicEquipment,
+    pub speeds: EntityPublicSpeeds,
+    pub flags: EntityPublicFlags,
+    pub social: EntityPublicSocial,
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]

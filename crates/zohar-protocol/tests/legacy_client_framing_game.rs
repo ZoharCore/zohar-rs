@@ -4,7 +4,7 @@ mod packet_framing_support;
 
 use packet_framing_support::{assert_packet_frame, encoded_bytes};
 use zohar_protocol::game_pkt::ingame::chat::{ChatC2s, ChatKind, ChatS2c};
-use zohar_protocol::game_pkt::ingame::combat::CombatC2s;
+use zohar_protocol::game_pkt::ingame::combat::{CombatC2s, CombatS2c};
 use zohar_protocol::game_pkt::ingame::movement::{MovementC2s, MovementKind, MovementS2c};
 use zohar_protocol::game_pkt::ingame::stats::{WireStatPoint, WireStatSnapshot};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
@@ -308,10 +308,9 @@ fn loading_s2c_packets_keep_their_legacy_lengths() {
     );
     assert_packet_frame(
         &LoadingS2c::Stats(
-            zohar_protocol::game_pkt::ingame::stats::StatsS2c::SetEntityStat {
+            zohar_protocol::game_pkt::ingame::stats::StatsS2c::SyncEntityStat {
                 net_id: zohar_protocol::game_pkt::NetId(0x0102_0304),
                 stat_id: WireStatPoint::Gold,
-                delta: -3,
                 absolute: 0,
             },
         ),
@@ -367,6 +366,29 @@ fn combat_c2s_packets_keep_their_legacy_lengths() {
 }
 
 #[test]
+fn combat_s2c_packets_keep_their_legacy_lengths() {
+    assert_packet_frame(&CombatS2c::SetEntityStunned { target: NetId(2) }, 0x0D, 5);
+    assert_packet_frame(&CombatS2c::SetEntityDead { target: NetId(2) }, 0x0E, 5);
+    assert_packet_frame(
+        &CombatS2c::SyncEntityHealthBar {
+            target: NetId(2),
+            hp_pct: 42,
+        },
+        0x3F,
+        6,
+    );
+    assert_packet_frame(
+        &CombatS2c::TriggerFloatingDamage {
+            target: NetId(2),
+            flags: 1,
+            damage: 123,
+        },
+        0x87,
+        10,
+    );
+}
+
+#[test]
 fn system_s2c_packets_keep_their_legacy_lengths() {
     assert_packet_frame(
         &SystemS2c::SetServerTime {
@@ -396,7 +418,7 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
         35,
     );
     assert_packet_frame(
-        &WorldS2c::SetEntityDetails {
+        &WorldS2c::SetEntityProfile {
             net_id: NetId(1),
             name: "test".into(),
             body_part: 0,
@@ -411,6 +433,24 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
         },
         0x88,
         54,
+    );
+    assert_packet_frame(
+        &WorldS2c::SyncEntity {
+            net_id: NetId(1),
+            body_part: 1,
+            wep_part: 2,
+            hair_part: 3,
+            move_speed: 125,
+            attack_speed: 110,
+            state_flags: 0,
+            buff_flags: 0,
+            guild_id: 7,
+            rank_pts: 0,
+            pvp_mode: 0,
+            mount_id: 0,
+        },
+        0x13,
+        35,
     );
     assert_packet_frame(&WorldS2c::DestroyEntity { net_id: NetId(1) }, 0x02, 5);
 }

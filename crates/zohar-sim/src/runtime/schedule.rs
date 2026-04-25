@@ -4,16 +4,27 @@ use super::time::SimInstant;
 use bevy::prelude::*;
 use std::time::{Duration, Instant};
 
+/// Ordered phases for the map runtime.
+///
+/// Keep gameplay mutations flowing forward: intake and AI build actions, actions mutate actor
+/// resources and emit `FrameFacts`, lifecycle/cleanup consume those facts, projection turns facts
+/// into `PlayerEvent`s, and only post-update systems flush stat/replication/outbox state.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SimSet {
     DrainInbound,
     SyncTickRate,
     Sense,
+    StatsNormalize,
+    PlayerActions,
     Think,
     Act,
+    Lifecycle,
+    Resources,
+    Projection,
     Ambient,
     AoiReconcile,
     ReplicationFlush,
+    StatsFlush,
     OutboxFlush,
     Autosave,
 }

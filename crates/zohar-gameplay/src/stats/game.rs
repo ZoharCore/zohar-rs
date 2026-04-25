@@ -11,6 +11,7 @@ mod change_set;
 mod contribution;
 mod player_rules;
 mod progression;
+mod recovery;
 mod resource;
 mod source;
 mod stat;
@@ -21,8 +22,9 @@ mod view;
 
 pub use actor::{ActorImmuneFlags, ActorKind, ActorResources, ActorStatState, StatWriteError};
 pub use api::{
-    BootstrapStatsSync, CharacterAppearance, CharacterUpdate, GameStatsApi, SourceBundleError,
-    StatDelta, StatSnapshot, StatsSync,
+    ActorPublicState, ActorPublicStats, ActorStatsRuntime, BootstrapStatsSync,
+    DrainedPlayerStatsSync, GameStatsApi, PlayerStatsRuntime, SourceBundleError, StatDelta,
+    StatSnapshot, StatsSync,
 };
 pub use balance::{default_mob_balance_rules, default_player_balance_rules};
 pub use change_set::StatChangeSet;
@@ -32,6 +34,12 @@ pub use player_rules::{
     PlayerClassStatsTable, PlayerStatRules,
 };
 pub use progression::PlayerProgressionState;
+pub use recovery::{
+    PlayerMovementActivity, PlayerPassiveHpRecoveryState, PlayerPassiveSpRecoveryState,
+    PlayerSpRecoveryProfile, PlayerStaminaEffect, PlayerStaminaMovementOverride,
+    PlayerStaminaState, PlayerStaminaTimerCommand, PlayerStatActivity,
+    tick_player_passive_hp_recovery, tick_player_passive_sp_recovery, tick_player_stamina,
+};
 pub use resource::{QueuedRecovery, ResourceApplication, ResourceApplicationResult};
 pub use source::{
     ActorStatSource, ActorViewLimits, CoreStatBlock, DeterministicGrowthVersion, MobBalanceRules,

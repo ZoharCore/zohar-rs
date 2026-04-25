@@ -50,6 +50,20 @@ pub enum MobRank {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MobCombatStats {
+    pub strength: i32,
+    pub dexterity: i32,
+    pub vitality: i32,
+    pub intelligence: i32,
+    pub damage_min: i32,
+    pub damage_max: i32,
+    pub max_hp: i32,
+    pub defense: i32,
+    pub damage_multiplier: f32,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug)]
 pub struct MobPrototypeDef {
     pub mob_id: MobId,
@@ -63,6 +77,7 @@ pub struct MobPrototypeDef {
     pub aggressive_sight: u16,
     pub attack_range: u16,
     pub combat_extent_m: f32,
+    pub combat: MobCombatStats,
     #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub bhv_flags: BehaviorFlags,
     pub empire: Option<crate::Empire>,
@@ -82,6 +97,17 @@ impl MobPrototypeDef {
             aggressive_sight: 0,
             attack_range: 150,
             combat_extent_m: 1.0,
+            combat: MobCombatStats {
+                strength: 3,
+                dexterity: 6,
+                vitality: 5,
+                intelligence: 2,
+                damage_min: 20,
+                damage_max: 24,
+                max_hp: 126,
+                defense: 4,
+                damage_multiplier: 1.0,
+            },
             bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }

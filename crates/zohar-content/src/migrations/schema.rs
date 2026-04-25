@@ -155,6 +155,15 @@ mod tests {
         assert!(columns.iter().any(|column| column == "battle_type"));
         assert!(columns.iter().any(|column| column == "aggressive_sight"));
         assert!(columns.iter().any(|column| column == "attack_range"));
+        assert!(columns.iter().any(|column| column == "strength"));
+        assert!(columns.iter().any(|column| column == "dexterity"));
+        assert!(columns.iter().any(|column| column == "vitality"));
+        assert!(columns.iter().any(|column| column == "intelligence"));
+        assert!(columns.iter().any(|column| column == "damage_min"));
+        assert!(columns.iter().any(|column| column == "damage_max"));
+        assert!(columns.iter().any(|column| column == "max_hp"));
+        assert!(columns.iter().any(|column| column == "defense"));
+        assert!(columns.iter().any(|column| column == "damage_multiplier"));
     }
 
     #[tokio::test]

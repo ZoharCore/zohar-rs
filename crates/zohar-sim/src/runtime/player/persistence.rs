@@ -6,14 +6,15 @@ use zohar_domain::entity::player::{
     PlayerId, PlayerPlaytime, PlayerProgressionSnapshot, PlayerRuntimeEpoch, PlayerRuntimeSnapshot,
     PlayerSnapshot,
 };
-use zohar_gameplay::stats::game::{GameStatsApi, Stat};
+use zohar_gameplay::stats::game::Stat;
 use zohar_map_port::LeaveMsg;
 
 use crate::persistence::PlayerPersistencePort;
 use crate::runtime::spatial::sample_player_visual_position_at;
 
 use super::super::common::{LocalTransform, MapConfig, PlayerIndex, RuntimeState};
-use super::super::time::{SimDuration, SimInstant};
+use super::super::facts::FrameFacts;
+use super::super::time::{SimDuration, SimInstant, SimTickerClock};
 use super::{
     PlayerMarker, PlayerMotion, PlayerPendingDurableFlush, PlayerPersistenceState,
     PlayerProgressionComp, PlayerStatsComp,
@@ -34,26 +35,44 @@ impl PlayerPersistenceState {
             runtime_epoch,
             persisted_playtime,
             entered_map_at: now,
-            next_autosave_at: Self::initial_autosave_deadline(player_id, now),
+            autosave: SimTickerClock::phased(i64::from(player_id), now, AUTOSAVE_INTERVAL),
         }
-    }
-
-    fn initial_autosave_deadline(player_id: PlayerId, now: SimInstant) -> SimInstant {
-        let interval_ms = AUTOSAVE_INTERVAL.as_millis();
-        let phase_ms = i64::from(player_id).unsigned_abs() % interval_ms;
-        let now_ms = u64::from(now);
-        let now_phase = now_ms % interval_ms;
-        let delay_ms = if phase_ms > now_phase {
-            phase_ms - now_phase
-        } else {
-            interval_ms - (now_phase - phase_ms)
-        };
-
-        now.saturating_add(SimDuration::from_millis(delay_ms.max(1)))
     }
 }
 
 pub(crate) fn mark_player_dirty(world: &mut World, player_entity: Entity) {
+    world
+        .resource_mut::<FrameFacts>()
+        .persistence
+        .mark_player_dirty(player_entity);
+}
+
+pub(crate) fn process_player_dirty_events(world: &mut World) {
+    let dirty_players = {
+        let facts = world.resource::<FrameFacts>();
+        let mut dirty = facts
+            .resources
+            .changed
+            .iter()
+            .map(|fact| {
+                let _ = (fact.stat, fact.previous, fact.current);
+                fact.actor.entity
+            })
+            .collect::<Vec<_>>();
+        dirty.extend(facts.persistence.player_dirty.iter().copied());
+        dirty
+    };
+
+    for player_entity in dirty_players {
+        set_player_dirty(world, player_entity);
+    }
+}
+
+fn set_player_dirty(world: &mut World, player_entity: Entity) {
+    if !world.entities().contains(player_entity) {
+        return;
+    }
+
     let mut player = world.entity_mut(player_entity);
     let Some(mut persistence) = player.get_mut::<PlayerPersistenceState>() else {
         return;
@@ -81,7 +100,7 @@ pub(crate) fn enqueue_due_autosaves(
     for (marker, transform, motion, progression, stats, pending_flush, mut persistence) in
         &mut query
     {
-        if persistence.next_autosave_at > now {
+        if !persistence.autosave.is_due(now) {
             continue;
         }
 
@@ -90,7 +109,7 @@ pub(crate) fn enqueue_due_autosaves(
         }
 
         if !persistence.dirty {
-            advance_autosave_deadline(&mut persistence, now);
+            let _ = persistence.autosave.advance_due(now);
             continue;
         }
 
@@ -111,7 +130,7 @@ pub(crate) fn enqueue_due_autosaves(
         match persistence_port.handle().try_schedule_autosave(snapshot) {
             Ok(()) => {
                 persistence.dirty = false;
-                advance_autosave_deadline(&mut persistence, now);
+                let _ = persistence.autosave.advance_due(now);
             }
             Err(error) => {
                 warn!(
@@ -119,7 +138,7 @@ pub(crate) fn enqueue_due_autosaves(
                     error = %error,
                     "Failed to enqueue player autosave"
                 );
-                persistence.next_autosave_at = now.saturating_add(AUTOSAVE_RETRY_DELAY);
+                persistence.autosave.retry_after(now, AUTOSAVE_RETRY_DELAY);
             }
         }
     }
@@ -306,20 +325,10 @@ struct CurrentResources {
 }
 
 fn current_resources(stats: &PlayerStatsComp) -> CurrentResources {
-    let mut state = stats.state.clone();
-    let api = GameStatsApi::new(&stats.source, &mut state);
     CurrentResources {
-        hp: Some(api.read_packet(Stat::Hp)),
-        sp: Some(api.read_packet(Stat::Sp)),
-        stamina: Some(api.read_packet(Stat::Stamina)),
-    }
-}
-
-fn advance_autosave_deadline(persistence: &mut PlayerPersistenceState, now: SimInstant) {
-    while persistence.next_autosave_at <= now {
-        persistence.next_autosave_at = persistence
-            .next_autosave_at
-            .saturating_add(AUTOSAVE_INTERVAL);
+        hp: Some(stats.0.read_packet(Stat::Hp)),
+        sp: Some(stats.0.read_packet(Stat::Sp)),
+        stamina: Some(stats.0.read_packet(Stat::Stamina)),
     }
 }
 
@@ -374,6 +383,7 @@ mod tests {
     use tokio::sync::oneshot;
     use zohar_domain::MapId;
     use zohar_domain::TerrainFlags;
+    use zohar_domain::coords::Facing72;
     use zohar_domain::coords::{LocalPos, LocalSize};
     use zohar_domain::entity::EntityId;
     use zohar_domain::entity::player::{
@@ -384,7 +394,6 @@ mod tests {
         PlayerResourceFormula, PlayerStatSource, SourceSpeeds,
     };
     use zohar_map_port::ClientTimestamp;
-    use zohar_map_port::Facing72;
 
     fn test_player_stat_rules() -> crate::PlayerStatRules {
         crate::PlayerStatRules::new(
@@ -479,10 +488,14 @@ mod tests {
         let hydrated = test_player_stat_rules()
             .hydrate_player(&gameplay)
             .expect("player stats should hydrate for tests");
-        PlayerStatsComp {
-            source: hydrated.source,
-            state: hydrated.state,
-        }
+        PlayerStatsComp(zohar_gameplay::stats::game::PlayerStatsRuntime::new(
+            hydrated.source,
+            hydrated.state,
+        ))
+    }
+
+    fn due_autosave_clock() -> SimTickerClock {
+        SimTickerClock::scheduled(SimInstant::ZERO, SimInstant::ZERO, AUTOSAVE_INTERVAL)
     }
 
     #[test]
@@ -514,7 +527,7 @@ mod tests {
                     runtime_epoch: Default::default(),
                     persisted_playtime: PlayerPlaytime::from_secs(120),
                     entered_map_at: SimInstant::from_millis(5_000),
-                    next_autosave_at: SimInstant::ZERO,
+                    autosave: due_autosave_clock(),
                 },
             ))
             .id();
@@ -554,7 +567,7 @@ mod tests {
             .get::<PlayerPersistenceState>()
             .expect("persistence state");
         assert!(!persistence.dirty);
-        assert!(persistence.next_autosave_at > SimInstant::from_millis(30_000));
+        assert!(persistence.autosave.next_due_at() > SimInstant::from_millis(30_000));
     }
 
     #[test]
@@ -591,7 +604,7 @@ mod tests {
                 runtime_epoch: Default::default(),
                 persisted_playtime: PlayerPlaytime::ZERO,
                 entered_map_at: SimInstant::ZERO,
-                next_autosave_at: SimInstant::ZERO,
+                autosave: due_autosave_clock(),
             },
         ));
 
@@ -641,7 +654,7 @@ mod tests {
                     runtime_epoch: Default::default(),
                     persisted_playtime: PlayerPlaytime::from_secs(120),
                     entered_map_at: SimInstant::from_millis(5_000),
-                    next_autosave_at: SimInstant::ZERO,
+                    autosave: due_autosave_clock(),
                 },
             ))
             .id();
@@ -658,7 +671,7 @@ mod tests {
             .get::<PlayerPersistenceState>()
             .expect("persistence state");
         assert!(persistence.dirty);
-        assert_eq!(persistence.next_autosave_at, SimInstant::ZERO);
+        assert_eq!(persistence.autosave.next_due_at(), SimInstant::ZERO);
     }
 
     #[test]
@@ -697,7 +710,7 @@ mod tests {
                     runtime_epoch: Default::default(),
                     persisted_playtime: PlayerPlaytime::from_secs(90),
                     entered_map_at: SimInstant::ZERO,
-                    next_autosave_at: SimInstant::ZERO,
+                    autosave: due_autosave_clock(),
                 },
             ))
             .id();

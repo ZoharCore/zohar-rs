@@ -2,10 +2,10 @@ mod apply;
 mod plan;
 
 use bevy::prelude::*;
-use zohar_domain::coords::LocalPos;
+use zohar_domain::coords::{Facing72, LocalPos};
 use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
-use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg, PacketDuration};
+use zohar_map_port::{AttackIntent, ClientTimestamp, MovementArg, PacketDuration};
 
 use super::state::{MobBrainState, PlayerMotionState, SimDuration};
 
@@ -43,6 +43,7 @@ pub(crate) enum Action {
     PlayerAttack {
         player_entity: Entity,
         entity_id: EntityId,
+        target_entity: Entity,
         pos: LocalPos,
         rot: Facing72,
         attack: AttackIntent,
@@ -63,6 +64,7 @@ pub(crate) enum Action {
     MobAttack {
         mob_entity: Entity,
         entity_id: EntityId,
+        target_entity: Entity,
         pos: LocalPos,
         rot: Facing72,
         ts: ClientTimestamp,

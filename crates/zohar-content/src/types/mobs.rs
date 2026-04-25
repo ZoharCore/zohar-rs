@@ -98,4 +98,13 @@ pub struct ContentMob {
     pub attack_speed: i64,
     pub aggressive_sight: i64,
     pub attack_range: i64,
+    pub strength: i64,
+    pub dexterity: i64,
+    pub vitality: i64,
+    pub intelligence: i64,
+    pub damage_min: i64,
+    pub damage_max: i64,
+    pub max_hp: i64,
+    pub defense: i64,
+    pub damage_multiplier: f64,
 }

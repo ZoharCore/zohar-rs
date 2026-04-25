@@ -223,15 +223,25 @@ fn map_event_to_packets(
     coords: &crate::ContentCoords,
 ) -> Vec<InGameS2c> {
     match event {
-        PlayerEvent::EntitySpawn { show, details } => {
-            world::encode_entity_spawn(show, details, map_id, coords)
+        PlayerEvent::EntitySpawn { snapshot } => {
+            world::encode_entity_spawn(snapshot, map_id, coords)
         }
-        PlayerEvent::SetEntityStat {
+        PlayerEvent::SetEntityStats { entity_id, stats } => {
+            stats::encode_entity_stats(entity_id, stats)
+        }
+        PlayerEvent::SyncEntityHealthBar { entity_id, hp_pct } => {
+            combat::encode_entity_health_bar(entity_id, hp_pct)
+        }
+        PlayerEvent::DamageInfo {
             entity_id,
-            stat,
-            delta,
-            absolute,
-        } => stats::encode_entity_stat(entity_id, stat, delta, absolute),
+            flags,
+            damage,
+        } => combat::encode_damage_info(entity_id, flags, damage),
+        PlayerEvent::EntityStunned { entity_id } => combat::encode_entity_stunned(entity_id),
+        PlayerEvent::EntityDead { entity_id } => combat::encode_entity_dead(entity_id),
+        PlayerEvent::EntityPublicStateChanged { entity_id, state } => {
+            world::encode_entity_public_state_change(entity_id, state)
+        }
         PlayerEvent::EntityMove(event) => movement::encode_entity_move(event, map_id, coords),
         PlayerEvent::SetEntityMovementAnimation {
             entity_id,

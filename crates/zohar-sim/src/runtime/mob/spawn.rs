@@ -1,12 +1,13 @@
 use super::state::{
-    LocalTransform, MapEmpire, MapMarker, MapPendingLocalChats, MapPendingMovementAnimations,
-    MapPendingMovements, MapReplication, MapSpatial, MapSpawnRules, MobAggroQueue, MobBrainState,
-    MobHomeAnchor, MobMarker, MobMotion, MobMotionState, MobPackId, MobRef, NetEntityId,
-    NetEntityIndex, RuntimeState, SharedConfig, SpawnRuleState, StartupReadySignal,
+    ActorLifeComp, LocalTransform, MapDirtyEntityPublicStates, MapEmpire, MapMarker,
+    MapPendingLocalChats, MapPendingMovements, MapReplication, MapSpatial, MapSpawnRules,
+    MobAggroQueue, MobBrainState, MobHomeAnchor, MobMarker, MobMotion, MobMotionState, MobPackId,
+    MobRef, MobStatsComp, NetEntityId, NetEntityIndex, RuntimeState, SharedConfig, SpawnRuleState,
+    StartupReadySignal,
 };
 use super::util::{
-    degrees_to_protocol_rot, expand_spawn_template, next_entity_id, random_duration_between_ms,
-    random_protocol_rot,
+    degrees_to_facing, expand_spawn_template, next_entity_id, random_duration_between_ms,
+    random_facing,
 };
 use crate::navigation::MapNavigator;
 use bevy::prelude::*;
@@ -14,10 +15,14 @@ use rand::RngExt;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
+use zohar_domain::coords::Facing72;
 use zohar_domain::coords::{LocalBox, LocalBoxExt, LocalPos, LocalSize};
 use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::spawn::{FacingStrategy, SpawnRule};
-use zohar_map_port::Facing72;
+use zohar_gameplay::stats::game::{
+    ActorKind, ActorStatSource, ActorStatState, ActorStatsRuntime, CoreStatBlock, MobStatSource,
+    SourceSpeeds, Stat, default_mob_balance_rules,
+};
 
 pub(crate) fn bootstrap_map_runtime(world: &mut World) {
     let map_config = world.resource::<super::state::MapConfig>();
@@ -47,8 +52,8 @@ pub(crate) fn bootstrap_map_runtime(world: &mut World) {
                 scheduled_spawns,
             },
             MapPendingLocalChats::default(),
-            MapPendingMovementAnimations::default(),
             MapPendingMovements::default(),
+            MapDirtyEntityPublicStates::default(),
         ))
         .id();
 
@@ -285,8 +290,8 @@ fn spawn_one_template(
             };
             let pos = sample_spawn_position(&mut state.rng, allowed_bounds, navigator.as_ref());
             let rot = match rule.facing {
-                FacingStrategy::Random => random_protocol_rot(&mut state.rng),
-                FacingStrategy::Fixed(direction) => degrees_to_protocol_rot(direction.to_angle()),
+                FacingStrategy::Random => random_facing(&mut state.rng),
+                FacingStrategy::Fixed(direction) => degrees_to_facing(direction.to_angle()),
             };
             pos.map(|pos| (pos, rot))
         }) else {
@@ -341,6 +346,7 @@ fn spawn_one_mob(
     pack_id: Option<u32>,
 ) -> Option<zohar_domain::entity::EntityId> {
     let proto = shared.mobs.get(&mob_id)?;
+    let mob_stats = mob_stats_from_proto(proto);
 
     let (entity_id, next_wander_decision_at_ms) = {
         let mut state = world.resource_mut::<RuntimeState>();
@@ -366,6 +372,8 @@ fn spawn_one_mob(
         MobMarker,
         NetEntityId { net_id: entity_id },
         MobRef { mob_id },
+        MobStatsComp(mob_stats.runtime),
+        ActorLifeComp::alive(),
         LocalTransform { pos, rot },
         MobMotion(MobMotionState {
             segment_start_pos: pos,
@@ -404,4 +412,86 @@ fn map_local_bounds(local_size: LocalSize) -> LocalBox {
         LocalPos::new(0.0, 0.0),
         LocalPos::new(local_size.width, local_size.height),
     )
+}
+
+struct SpawnedMobStats {
+    runtime: ActorStatsRuntime,
+}
+
+fn mob_stats_from_proto(proto: &zohar_domain::entity::mob::MobPrototypeDef) -> SpawnedMobStats {
+    let level = proto.level.min(i32::MAX as u32) as i32;
+    let combat = proto.combat;
+    let source = ActorStatSource::Mob(MobStatSource {
+        level,
+        core: CoreStatBlock::new(
+            combat.strength,
+            combat.vitality,
+            combat.dexterity,
+            combat.intelligence,
+        ),
+        max_hp: combat.max_hp.max(1),
+        def_grade_flat: combat.defense.max(0),
+        balance: default_mob_balance_rules(),
+        speeds: SourceSpeeds {
+            move_speed: i32::from(proto.move_speed),
+            attack_speed: i32::from(proto.attack_speed),
+            casting_speed: i32::from(proto.attack_speed),
+        },
+    });
+    let state = ActorStatState::new(ActorKind::Mob);
+    let mut runtime = ActorStatsRuntime::new(source, state);
+    runtime.with_api_mut(|api| {
+        let _ = api.sync();
+        let max_hp = api.read_limited(Stat::MaxHp);
+        let _ = api.set_resource(Stat::Hp, max_hp);
+    });
+
+    SpawnedMobStats { runtime }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zohar_domain::entity::mob::{
+        MobBattleType, MobCombatStats, MobKind, MobPrototypeDef, MobRank,
+    };
+    use zohar_domain::{BehaviorFlags, DefId};
+
+    #[test]
+    fn mob_stats_preserve_legacy_core_stat_order() {
+        let proto = MobPrototypeDef {
+            mob_id: DefId::new(101),
+            mob_kind: MobKind::Monster,
+            name: "mob".to_string(),
+            rank: MobRank::Pawn,
+            battle_type: MobBattleType::Melee,
+            level: 7,
+            move_speed: 100,
+            attack_speed: 100,
+            aggressive_sight: 0,
+            attack_range: 150,
+            combat_extent_m: 1.0,
+            combat: MobCombatStats {
+                strength: 3,
+                dexterity: 6,
+                vitality: 5,
+                intelligence: 2,
+                damage_min: 20,
+                damage_max: 24,
+                max_hp: 126,
+                defense: 4,
+                damage_multiplier: 1.4,
+            },
+            bhv_flags: BehaviorFlags::empty(),
+            empire: None,
+        };
+
+        let stats = mob_stats_from_proto(&proto);
+
+        assert_eq!(stats.runtime.read_limited(Stat::St), 3);
+        assert_eq!(stats.runtime.read_limited(Stat::Dx), 6);
+        assert_eq!(stats.runtime.read_limited(Stat::Ht), 5);
+        assert_eq!(stats.runtime.read_limited(Stat::Iq), 2);
+        assert_eq!(stats.runtime.read_limited(Stat::MaxHp), 126);
+    }
 }

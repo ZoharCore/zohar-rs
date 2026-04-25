@@ -9,6 +9,7 @@ use zohar_domain::coords::LocalPos;
 use zohar_domain::entity::EntityId;
 use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::spawn::SpawnRule;
+use zohar_gameplay::stats::game::ActorStatsRuntime;
 
 use crate::runtime::time::SimInstant;
 
@@ -58,6 +59,9 @@ pub(crate) struct MobMarker;
 pub(crate) struct MobRef {
     pub(crate) mob_id: MobId,
 }
+
+#[derive(Component)]
+pub(crate) struct MobStatsComp(pub(crate) ActorStatsRuntime);
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]

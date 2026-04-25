@@ -11,16 +11,16 @@ use crate::replication::{InterestConfig, VisibilityDiff};
 use tracing::warn;
 
 use super::state::{
-    LocalTransform, MapPendingLocalChats, MapPendingMovementAnimations, MapPendingMovements,
+    LocalTransform, MapDirtyEntityPublicStates, MapPendingLocalChats, MapPendingMovements,
     MapReplication, MapSpatial, NetEntityId, NetEntityIndex, PendingLocalChat, PendingMovement,
-    PendingMovementAnimation, PlayerAppearanceComp, PlayerCount, PlayerIndex, PlayerMarker,
-    PlayerMovementAnimation, PlayerOutboxComp, RuntimeState, SharedConfig,
+    PlayerAppearanceComp, PlayerCount, PlayerIndex, PlayerMarker, PlayerMovementAnimation,
+    PlayerOutboxComp, RuntimeState, SharedConfig,
 };
 use super::util::{
     format_talking_message, movement_kind_priority, obfuscate_cross_empire_talking_body,
     resolve_cross_empire_preserve_pct,
 };
-use crate::runtime::spawn_events::make_entity_spawn_payload;
+use crate::runtime::spawn_events::{make_entity_public_state, make_entity_snapshot};
 
 #[derive(Clone, Copy)]
 struct ObserverRecipient {
@@ -37,13 +37,20 @@ struct VisibilityObserver {
 
 #[derive(Default)]
 struct PendingReplicationFlush {
+    dirty_public_states: Vec<EntityId>,
     movements: Vec<PendingMovement>,
-    movement_animations: Vec<PendingMovementAnimation>,
     local_chats: Vec<PendingLocalChat>,
 }
 
 impl PendingReplicationFlush {
     fn drain(world: &mut World, map_entity: Entity) -> Option<Self> {
+        let dirty_public_states = {
+            let mut map_ent = world.entity_mut(map_entity);
+            map_ent
+                .get_mut::<MapDirtyEntityPublicStates>()
+                .map(|mut updates| std::mem::take(&mut updates.0))
+                .unwrap_or_default()
+        };
         let movements = {
             let mut map_ent = world.entity_mut(map_entity);
             let mut pending_movements = map_ent.get_mut::<MapPendingMovements>()?;
@@ -56,17 +63,9 @@ impl PendingReplicationFlush {
                 .map(|mut chats| std::mem::take(&mut chats.0))
                 .unwrap_or_default()
         };
-        let movement_animations = {
-            let mut map_ent = world.entity_mut(map_entity);
-            map_ent
-                .get_mut::<MapPendingMovementAnimations>()
-                .map(|mut animations| std::mem::take(&mut animations.0))
-                .unwrap_or_default()
-        };
-
         Some(Self {
+            dirty_public_states,
             movements,
-            movement_animations,
             local_chats,
         })
     }
@@ -223,11 +222,11 @@ fn queue_visibility_diff(
         return;
     };
 
-    let mut entered_payloads = Vec::with_capacity(diff.entered.len());
+    let mut entered_snapshots = Vec::with_capacity(diff.entered.len());
     let mut failed_targets = Vec::new();
     for target_id in diff.entered {
-        if let Some((show, details)) = make_entity_spawn_payload(world, shared, target_id) {
-            entered_payloads.push((show, details));
+        if let Some(snapshot) = make_entity_snapshot(world, shared, target_id) {
+            entered_snapshots.push(snapshot);
         } else {
             failed_targets.push(target_id);
         }
@@ -235,13 +234,13 @@ fn queue_visibility_diff(
 
     rollback_entered_visibility(world, map_entity, observer.net_id, &failed_targets);
 
-    let entered_payloads: Vec<_> = entered_payloads
+    let entered_snapshots: Vec<_> = entered_snapshots
         .into_iter()
-        .map(|(show, details)| {
+        .map(|snapshot| {
             let movement_animation = world
                 .resource::<NetEntityIndex>()
                 .0
-                .get(&show.entity_id)
+                .get(&snapshot.entity_id)
                 .copied()
                 .and_then(|target_entity| {
                     world
@@ -249,26 +248,29 @@ fn queue_visibility_diff(
                         .get::<PlayerMovementAnimation>()
                         .map(|animation| animation.0)
                 });
-            (show, details, movement_animation)
+            (snapshot, movement_animation)
         })
         .collect();
 
-    let mut observer_ent = world.entity_mut(observer_entity);
-    let Some(mut observer_outbox) = observer_ent.get_mut::<PlayerOutboxComp>() else {
-        let unsent_targets: Vec<_> = entered_payloads
+    if !world.entity(observer_entity).contains::<PlayerOutboxComp>() {
+        let unsent_targets: Vec<_> = entered_snapshots
             .iter()
-            .map(|(show, _, _)| show.entity_id)
+            .map(|(snapshot, _)| snapshot.entity_id)
             .collect();
-        drop(observer_ent);
         rollback_entered_visibility(world, map_entity, observer.net_id, &unsent_targets);
         return;
-    };
+    }
 
-    for (show, details, movement_animation) in entered_payloads {
-        let entity_id = show.entity_id;
+    let mut observer_ent = world.entity_mut(observer_entity);
+    let mut observer_outbox = observer_ent
+        .get_mut::<PlayerOutboxComp>()
+        .expect("player outbox was checked before mutating observer");
+
+    for (snapshot, movement_animation) in entered_snapshots {
+        let entity_id = snapshot.entity_id;
         observer_outbox
             .0
-            .push_reliable(PlayerEvent::EntitySpawn { show, details });
+            .push_reliable(PlayerEvent::EntitySpawn { snapshot });
         if movement_animation == Some(MovementAnimation::Walk) {
             observer_outbox
                 .0
@@ -361,9 +363,88 @@ pub(crate) fn replication_flush(world: &mut World) {
         )
     });
 
+    flush_dirty_entity_public_states(world, map_entity, pending.dirty_public_states);
     flush_pending_movements(world, map_entity, pending.movements);
-    flush_pending_movement_animations(world, map_entity, pending.movement_animations);
     flush_pending_local_chats(world, map_entity, pending.local_chats);
+}
+
+pub(crate) fn queue_changed_player_public_states(
+    runtime: Res<RuntimeState>,
+    mut pending_query: Query<&mut MapDirtyEntityPublicStates>,
+    players: Query<(&NetEntityId, Ref<PlayerAppearanceComp>), With<PlayerMarker>>,
+) {
+    let Some(map_entity) = runtime.map_entity else {
+        return;
+    };
+    let Ok(mut pending) = pending_query.get_mut(map_entity) else {
+        return;
+    };
+
+    for (net_id, appearance) in &players {
+        if appearance.is_changed() && !appearance.is_added() {
+            pending.mark_dirty(net_id.net_id);
+        }
+    }
+}
+
+fn flush_dirty_entity_public_states(
+    world: &mut World,
+    map_entity: Entity,
+    dirty_entity_ids: Vec<EntityId>,
+) {
+    let shared = world.resource::<SharedConfig>().clone();
+    for entity_id in dirty_entity_ids {
+        let Some(public_state) = make_entity_public_state(world, &shared, entity_id) else {
+            continue;
+        };
+        let recipients = observer_recipients(world, map_entity, entity_id, true);
+        for recipient in recipients {
+            let mut recipient_ent = world.entity_mut(recipient.entity);
+            let Some(mut outbox) = recipient_ent.get_mut::<PlayerOutboxComp>() else {
+                continue;
+            };
+            outbox
+                .0
+                .push_reliable(PlayerEvent::EntityPublicStateChanged {
+                    entity_id,
+                    state: public_state,
+                });
+        }
+    }
+}
+
+pub(crate) fn flush_changed_player_movement_animations(world: &mut World) {
+    let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
+        return;
+    };
+
+    let updates = {
+        let mut query = world
+            .query_filtered::<(&NetEntityId, Ref<PlayerMovementAnimation>), With<PlayerMarker>>();
+        query
+            .iter(world)
+            .filter_map(|(net_id, animation)| {
+                (animation.is_changed() && !animation.is_added())
+                    .then_some((net_id.net_id, animation.0))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (entity_id, animation) in updates {
+        let recipients = observer_recipients(world, map_entity, entity_id, true);
+        for recipient in recipients {
+            let mut recipient_ent = world.entity_mut(recipient.entity);
+            let Some(mut outbox) = recipient_ent.get_mut::<PlayerOutboxComp>() else {
+                continue;
+            };
+            outbox
+                .0
+                .push_reliable(PlayerEvent::SetEntityMovementAnimation {
+                    entity_id,
+                    animation,
+                });
+        }
+    }
 }
 
 fn flush_pending_movements(
@@ -423,28 +504,6 @@ fn flush_pending_local_chats(
             observer_recipients(world, map_entity, pending_chat.speaker_entity_id, true);
         for recipient in recipients {
             push_local_chat_event(world, recipient, &pending_chat, preserve_pct);
-        }
-    }
-}
-
-fn flush_pending_movement_animations(
-    world: &mut World,
-    map_entity: Entity,
-    pending_animations: Vec<PendingMovementAnimation>,
-) {
-    for pending in pending_animations {
-        let recipients = observer_recipients(world, map_entity, pending.entity_id, true);
-        for recipient in recipients {
-            let mut recipient_ent = world.entity_mut(recipient.entity);
-            let Some(mut outbox) = recipient_ent.get_mut::<PlayerOutboxComp>() else {
-                continue;
-            };
-            outbox
-                .0
-                .push_reliable(PlayerEvent::SetEntityMovementAnimation {
-                    entity_id: pending.entity_id,
-                    animation: pending.animation,
-                });
         }
     }
 }

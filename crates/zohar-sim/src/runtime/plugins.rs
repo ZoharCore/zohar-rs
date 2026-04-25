@@ -10,17 +10,27 @@ use crate::persistence::{PlayerPersistenceCoordinatorHandle, PlayerPersistencePo
 use super::action_pipeline::{ActionBuffer, process_actions};
 use super::aggro::{MobAggroDispatchBuffer, route_mob_aggro};
 use super::chat::process_chat_intents;
+use super::cleanup::process_cleanup_events;
+use super::combat::{AttackCommandBuffer, process_attack_commands};
+use super::facts::FrameFacts;
 use super::idle_chat::emit_idle_chat;
 use super::ingress::drain_inbound;
+use super::life::{process_actor_lifecycle, process_life_events};
 use super::mob_ai::process_mob_ai;
 use super::mob_motion::sample_mob_motion;
 use super::outbox::outbox_flush;
-use super::player::persistence::enqueue_due_autosaves;
+use super::player::persistence::{enqueue_due_autosaves, process_player_dirty_events};
 use super::player::progression::process_player_progression;
+use super::player::stat_sync::{flush_player_stats_sync, normalize_player_stats_for_gameplay};
+use super::player::stat_tickers::process_player_stat_tickers;
 use super::player_actions::process_player_actions;
 use super::players::{on_player_added, on_player_removed};
 use super::portal::process_portal_entries;
-use super::replication::{aoi_reconcile, replication_flush};
+use super::projection::project_frame_facts;
+use super::replication::{
+    aoi_reconcile, flush_changed_player_movement_animations, queue_changed_player_public_states,
+    replication_flush,
+};
 use super::schedule::{advance_sim_time, has_active_players, sync_fixed_tick_rate};
 use super::spawn::{bootstrap_map_runtime, signal_startup_ready, spawn_rules};
 use super::state::{
@@ -156,7 +166,9 @@ impl Plugin for MapPlugin {
             .init_resource::<PlayerCount>()
             .init_resource::<PortalPollState>()
             .init_resource::<ActionBuffer>()
-            .init_resource::<MobAggroDispatchBuffer>();
+            .init_resource::<MobAggroDispatchBuffer>()
+            .init_resource::<AttackCommandBuffer>()
+            .init_resource::<FrameFacts>();
     }
 }
 
@@ -164,58 +176,181 @@ pub(crate) struct SimulationPlugin;
 
 impl Plugin for SimulationPlugin {
     fn build(&self, app: &mut App) {
-        app.configure_sets(
-            PreUpdate,
-            (SimSet::DrainInbound, SimSet::SyncTickRate).chain(),
-        )
-        .add_systems(PreUpdate, drain_inbound.in_set(SimSet::DrainInbound))
-        .add_systems(PreUpdate, sync_fixed_tick_rate.in_set(SimSet::SyncTickRate));
+        configure_sim_schedule(app);
 
-        app.configure_sets(
+        app.add_plugins((
+            NetworkRuntimePlugin,
+            MapBootstrapPlugin,
+            PlayerRuntimePlugin,
+            MobRuntimePlugin,
+            ActionRuntimePlugin,
+            LifeRuntimePlugin,
+            ProjectionRuntimePlugin,
+            AmbientRuntimePlugin,
+            ReplicationRuntimePlugin,
+            PersistenceRuntimePlugin,
+        ));
+    }
+}
+
+fn configure_sim_schedule(app: &mut App) {
+    app.configure_sets(
+        PreUpdate,
+        (SimSet::DrainInbound, SimSet::SyncTickRate).chain(),
+    )
+    .configure_sets(
+        FixedUpdate,
+        (
+            SimSet::Sense,
+            SimSet::StatsNormalize,
+            SimSet::PlayerActions,
+            SimSet::Think,
+            SimSet::Act,
+            SimSet::Lifecycle,
+            SimSet::Resources,
+            SimSet::Projection,
+            SimSet::Ambient,
+            SimSet::AoiReconcile,
+        )
+            .chain(),
+    )
+    .configure_sets(
+        FixedPostUpdate,
+        (
+            SimSet::StatsFlush,
+            SimSet::ReplicationFlush,
+            SimSet::OutboxFlush,
+            SimSet::Autosave,
+        )
+            .chain(),
+    );
+}
+
+struct NetworkRuntimePlugin;
+
+impl Plugin for NetworkRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(PreUpdate, drain_inbound.in_set(SimSet::DrainInbound))
+            .add_systems(PreUpdate, sync_fixed_tick_rate.in_set(SimSet::SyncTickRate));
+    }
+}
+
+struct MapBootstrapPlugin;
+
+impl Plugin for MapBootstrapPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, bootstrap_map_runtime)
+            .add_systems(PostStartup, signal_startup_ready)
+            .add_systems(FixedFirst, advance_sim_time)
+            .add_systems(
+                FixedUpdate,
+                (sample_mob_motion, spawn_rules, process_player_progression)
+                    .chain()
+                    .in_set(SimSet::Sense),
+            );
+    }
+}
+
+struct PlayerRuntimePlugin;
+
+impl Plugin for PlayerRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
             FixedUpdate,
-            (
-                SimSet::Sense,
-                SimSet::Think,
-                SimSet::Act,
-                SimSet::Ambient,
-                SimSet::AoiReconcile,
-            )
-                .chain(),
+            normalize_player_stats_for_gameplay
+                .in_set(SimSet::StatsNormalize)
+                .run_if(has_active_players),
         )
-        .configure_sets(
-            FixedPostUpdate,
-            (
-                SimSet::ReplicationFlush,
-                SimSet::OutboxFlush,
-                SimSet::Autosave,
-            )
-                .chain(),
-        )
-        .add_systems(Startup, bootstrap_map_runtime)
-        .add_systems(PostStartup, signal_startup_ready)
-        .add_systems(FixedFirst, advance_sim_time)
         .add_systems(
             FixedUpdate,
             (
-                sample_mob_motion,
-                spawn_rules,
-                process_player_progression,
                 process_player_actions,
                 process_portal_entries,
                 route_mob_aggro,
             )
                 .chain()
-                .in_set(SimSet::Sense),
+                .in_set(SimSet::PlayerActions),
         )
-        .add_systems(FixedUpdate, process_mob_ai.in_set(SimSet::Think))
-        .add_systems(FixedUpdate, process_actions.in_set(SimSet::Act))
         .add_systems(
+            FixedUpdate,
+            process_player_stat_tickers
+                .in_set(SimSet::Resources)
+                .run_if(has_active_players),
+        )
+        .add_observer(on_player_removed)
+        .add_observer(on_player_added);
+    }
+}
+
+struct MobRuntimePlugin;
+
+impl Plugin for MobRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(FixedUpdate, process_mob_ai.in_set(SimSet::Think));
+    }
+}
+
+struct ActionRuntimePlugin;
+
+impl Plugin for ActionRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            FixedUpdate,
+            (process_actions, process_attack_commands)
+                .chain()
+                .in_set(SimSet::Act),
+        );
+    }
+}
+
+struct LifeRuntimePlugin;
+
+impl Plugin for LifeRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            FixedUpdate,
+            (
+                process_life_events,
+                process_actor_lifecycle,
+                process_cleanup_events,
+            )
+                .chain()
+                .in_set(SimSet::Lifecycle),
+        );
+    }
+}
+
+struct ProjectionRuntimePlugin;
+
+impl Plugin for ProjectionRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            FixedUpdate,
+            (process_player_dirty_events, project_frame_facts)
+                .chain()
+                .in_set(SimSet::Projection),
+        );
+    }
+}
+
+struct AmbientRuntimePlugin;
+
+impl Plugin for AmbientRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
             FixedUpdate,
             (process_chat_intents, emit_idle_chat)
                 .chain()
                 .in_set(SimSet::Ambient),
-        )
-        .add_systems(
+        );
+    }
+}
+
+struct ReplicationRuntimePlugin;
+
+impl Plugin for ReplicationRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
             FixedUpdate,
             aoi_reconcile
                 .in_set(SimSet::AoiReconcile)
@@ -223,14 +358,29 @@ impl Plugin for SimulationPlugin {
         )
         .add_systems(
             FixedPostUpdate,
-            replication_flush.in_set(SimSet::ReplicationFlush),
+            flush_player_stats_sync.in_set(SimSet::StatsFlush),
         )
         .add_systems(
             FixedPostUpdate,
+            (
+                queue_changed_player_public_states,
+                flush_changed_player_movement_animations,
+                replication_flush,
+            )
+                .chain()
+                .in_set(SimSet::ReplicationFlush),
+        );
+    }
+}
+
+struct PersistenceRuntimePlugin;
+
+impl Plugin for PersistenceRuntimePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            FixedPostUpdate,
             enqueue_due_autosaves.in_set(SimSet::Autosave),
-        )
-        .add_observer(on_player_removed)
-        .add_observer(on_player_added);
+        );
     }
 }
 

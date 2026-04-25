@@ -3,19 +3,25 @@ pub(crate) mod chat;
 pub(crate) mod lifecycle;
 pub(crate) mod persistence;
 pub(crate) mod progression;
+pub(crate) mod stat_sync;
+pub(crate) mod stat_tickers;
+pub(crate) mod target;
 
 use crate::outbox::PlayerOutbox;
 use bevy::prelude::*;
 use tokio::sync::oneshot;
 use zohar_domain::appearance::PlayerAppearance;
-use zohar_domain::coords::LocalPos;
+use zohar_domain::coords::{Facing72, LocalPos};
 use zohar_domain::entity::player::{
     PlayerGameplayBootstrap, PlayerId, PlayerPlaytime, PlayerRuntimeEpoch,
 };
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
-use zohar_gameplay::stats::game::{ActorStatSource, ActorStatState};
+use zohar_gameplay::stats::game::{
+    PlayerPassiveHpRecoveryState, PlayerPassiveSpRecoveryState, PlayerStaminaState,
+    PlayerStatsRuntime,
+};
 use zohar_map_port::{
-    AttackIntent, ChatChannel, ClientTimestamp, Facing72, MovementArg, PlayerProgressionIntent,
+    AttackIntent, ChatChannel, ClientTimestamp, MovementArg, PlayerProgressionIntent,
 };
 
 pub(crate) use self::lifecycle as players;
@@ -52,6 +58,9 @@ pub(crate) enum PlayerCommand {
         target: EntityId,
         attack: AttackIntent,
     },
+    SelectTarget {
+        target: EntityId,
+    },
 }
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
@@ -75,6 +84,33 @@ pub(crate) struct PlayerMotion(pub(crate) PlayerMotionState);
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component, Default)]
+pub(crate) struct PlayerActivityComp {
+    pub(crate) last_movement_start_at: Option<crate::runtime::time::SimInstant>,
+    pub(crate) last_attack_at: Option<crate::runtime::time::SimInstant>,
+    pub(crate) last_walk_started_at: Option<crate::runtime::time::SimInstant>,
+    pub(crate) preferred_movement_animation: MovementAnimation,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component)]
+pub(crate) struct PlayerStatTickerComp {
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
+    pub(crate) passive_hp: PlayerTicker<PlayerPassiveHpRecoveryState>,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
+    pub(crate) passive_sp: PlayerTicker<PlayerPassiveSpRecoveryState>,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
+    pub(crate) stamina: PlayerTicker<PlayerStaminaState>,
+}
+
+pub(crate) struct PlayerTicker<T> {
+    pub(crate) clock: crate::runtime::time::SimTickerClock,
+    pub(crate) state: T,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct PlayerAppearanceComp(pub(crate) PlayerAppearance);
 
@@ -84,10 +120,7 @@ pub(crate) struct PlayerAppearanceComp(pub(crate) PlayerAppearance);
 pub(crate) struct PlayerProgressionComp(pub(crate) PlayerGameplayBootstrap);
 
 #[derive(Component)]
-pub(crate) struct PlayerStatsComp {
-    pub(crate) source: ActorStatSource,
-    pub(crate) state: ActorStatState,
-}
+pub(crate) struct PlayerStatsComp(pub(crate) PlayerStatsRuntime);
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
@@ -96,6 +129,13 @@ pub(crate) struct PlayerMovementAnimation(pub(crate) MovementAnimation);
 
 #[derive(Component)]
 pub(crate) struct PlayerOutboxComp(pub(crate) PlayerOutbox);
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component, Default)]
+pub(crate) struct PlayerTargetComp {
+    pub(crate) selected: Option<EntityId>,
+}
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
@@ -128,5 +168,5 @@ pub(crate) struct PlayerPersistenceState {
     pub(crate) runtime_epoch: PlayerRuntimeEpoch,
     pub(crate) persisted_playtime: PlayerPlaytime,
     pub(crate) entered_map_at: crate::runtime::time::SimInstant,
-    pub(crate) next_autosave_at: crate::runtime::time::SimInstant,
+    pub(crate) autosave: crate::runtime::time::SimTickerClock,
 }

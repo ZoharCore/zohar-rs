@@ -1,13 +1,14 @@
 use bevy::prelude::*;
-use zohar_domain::coords::LocalPos;
+use zohar_domain::coords::{Facing72, LocalPos};
 use zohar_domain::entity::MovementAnimation;
 use zohar_domain::entity::MovementKind;
 use zohar_domain::entity::player::PlayerId;
-use zohar_map_port::{AttackIntent, ClientTimestamp, Facing72, MovementArg, PacketDuration};
+use zohar_map_port::{AttackIntent, ClientTimestamp, MovementArg, PacketDuration};
 
 use super::super::mob_motion::{sampled_mob_position, snap_local_to_wire_cm};
 use super::super::query;
 use super::super::rules::movement;
+use super::super::state::SimDuration;
 use super::super::state::{
     LocalTransform, NetEntityId, PlayerAppearanceComp, PlayerMotion, PlayerMotionState,
     PlayerMovementAnimation, RuntimeState, SharedConfig,
@@ -96,6 +97,7 @@ pub(crate) fn build_player_attack_action(
     world: &World,
     player_entity: Entity,
     target: zohar_domain::entity::EntityId,
+    target_entity: Entity,
     attack: AttackIntent,
 ) -> Option<Action> {
     let now_ts = world.resource::<RuntimeState>().packet_now();
@@ -111,6 +113,7 @@ pub(crate) fn build_player_attack_action(
     Some(Action::PlayerAttack {
         player_entity,
         entity_id,
+        target_entity,
         pos: transform.pos,
         rot,
         attack,
@@ -168,6 +171,7 @@ pub(crate) fn build_mob_move_action(
 pub(crate) fn build_mob_attack_action(
     world: &World,
     mob_entity: Entity,
+    target: zohar_domain::entity::EntityId,
     face_to: LocalPos,
     windup_duration_ms: u32,
     next_brain: super::super::state::MobBrainState,
@@ -177,6 +181,7 @@ pub(crate) fn build_mob_attack_action(
     let now = state.sim_now;
     let now_ts = state.packet_now();
     let entity_id = world.entity(mob_entity).get::<NetEntityId>()?.net_id;
+    let target_entity = query::net_entity(world, target)?;
     let start_pos = sampled_mob_position(world, mob_entity, now)?;
     let current_rot = world.entity(mob_entity).get::<LocalTransform>()?.rot;
     let rot = rotation_from_delta(start_pos, face_to, current_rot);
@@ -184,6 +189,7 @@ pub(crate) fn build_mob_attack_action(
     Some(Action::MobAttack {
         mob_entity,
         entity_id,
+        target_entity,
         pos: snap_local_to_wire_cm(start_pos),
         rot,
         ts: now_ts,
@@ -206,20 +212,17 @@ fn resolve_mob_follow_up(
     match completion {
         MobActionCompletion::None => {}
         MobActionCompletion::RethinkAtActionEnd => {
-            next_brain.next_rethink_at = now.saturating_add(
-                super::super::state::SimDuration::from_packet_duration(action_duration),
-            );
+            next_brain.next_rethink_at =
+                now.saturating_add(SimDuration::from_packet_duration(action_duration));
         }
         MobActionCompletion::RethinkAtActionEndOrDelay { max_delay_ms } => {
-            next_brain.next_rethink_at =
-                now.saturating_add(super::super::state::SimDuration::from_millis(
-                    u64::from(action_duration.get()).min(max_delay_ms.as_millis()),
-                ));
+            next_brain.next_rethink_at = now.saturating_add(SimDuration::from_millis(
+                u64::from(action_duration.get()).min(max_delay_ms.as_millis()),
+            ));
         }
         MobActionCompletion::IdleWander { post_move_pause_ms } => {
-            let movement_end = now.saturating_add(
-                super::super::state::SimDuration::from_packet_duration(action_duration),
-            );
+            let movement_end =
+                now.saturating_add(SimDuration::from_packet_duration(action_duration));
             next_brain.wander_wait_until = Some(movement_end);
             next_brain.wander_next_decision_at = movement_end.saturating_add(post_move_pause_ms);
         }

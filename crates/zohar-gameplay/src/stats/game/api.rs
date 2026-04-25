@@ -21,15 +21,15 @@ struct StatRecomputeReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CharacterAppearance {
+pub struct ActorPublicStats {
     pub level: u32,
     pub move_speed: u8,
     pub attack_speed: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CharacterUpdate {
-    pub appearance: CharacterAppearance,
+pub struct ActorPublicState {
+    pub stats: ActorPublicStats,
     pub immune_flags: ActorImmuneFlags,
 }
 
@@ -110,14 +110,114 @@ impl StatSnapshot {
 pub struct StatsSync {
     pub changes: StatChangeSet,
     pub stat_deltas: Vec<StatDelta>,
-    pub character_update: Option<CharacterUpdate>,
+    pub public_state: Option<ActorPublicState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapStatsSync {
     pub changes: StatChangeSet,
     pub stat_snapshot: StatSnapshot,
-    pub character_update: CharacterUpdate,
+    pub public_state: ActorPublicState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct PendingPlayerStatsSync {
+    stats: PointValueStore,
+    changed: StatChangeSet,
+    public_state: Option<ActorPublicState>,
+}
+
+impl PendingPlayerStatsSync {
+    fn merge(&mut self, sync: &StatsSync) {
+        for delta in &sync.stat_deltas {
+            self.stats.set(delta.stat, delta.value);
+            self.changed.insert(delta.stat);
+        }
+        if let Some(update) = sync.public_state {
+            self.public_state = Some(update);
+        }
+    }
+
+    fn drain(&mut self) -> DrainedPlayerStatsSync {
+        let pending = std::mem::take(self);
+        DrainedPlayerStatsSync {
+            stat_deltas: pending
+                .changed
+                .iter()
+                .map(|stat| StatDelta {
+                    stat,
+                    value: pending.stats.get(stat),
+                })
+                .collect(),
+            public_state: pending.public_state,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DrainedPlayerStatsSync {
+    pub stat_deltas: Vec<StatDelta>,
+    pub public_state: Option<ActorPublicState>,
+}
+
+impl DrainedPlayerStatsSync {
+    pub fn is_empty(&self) -> bool {
+        self.stat_deltas.is_empty() && self.public_state.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorStatsRuntime {
+    source: ActorStatSource,
+    state: ActorStatState,
+    pending: PendingPlayerStatsSync,
+}
+
+pub type PlayerStatsRuntime = ActorStatsRuntime;
+
+impl ActorStatsRuntime {
+    pub fn new(source: ActorStatSource, state: ActorStatState) -> Self {
+        Self {
+            source,
+            state,
+            pending: PendingPlayerStatsSync::default(),
+        }
+    }
+
+    pub fn with_api_mut<T>(&mut self, f: impl FnOnce(&mut GameStatsApi<'_, (), ()>) -> T) -> T {
+        let mut api = GameStatsApi::new(&self.source, &mut self.state);
+        f(&mut api)
+    }
+
+    pub fn read_packet(&self, stat: Stat) -> i32 {
+        read_stat_value(&self.state, None, stat, StatValueView::WireCompatible)
+    }
+
+    pub fn read_limited(&self, stat: Stat) -> i32 {
+        read_stat_value(
+            &self.state,
+            Some(&self.source),
+            stat,
+            StatValueView::Limited,
+        )
+    }
+
+    pub fn validate_stored_stat(&self, stat: Stat, value: i32) -> Result<(), StatWriteError> {
+        let mut state = self.state.clone();
+        let mut api = GameStatsApi::new(&self.source, &mut state);
+        api.set_stored_stat(stat, value).map(|_| ())
+    }
+
+    pub fn normalize(&mut self) -> StatsSync {
+        let sync = self.with_api_mut(|api| api.sync_if_dirty());
+        self.pending.merge(&sync);
+        sync
+    }
+
+    pub fn drain_sync(&mut self) -> DrainedPlayerStatsSync {
+        self.normalize();
+        self.pending.drain()
+    }
 }
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -169,18 +269,18 @@ where
         StatSnapshot::from_state(self.state)
     }
 
-    pub fn appearance(&self) -> CharacterAppearance {
-        CharacterAppearance {
+    pub fn public_stats(&self) -> ActorPublicStats {
+        ActorPublicStats {
             level: self.read_packet(Stat::Level).max(0) as u32,
             move_speed: saturating_u8(self.read_limited(Stat::MovSpeed)),
             attack_speed: saturating_u8(self.read_limited(Stat::AttSpeed)),
         }
     }
 
-    pub fn character_update(&self) -> CharacterUpdate {
+    pub fn public_state(&self) -> ActorPublicState {
         let runtime = *self.state.runtime();
-        CharacterUpdate {
-            appearance: self.appearance(),
+        ActorPublicState {
+            stats: self.public_stats(),
             immune_flags: runtime.immune_flags,
         }
     }
@@ -399,8 +499,8 @@ where
     }
 
     fn build_sync(&mut self, changes: StatChangeSet, runtime_dirty: bool) -> StatsSync {
-        let character_update = if runtime_dirty || appearance_changed(&changes) {
-            Some(self.character_update())
+        let public_state = if runtime_dirty || public_stats_changed(&changes) {
+            Some(self.public_state())
         } else {
             None
         };
@@ -416,7 +516,7 @@ where
         StatsSync {
             changes,
             stat_deltas,
-            character_update,
+            public_state,
         }
     }
 
@@ -428,7 +528,7 @@ where
         BootstrapStatsSync {
             changes,
             stat_snapshot: self.stat_snapshot(),
-            character_update: self.character_update(),
+            public_state: self.public_state(),
         }
     }
 }
@@ -691,7 +791,7 @@ where
     }
 }
 
-fn appearance_changed(changes: &StatChangeSet) -> bool {
+fn public_stats_changed(changes: &StatChangeSet) -> bool {
     changes.contains(Stat::Level)
         || changes.contains(Stat::MovSpeed)
         || changes.contains(Stat::AttSpeed)
