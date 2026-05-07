@@ -157,6 +157,14 @@ impl ReplicationGraph {
             .unwrap_or_default()
     }
 
+    /// Snapshot all targets currently visible to a given observer.
+    pub fn targets_for(&self, observer: EntityId) -> Vec<EntityId> {
+        self.visible_by_observer
+            .get(&observer)
+            .map(|targets| targets.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
     pub fn is_visible(&self, observer: EntityId, target: EntityId) -> bool {
         self.visible_by_observer
             .get(&observer)

@@ -21,6 +21,7 @@ use super::mob_motion::sample_mob_motion;
 use super::outbox::outbox_flush;
 use super::player::persistence::{enqueue_due_autosaves, process_player_dirty_events};
 use super::player::progression::process_player_progression;
+use super::player::restart::process_player_restarts;
 use super::player::stat_sync::{flush_player_stats_sync, normalize_player_stats_for_gameplay};
 use super::player::stat_tickers::process_player_stat_tickers;
 use super::player_actions::process_player_actions;
@@ -314,6 +315,7 @@ impl Plugin for LifeRuntimePlugin {
                 process_life_events,
                 record_mob_death_reward_claims,
                 process_actor_lifecycle,
+                process_player_restarts,
                 grant_mob_death_rewards,
                 process_cleanup_events,
             )

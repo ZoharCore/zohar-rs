@@ -41,6 +41,23 @@ impl PlayerStatTickerComp {
             stamina: PlayerTicker::initial(player_id, now, Self::LEGACY_STAMINA_CADENCE),
         }
     }
+
+    pub(crate) fn reset_after_restart(&mut self, now: SimInstant) {
+        self.passive_hp
+            .clock
+            .retry_after(now, Self::PASSIVE_HP_CADENCE);
+        self.passive_hp.state = PlayerPassiveHpRecoveryState::default();
+
+        self.passive_sp
+            .clock
+            .retry_after(now, Self::PASSIVE_SP_CADENCE);
+        self.passive_sp.state = PlayerPassiveSpRecoveryState::default();
+
+        self.stamina
+            .clock
+            .retry_after(now, Self::LEGACY_STAMINA_CADENCE);
+        self.stamina.state = PlayerStaminaState::default();
+    }
 }
 
 impl Default for PlayerTicker<PlayerPassiveHpRecoveryState> {

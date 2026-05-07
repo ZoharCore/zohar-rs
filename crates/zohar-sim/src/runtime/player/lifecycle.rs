@@ -15,8 +15,8 @@ use super::state::{
     NetEntityIndex, PlayerActivityComp, PlayerAppearanceComp, PlayerCommandQueue, PlayerCount,
     PlayerIndex, PlayerMarker, PlayerMotion, PlayerMotionState, PlayerMovementAnimation,
     PlayerOutboxComp, PlayerPendingDurableFlush, PlayerProgressionComp,
-    PlayerProgressionIntentQueue, PlayerStatTickerComp, PlayerStatsComp, PlayerTargetComp,
-    RuntimeState,
+    PlayerProgressionIntentQueue, PlayerRestartIntentQueue, PlayerStatTickerComp, PlayerStatsComp,
+    PlayerTargetComp, RuntimeState,
 };
 use tracing::{info, warn};
 
@@ -190,6 +190,7 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
         .insert((
             ActorLifeComp::alive(),
             PlayerActivityComp::default(),
+            PlayerRestartIntentQueue::default(),
             PlayerStatTickerComp::initial(msg.player_id, now),
         ))
         .id();

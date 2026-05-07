@@ -230,6 +230,23 @@ impl ContentCoords {
         fallback
     }
 
+    pub fn resolve_town_restart(&self, map_id: MapId, empire: DomainEmpire) -> ResolvedSpawn {
+        if let Some(local_pos) = self.resolve_town_spawn(map_id, empire) {
+            return ResolvedSpawn {
+                map_id,
+                local_pos,
+                used_fallback: false,
+            };
+        }
+
+        let start = self.empire_starts.get(empire);
+        ResolvedSpawn {
+            map_id: start.map_id,
+            local_pos: LocalPos::new(start.local_x, start.local_y),
+            used_fallback: true,
+        }
+    }
+
     pub fn from_catalog(catalog: &ContentCatalog) -> Result<Self> {
         let mut maps_by_code = HashMap::with_capacity(catalog.maps.len());
         let mut maps_by_id = HashMap::with_capacity(catalog.maps.len());
@@ -691,5 +708,18 @@ mod tests {
             coords.resolve_town_spawn(MapId::new(21), DomainEmpire::Red),
             Some(LocalPos::new(560.0, 560.0))
         );
+    }
+
+    #[test]
+    fn town_restart_falls_back_to_empire_start_when_map_has_no_town_spawn() {
+        let mut catalog = base_catalog();
+        catalog.town_spawns.retain(|spawn| spawn.map_id != 21);
+        let coords = ContentCoords::from_catalog(&catalog).expect("coords");
+
+        let spawn = coords.resolve_town_restart(MapId::new(21), DomainEmpire::Red);
+
+        assert!(spawn.used_fallback);
+        assert_eq!(spawn.map_id, MapId::new(1));
+        assert_eq!(spawn.local_pos, LocalPos::new(597.0, 682.0));
     }
 }

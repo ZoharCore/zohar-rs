@@ -208,11 +208,48 @@ pub(super) async fn handle_portal_entry(
     }
 }
 
+pub(super) async fn handle_restart_town(
+    state: &mut InGameCtx<'_>,
+) -> PhaseResult<InGamePhaseEffects> {
+    match resolve_town_relocation(state) {
+        Ok(destination) => Ok(dispatch_handoff(state, "restart_town", destination)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(
+                    player_id = ?state.player_id,
+                    error = %error,
+                    "Failed to execute restart-town handoff"
+                );
+                relocation_info_feedback("restart_town", error.to_string())
+            })),
+        Err(error) => {
+            warn!(
+                player_id = ?state.player_id,
+                error = %error,
+                "Restart-town target does not resolve to a known destination"
+            );
+            Ok(relocation_info_feedback("restart_town", error.to_string()))
+        }
+    }
+}
+
+fn resolve_town_relocation(state: &InGameCtx<'_>) -> Result<ResolvedRelocation, RelocationError> {
+    let spawn = state
+        .ctx
+        .coords
+        .resolve_town_restart(state.map_id, state.player_empire);
+    resolve_relocation(state, spawn.map_id, spawn.local_pos)
+}
+
 fn portal_info_feedback(message: impl AsRef<str>) -> InGamePhaseEffects {
+    relocation_info_feedback("Portal", message)
+}
+
+fn relocation_info_feedback(prefix: &str, message: impl AsRef<str>) -> InGamePhaseEffects {
     InGamePhaseEffects::send(
         ChatS2c::NotifyChatMessage {
             kind: ChatKind::Info,
-            message: format!("[Portal] {}\0", message.as_ref()).into_bytes(),
+            message: format!("[{prefix}] {}\0", message.as_ref()).into_bytes(),
             net_id: ZeroOpt::none(),
             empire: ZeroOpt::none(),
         }

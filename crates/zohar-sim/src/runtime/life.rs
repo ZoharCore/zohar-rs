@@ -39,6 +39,12 @@ pub(crate) enum ActorLifePhase {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestartReadiness {
+    Ready,
+    Waiting { retry_after: SimDuration },
+}
+
 impl ActorLifeComp {
     pub(crate) const fn alive() -> Self {
         Self {
@@ -70,26 +76,50 @@ impl ActorLifeComp {
         self.is_alive()
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn can_restart_here(&self, now: SimInstant) -> bool {
+    pub(crate) fn restart_here_readiness(&self, now: SimInstant) -> Option<RestartReadiness> {
+        restart_readiness(now, self.restart_here_allowed_at())
+    }
+
+    pub(crate) fn restart_town_readiness(&self, now: SimInstant) -> Option<RestartReadiness> {
+        restart_readiness(now, self.restart_town_allowed_at())
+    }
+
+    pub(crate) fn forced_respawn_due(&self, now: SimInstant) -> bool {
         matches!(
             self.phase,
             ActorLifePhase::Dead {
-                restart_here_allowed_at: Some(at),
+                forced_respawn_at: Some(at),
                 ..
             } if at <= now
         )
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn can_restart_town(&self, now: SimInstant) -> bool {
-        matches!(
-            self.phase,
+    pub(crate) fn restart(&mut self) -> bool {
+        if !self.is_dead() {
+            return false;
+        }
+        self.phase = ActorLifePhase::Alive;
+        true
+    }
+
+    fn restart_here_allowed_at(&self) -> Option<SimInstant> {
+        match self.phase {
             ActorLifePhase::Dead {
-                restart_town_allowed_at: Some(at),
+                restart_here_allowed_at,
                 ..
-            } if at <= now
-        )
+            } => restart_here_allowed_at,
+            _ => None,
+        }
+    }
+
+    fn restart_town_allowed_at(&self) -> Option<SimInstant> {
+        match self.phase {
+            ActorLifePhase::Dead {
+                restart_town_allowed_at,
+                ..
+            } => restart_town_allowed_at,
+            _ => None,
+        }
     }
 
     fn begin_dying(&mut self, now: SimInstant) -> bool {
@@ -101,6 +131,17 @@ impl ActorLifeComp {
             dead_at: now.saturating_add(DYING_TO_DEAD_DELAY),
         };
         true
+    }
+}
+
+fn restart_readiness(now: SimInstant, allowed_at: Option<SimInstant>) -> Option<RestartReadiness> {
+    let allowed_at = allowed_at?;
+    if allowed_at <= now {
+        Some(RestartReadiness::Ready)
+    } else {
+        Some(RestartReadiness::Waiting {
+            retry_after: allowed_at.saturating_sub(now),
+        })
     }
 }
 

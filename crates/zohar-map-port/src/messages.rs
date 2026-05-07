@@ -95,6 +95,13 @@ pub enum PlayerProgressionIntent {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlayerRestartIntent {
+    Here,
+    Town,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MovementEvent {
     pub entity_id: EntityId,
@@ -123,6 +130,7 @@ pub enum ClientIntent {
     Attack(AttackTargetIntent),
     Target(TargetIntent),
     Progression(PlayerProgressionIntent),
+    Restart(PlayerRestartIntent),
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
@@ -190,6 +198,7 @@ pub enum PlayerEvent {
         empire: Option<Empire>,
         message: Vec<u8>,
     },
+    RestartTown,
     PortalEntered {
         destination: PortalDestination,
     },

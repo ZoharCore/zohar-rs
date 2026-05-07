@@ -5,6 +5,7 @@ use tracing::warn;
 use zohar_map_port::{ClientIntent, ClientIntentMsg};
 
 mod prefs;
+mod restart;
 mod session;
 mod stats;
 mod teleport;
@@ -29,6 +30,8 @@ pub(super) enum KnownCommand {
     #[command(flatten)]
     Preferences(prefs::PreferencesCommand),
     #[command(flatten)]
+    Restart(restart::RestartCommand),
+    #[command(flatten)]
     Stats(stats::StatsCommand),
     #[command(flatten)]
     Teleport(teleport::TeleportCommand),
@@ -39,6 +42,7 @@ impl KnownCommand {
         match self {
             Self::Session(command) => command.execute(),
             Self::Preferences(command) => command.execute(state),
+            Self::Restart(command) => command.execute(state),
             Self::Stats(command) => command.execute(state),
             Self::Teleport(command) => command.execute(state).await,
         }
@@ -283,6 +287,18 @@ mod tests {
             parse("/set_walk_mode"),
             Some(ParsedCommand::Known(KnownCommand::Preferences(
                 prefs::PreferencesCommand::SetWalkMode,
+            )))
+        );
+        assert_eq!(
+            parse("/restart_here"),
+            Some(ParsedCommand::Known(KnownCommand::Restart(
+                restart::RestartCommand::Here,
+            )))
+        );
+        assert_eq!(
+            parse("/restart_town"),
+            Some(ParsedCommand::Known(KnownCommand::Restart(
+                restart::RestartCommand::Town,
             )))
         );
         assert_eq!(

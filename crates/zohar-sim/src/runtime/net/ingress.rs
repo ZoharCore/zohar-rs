@@ -12,7 +12,7 @@ use super::state::{
     ChatIntent, ChatIntentQueue, MAX_ATTACK_INTENTS_PER_TICK, MAX_CHAT_INTENTS_PER_TICK,
     MAX_MOVE_INTENTS_PER_TICK, MAX_PROGRESSION_INTENTS_PER_TICK, PlayerAppearanceComp,
     PlayerCommand, PlayerCommandQueue, PlayerIndex, PlayerOutboxComp, PlayerProgressionIntentQueue,
-    RuntimeState,
+    PlayerRestartIntentQueue, RuntimeState,
 };
 use super::util::{format_global_shout, next_entity_id};
 
@@ -136,6 +136,15 @@ pub(crate) fn handle_client_intent(mut world: DeferredWorld, msg: ClientIntentMs
                     let overflow = queue.0.len() - MAX_PROGRESSION_INTENTS_PER_TICK;
                     queue.0.drain(0..overflow);
                 }
+            }
+        }
+        ClientIntent::Restart(intent) => {
+            if let Some(mut queue) = world
+                .entity_mut(player_entity)
+                .get_mut::<PlayerRestartIntentQueue>()
+            {
+                queue.0.clear();
+                queue.0.push(intent);
             }
         }
     }

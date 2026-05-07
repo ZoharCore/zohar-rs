@@ -58,8 +58,8 @@ use zohar_gameplay::stats::game::{
 use zohar_map_port::{
     AttackIntent, AttackTargetIntent, ChatChannel, ChatIntent as PortChatIntent, ClientIntent,
     ClientIntentMsg, ClientTimestamp, CoreStatAllocationIntent, CoreStatKind, EnterMsg, LeaveMsg,
-    MoveIntent, MovementArg, PlayerEvent, PlayerProgressionIntent, PortalDestination,
-    ProjectileEffectKind, SpecialEffectType,
+    MoveIntent, MovementArg, PlayerEvent, PlayerProgressionIntent, PlayerRestartIntent,
+    PortalDestination, ProjectileEffectKind, SpecialEffectType,
 };
 
 fn sim_ms(value: u64) -> super::state::SimInstant {
@@ -489,6 +489,15 @@ fn move_player(map_events: &MapEventSender, player_id: PlayerId, target: LocalPo
         .expect("move intent");
 }
 
+fn restart_player(map_events: &MapEventSender, player_id: PlayerId, intent: PlayerRestartIntent) {
+    map_events
+        .try_send_client_intent(ClientIntentMsg {
+            player_id,
+            intent: ClientIntent::Restart(intent),
+        })
+        .expect("restart intent");
+}
+
 fn _send_chat(map_events: &MapEventSender, player_id: PlayerId, message: &[u8]) {
     map_events
         .try_send_client_intent(ClientIntentMsg {
@@ -699,6 +708,31 @@ fn public_state_change_events(events: &[PlayerEvent]) -> Vec<(EntityId, EntityPu
         .collect()
 }
 
+fn restart_town_event_count(events: &[PlayerEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event, PlayerEvent::RestartTown))
+        .count()
+}
+
+fn command_messages(events: &[PlayerEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::Chat {
+                channel: ChatChannel::Command,
+                message,
+                ..
+            } => Some(
+                String::from_utf8_lossy(message)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 fn test_public_state(move_speed: u8, attack_speed: u8) -> EntityPublicState {
     EntityPublicState {
         equipment: EntityPublicEquipment::default(),
@@ -793,6 +827,25 @@ fn player_hp(app: &App, player_id: PlayerId) -> i32 {
         .read_packet(Stat::Hp)
 }
 
+fn player_max_hp(app: &App, player_id: PlayerId) -> i32 {
+    let entity = player_entity(app, player_id);
+    app.world()
+        .entity(entity)
+        .get::<PlayerStatsComp>()
+        .expect("player stats")
+        .0
+        .read_packet(Stat::MaxHp)
+}
+
+fn player_pos(app: &App, player_id: PlayerId) -> LocalPos {
+    let entity = player_entity(app, player_id);
+    app.world()
+        .entity(entity)
+        .get::<LocalTransform>()
+        .expect("player transform")
+        .pos
+}
+
 fn set_player_progression_for_test(
     app: &mut App,
     player_id: PlayerId,
@@ -833,6 +886,86 @@ fn set_player_resource_for_test(app: &mut App, player_id: PlayerId, stat: Stat, 
         .expect("player stats")
         .0
         .with_api_mut(|api| api.set_resource(stat, value).expect("set player resource"));
+}
+
+fn dead_player_runtime(
+    mob_name: &'static str,
+    player_net_id: EntityId,
+) -> (
+    App,
+    MapEventSender,
+    Receiver<PlayerEvent>,
+    PlayerId,
+    EntityId,
+) {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            mob_name,
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+    let mob_entity = first_mob_entity(&mut app);
+    let player_id = PlayerId::from(1);
+    let mut gameplay = default_gameplay_bootstrap(player_id, PlayerClass::Warrior, 1);
+    gameplay.current_hp = Some(1);
+    let mut rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay,
+        player_net_id,
+        LocalPos::new(10.0, 10.0),
+        PlayerAppearance::default(),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut rx);
+
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(10.5, 10.0),
+        east_rot(),
+        1_000,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+    let events = drain_player_events(&mut rx);
+    assert!(
+        stunned_events(&events).contains(&player_net_id),
+        "lethal mob attack should put the player into dying/stun, got {events:?}"
+    );
+
+    set_sim_now(&mut app, 10_000);
+    run_actor_lifecycle(&mut app);
+    let events = drain_player_events(&mut rx);
+    assert!(
+        dead_events(&events).contains(&player_net_id),
+        "dying player should transition to dead, got {events:?}"
+    );
+
+    (app, inbound_tx, rx, player_id, player_net_id)
 }
 
 fn kill_mob_and_finalize_death(
@@ -905,6 +1038,7 @@ fn run_mob_ai(app: &mut App) {
     super::combat::process_attack_commands(app.world_mut());
     super::actor_life::process_life_events(app.world_mut());
     super::actor_life::process_actor_lifecycle(app.world_mut());
+    super::player::restart::process_player_restarts(app.world_mut());
     super::cleanup::process_cleanup_events(app.world_mut());
     super::player::persistence::process_player_dirty_events(app.world_mut());
     super::projection::project_frame_facts(app.world_mut());
@@ -914,6 +1048,7 @@ fn run_actor_lifecycle(app: &mut App) {
     super::actor_life::process_life_events(app.world_mut());
     super::rewards::record_mob_death_reward_claims(app.world_mut());
     super::actor_life::process_actor_lifecycle(app.world_mut());
+    super::player::restart::process_player_restarts(app.world_mut());
     super::rewards::grant_mob_death_rewards(app.world_mut());
     super::cleanup::process_cleanup_events(app.world_mut());
     super::player::persistence::process_player_dirty_events(app.world_mut());
@@ -3078,6 +3213,160 @@ fn mob_drops_player_target_after_dead_phase() {
         damage_info_events(&events).is_empty(),
         "corpse attacks should not produce damage info, got {events:?}"
     );
+}
+
+#[test]
+fn restart_here_revives_dead_player_after_legacy_delay() {
+    let player_net_id = EntityId(5_212);
+    let (mut app, inbound_tx, mut rx, player_id, _) =
+        dead_player_runtime("restart_here_wolf", player_net_id);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let death_pos = player_pos(&app, player_id);
+
+    set_sim_now(&mut app, 20_000);
+    restart_player(&inbound_tx, player_id, PlayerRestartIntent::Here);
+    run_pre_update(&mut app);
+    run_actor_lifecycle(&mut app);
+    let events = drain_player_events(&mut rx);
+
+    assert_eq!(player_hp(&app, player_id), 50);
+    assert_eq!(player_pos(&app, player_id), death_pos);
+    assert!(command_messages(&events).contains(&"CloseRestartWindow".to_string()));
+
+    // The client only processes DEAD→alive at spawn time, so the player entity
+    // must be despawned+respawned for both self and observers.
+    assert!(despawn_events(&events).contains(&player_net_id));
+    assert!(spawn_event_ids(&events).contains(&player_net_id));
+
+    // Main-character spawn purges dynamic actors client-side, so nearby entities
+    // must be spawned again for the restarting client. A separate despawn is not
+    // needed because the purge already removed them locally.
+    assert!(!despawn_events(&events).contains(&mob_net_id));
+    assert!(spawn_event_ids(&events).contains(&mob_net_id));
+
+    let snapshot = super::spawn_events::make_entity_snapshot(
+        app.world(),
+        app.world().resource::<SharedConfig>(),
+        player_net_id,
+    )
+    .expect("revived player snapshot");
+    assert!(
+        !snapshot
+            .public_state
+            .flags
+            .state_flags
+            .contains(EntityStateFlags::DEAD),
+        "revived player snapshot must clear the legacy DEAD state flag"
+    );
+}
+
+#[test]
+fn restart_here_before_legacy_delay_sends_wait_feedback() {
+    let player_net_id = EntityId(5_215);
+    let (mut app, inbound_tx, mut rx, player_id, _) =
+        dead_player_runtime("early_restart_here_wolf", player_net_id);
+    let death_pos = player_pos(&app, player_id);
+
+    set_sim_now(&mut app, 12_000);
+    restart_player(&inbound_tx, player_id, PlayerRestartIntent::Here);
+    run_pre_update(&mut app);
+    run_actor_lifecycle(&mut app);
+    let events = drain_player_events(&mut rx);
+
+    assert_eq!(player_pos(&app, player_id), death_pos);
+    assert_eq!(
+        info_messages(&events),
+        vec!["A new start is not possible at the moment. Please wait 8 seconds.".to_string()]
+    );
+    assert!(!command_messages(&events).contains(&"CloseRestartWindow".to_string()));
+    assert!(!despawn_events(&events).contains(&player_net_id));
+    assert!(!spawn_event_ids(&events).contains(&player_net_id));
+}
+
+#[test]
+fn restart_resets_passive_recovery_clock_instead_of_catching_up_dead_time() {
+    let player_net_id = EntityId(5_217);
+    let (mut app, inbound_tx, mut rx, player_id, _) =
+        dead_player_runtime("restart_recovery_wolf", player_net_id);
+
+    set_sim_now(&mut app, 20_000);
+    restart_player(&inbound_tx, player_id, PlayerRestartIntent::Here);
+    run_pre_update(&mut app);
+    run_actor_lifecycle(&mut app);
+    let _ = drain_player_events(&mut rx);
+    assert_eq!(player_hp(&app, player_id), 50);
+
+    set_sim_now(&mut app, 20_040);
+    super::player::stat_tickers::process_player_stat_tickers(app.world_mut());
+
+    assert_eq!(
+        player_hp(&app, player_id),
+        50,
+        "passive recovery must not apply the elapsed time spent dead immediately after restart"
+    );
+}
+
+#[test]
+fn restart_town_revives_dead_player_at_empire_town_after_legacy_delay() {
+    let player_net_id = EntityId(5_213);
+    let (mut app, inbound_tx, mut rx, player_id, _) =
+        dead_player_runtime("restart_town_wolf", player_net_id);
+    let death_pos = player_pos(&app, player_id);
+
+    set_sim_now(&mut app, 17_000);
+    restart_player(&inbound_tx, player_id, PlayerRestartIntent::Town);
+    run_pre_update(&mut app);
+    run_actor_lifecycle(&mut app);
+    let events = drain_player_events(&mut rx);
+
+    assert_eq!(player_hp(&app, player_id), 50);
+    assert_eq!(player_pos(&app, player_id), death_pos);
+    assert!(command_messages(&events).contains(&"CloseRestartWindow".to_string()));
+    assert_eq!(restart_town_event_count(&events), 1);
+    assert!(!despawn_events(&events).contains(&player_net_id));
+    assert!(!spawn_event_ids(&events).contains(&player_net_id));
+}
+
+#[test]
+fn restart_town_before_legacy_delay_sends_wait_feedback() {
+    let player_net_id = EntityId(5_216);
+    let (mut app, inbound_tx, mut rx, player_id, _) =
+        dead_player_runtime("early_restart_town_wolf", player_net_id);
+    let death_pos = player_pos(&app, player_id);
+
+    set_sim_now(&mut app, 12_000);
+    restart_player(&inbound_tx, player_id, PlayerRestartIntent::Town);
+    run_pre_update(&mut app);
+    run_actor_lifecycle(&mut app);
+    let events = drain_player_events(&mut rx);
+
+    assert_eq!(player_pos(&app, player_id), death_pos);
+    assert_eq!(
+        info_messages(&events),
+        vec!["You cannot restart in the city yet. Wait another 5 seconds.".to_string()]
+    );
+    assert!(!command_messages(&events).contains(&"CloseRestartWindow".to_string()));
+    assert_eq!(restart_town_event_count(&events), 0);
+}
+
+#[test]
+fn dead_event_forces_town_restart_with_half_hp() {
+    let player_net_id = EntityId(5_214);
+    let (mut app, _, mut rx, player_id, _) =
+        dead_player_runtime("forced_restart_wolf", player_net_id);
+    let expected_hp = player_max_hp(&app, player_id) / 2;
+    let death_pos = player_pos(&app, player_id);
+
+    set_sim_now(&mut app, 190_000);
+    run_actor_lifecycle(&mut app);
+    let events = drain_player_events(&mut rx);
+
+    assert_eq!(player_hp(&app, player_id), expected_hp);
+    assert_eq!(player_pos(&app, player_id), death_pos);
+    assert!(command_messages(&events).contains(&"CloseRestartWindow".to_string()));
+    assert_eq!(restart_town_event_count(&events), 1);
+    assert!(!despawn_events(&events).contains(&player_net_id));
+    assert!(!spawn_event_ids(&events).contains(&player_net_id));
 }
 
 #[test]

@@ -29,7 +29,6 @@ pub enum WorldS2c {
         attack_speed: u8,
 
         state_flags: EntityStateFlags,
-
         buff_flags: EntityBuffFlags,
     },
 

@@ -10,7 +10,7 @@ use super::runtime::{
 };
 use super::session_health::{SessionTick, SessionTracker};
 use super::types::{PhaseResult, SessionEnd, SessionLeaseAction};
-use crate::handlers::ingame::relocation::handle_portal_entry;
+use crate::handlers::ingame::relocation::{handle_portal_entry, handle_restart_town};
 use crate::{GameContext, SERVER_DRAIN_GRACE_PERIOD};
 use std::future::Future;
 use std::sync::Arc;
@@ -262,6 +262,7 @@ fn map_event_to_packets(
             empire,
             message,
         } => chat::encode_chat_event(channel, sender_entity_id, empire, message),
+        PlayerEvent::RestartTown => Vec::new(),
         PlayerEvent::PortalEntered { .. } => Vec::new(),
     }
 }
@@ -272,6 +273,7 @@ async fn map_event_to_effects(
 ) -> PhaseResult<InGamePhaseEffects> {
     match event {
         PlayerEvent::PortalEntered { destination } => handle_portal_entry(state, destination).await,
+        PlayerEvent::RestartTown => handle_restart_town(state).await,
         other => Ok(InGamePhaseEffects::send_many(map_event_to_packets(
             other,
             state.map_id,

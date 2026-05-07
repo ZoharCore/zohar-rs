@@ -3,6 +3,7 @@ pub(crate) mod chat;
 pub(crate) mod lifecycle;
 pub(crate) mod persistence;
 pub(crate) mod progression;
+pub(crate) mod restart;
 pub(crate) mod stat_sync;
 pub(crate) mod stat_tickers;
 pub(crate) mod target;
@@ -22,6 +23,7 @@ use zohar_gameplay::stats::game::{
 };
 use zohar_map_port::{
     AttackIntent, ChatChannel, ClientTimestamp, MovementArg, PlayerProgressionIntent,
+    PlayerRestartIntent,
 };
 
 pub(crate) use self::lifecycle as players;
@@ -151,6 +153,11 @@ pub(crate) struct ChatIntentQueue(pub(crate) Vec<ChatIntent>);
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component, Default)]
 pub(crate) struct PlayerProgressionIntentQueue(pub(crate) Vec<PlayerProgressionIntent>);
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component, Default)]
+pub(crate) struct PlayerRestartIntentQueue(pub(crate) Vec<PlayerRestartIntent>);
 
 #[derive(Debug)]
 pub(crate) struct PendingDurableFlush {
