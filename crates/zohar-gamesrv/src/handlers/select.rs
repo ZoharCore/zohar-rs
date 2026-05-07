@@ -322,9 +322,7 @@ async fn apply_effects(
     conn: &mut Connection<ThisPhase>,
     effects: PhaseEffects<ThisPhase>,
 ) -> PhaseResult<Option<SelectedPlayer>> {
-    for packet in effects.send {
-        conn.send(packet).await?;
-    }
+    conn.send_many(effects.send).await?;
     if let Some(error) = effects.disconnect {
         return Err(error);
     }

@@ -143,6 +143,18 @@ impl<S: ConnectionState> Connection<S> {
         self.framed.send(packet).await
     }
 
+    /// Send a packet batch with one sink flush.
+    pub async fn send_many<I>(&mut self, packets: I) -> io::Result<()>
+    where
+        I: IntoIterator<Item = S::S2cPacket>,
+    {
+        for packet in packets {
+            self.framed.feed(packet).await?;
+        }
+        self.framed.flush().await?;
+        Ok(())
+    }
+
     /// Receive a packet - uses the state's codec type automatically.
     pub async fn recv(&mut self) -> io::Result<Option<S::C2sPacket>> {
         self.framed.next().await.transpose()

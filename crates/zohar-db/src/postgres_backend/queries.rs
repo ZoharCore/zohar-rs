@@ -532,11 +532,13 @@ pub mod game {
             updated_progression AS (
                 UPDATE game.player_progression prog
                 SET playtime_secs = GREATEST(prog.playtime_secs, $9),
-                    allocated_str = $10,
-                    allocated_vit = $11,
-                    allocated_dex = $12,
-                    allocated_int = $13,
-                    stat_reset_count = $14
+                    level = $10,
+                    exp_in_level = $11,
+                    allocated_str = $12,
+                    allocated_vit = $13,
+                    allocated_dex = $14,
+                    allocated_int = $15,
+                    stat_reset_count = $16
                 FROM updated_runtime runtime
                 WHERE prog.player_id = $1
                   AND runtime.player_id = prog.player_id
@@ -555,6 +557,8 @@ pub mod game {
         .bind(runtime.current_sp)
         .bind(runtime.current_stamina)
         .bind(runtime.playtime.as_secs_i64())
+        .bind(progression.level)
+        .bind(progression.exp_in_level)
         .bind(progression.core_stat_allocations.allocated_str)
         .bind(progression.core_stat_allocations.allocated_vit)
         .bind(progression.core_stat_allocations.allocated_dex)
@@ -845,11 +849,13 @@ pub mod game {
              )
              UPDATE game.player_progression prog
              SET playtime_secs = GREATEST(prog.playtime_secs, $9),
-                 allocated_str = $10,
-                 allocated_vit = $11,
-                 allocated_dex = $12,
-                 allocated_int = $13,
-                 stat_reset_count = $14
+                 level = $10,
+                 exp_in_level = $11,
+                 allocated_str = $12,
+                 allocated_vit = $13,
+                 allocated_dex = $14,
+                 allocated_int = $15,
+                 stat_reset_count = $16
              FROM updated_runtime runtime
              WHERE prog.player_id = runtime.player_id",
         )
@@ -862,6 +868,8 @@ pub mod game {
         .bind(runtime.current_sp)
         .bind(runtime.current_stamina)
         .bind(runtime.playtime.as_secs_i64())
+        .bind(progression.level)
+        .bind(progression.exp_in_level)
         .bind(progression.core_stat_allocations.allocated_str)
         .bind(progression.core_stat_allocations.allocated_vit)
         .bind(progression.core_stat_allocations.allocated_dex)

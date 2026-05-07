@@ -7,7 +7,8 @@ pub async fn load_mobs(conn: &SqlitePool) -> Result<Vec<ContentMob>, ContentErro
     let rows = sqlx::query(
         "SELECT mob_id, code, name, mob_type, rank, battle_type, level, ai_flags, move_speed,
                 attack_speed, aggressive_sight, attack_range, strength, dexterity, vitality,
-                intelligence, damage_min, damage_max, max_hp, defense, damage_multiplier
+                intelligence, damage_min, damage_max, max_hp, defense, damage_multiplier,
+                experience
          FROM mob_proto
          ORDER BY mob_id",
     )
@@ -53,6 +54,7 @@ pub async fn load_mobs(conn: &SqlitePool) -> Result<Vec<ContentMob>, ContentErro
                 max_hp: row.try_get(18)?,
                 defense: row.try_get(19)?,
                 damage_multiplier: row.try_get(20)?,
+                experience: row.try_get(21)?,
             })
         })
         .collect()
@@ -91,10 +93,10 @@ mod tests {
             "INSERT INTO mob_proto (
                 mob_id, code, name, mob_type, rank, battle_type, level, ai_flags, move_speed,
                 attack_speed, aggressive_sight, attack_range, strength, dexterity, vitality,
-                intelligence, damage_min, damage_max, max_hp, defense, damage_multiplier
+                intelligence, damage_min, damage_max, max_hp, defense, damage_multiplier, experience
              )
-             VALUES (101, 'MOB_101', 'wild dog', 'MONSTER', 'PAWN', 'MELEE', 1, 'NOMOVE|AGGR', 100, 100, 800, 175, 3, 6, 5, 2, 20, 24, 126, 4, 1.0),
-                    (102, 'MOB_102', 'stable boy', 'NPC', 'KING', 'RANGE', 70, NULL, 100, 100, 0, 300, 4, 9, 7, 2, 23, 28, 162, 6, 1.0)",
+             VALUES (101, 'MOB_101', 'wild dog', 'MONSTER', 'PAWN', 'MELEE', 1, 'NOMOVE|AGGR', 100, 100, 800, 175, 3, 6, 5, 2, 20, 24, 126, 4, 1.0, 15),
+                    (102, 'MOB_102', 'stable boy', 'NPC', 'KING', 'RANGE', 70, NULL, 100, 100, 0, 300, 4, 9, 7, 2, 23, 28, 162, 6, 1.0, 0)",
         )
         .execute(&pool)
         .await
@@ -111,6 +113,7 @@ mod tests {
         assert_eq!(mobs[0].max_hp, 126);
         assert_eq!(mobs[0].defense, 4);
         assert_eq!(mobs[0].damage_multiplier, 1.0);
+        assert_eq!(mobs[0].experience, 15);
         assert_eq!(mobs[1].ai_flags, MobAiFlags::empty());
     }
 }

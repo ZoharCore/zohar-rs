@@ -64,6 +64,12 @@ pub struct MobCombatStats {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MobRewards {
+    pub experience: i64,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug)]
 pub struct MobPrototypeDef {
     pub mob_id: MobId,
@@ -78,6 +84,7 @@ pub struct MobPrototypeDef {
     pub attack_range: u16,
     pub combat_extent_m: f32,
     pub combat: MobCombatStats,
+    pub rewards: MobRewards,
     #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub bhv_flags: BehaviorFlags,
     pub empire: Option<crate::Empire>,
@@ -108,6 +115,7 @@ impl MobPrototypeDef {
                 defense: 4,
                 damage_multiplier: 1.0,
             },
+            rewards: MobRewards { experience: 15 },
             bhv_flags: BehaviorFlags::empty(),
             empire: None,
         }

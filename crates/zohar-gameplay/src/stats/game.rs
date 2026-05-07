@@ -26,14 +26,17 @@ pub use api::{
     DrainedPlayerStatsSync, GameStatsApi, PlayerStatsRuntime, SourceBundleError, StatDelta,
     StatSnapshot, StatsSync,
 };
-pub use balance::{default_mob_balance_rules, default_player_balance_rules};
+pub use balance::{
+    default_mob_balance_rules, default_player_balance_rules, exp_reward_bonus_malus_percent,
+};
 pub use change_set::StatChangeSet;
 pub use contribution::{CompiledModifier, CompiledStatContribution};
 pub use player_rules::{
-    HydratedPlayerStats, LevelExpEntry, LevelExpTable, PlayerClassStatsConfig,
-    PlayerClassStatsTable, PlayerStatRules,
+    HydratedPlayerStats, LevelExpEntry, LevelExpTable, LevelExpTableError, PlayerClassStatsConfig,
+    PlayerClassStatsTable, PlayerExpGainOutcome, PlayerMobExpRewardOutcome, PlayerStatRules,
+    legacy_mob_exp_reward,
 };
-pub use progression::PlayerProgressionState;
+pub use progression::{LEVEL_STEPS_PER_LEVEL, PlayerProgressionState, STAT_POINT_STEPS_PER_LEVEL};
 pub use recovery::{
     PlayerMovementActivity, PlayerPassiveHpRecoveryState, PlayerPassiveSpRecoveryState,
     PlayerSpRecoveryProfile, PlayerStaminaEffect, PlayerStaminaMovementOverride,

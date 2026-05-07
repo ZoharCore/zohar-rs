@@ -177,6 +177,38 @@ macro_rules! impl_zero_fallback_num_enum {
 }
 pub(crate) use impl_zero_fallback_num_enum;
 
+macro_rules! impl_bitflags_binrw {
+    ($ty:ty, $primitive:ty) => {
+        impl $crate::game_pkt::BinRead for $ty {
+            type Args<'a> = ();
+
+            fn read_options<R: $crate::game_pkt::Read + $crate::game_pkt::Seek>(
+                reader: &mut R,
+                endian: $crate::game_pkt::Endian,
+                _args: Self::Args<'_>,
+            ) -> binrw::BinResult<Self> {
+                let bits =
+                    <$primitive as $crate::game_pkt::BinRead>::read_options(reader, endian, ())?;
+                Ok(Self::from_bits_retain(bits))
+            }
+        }
+
+        impl $crate::game_pkt::BinWrite for $ty {
+            type Args<'a> = ();
+
+            fn write_options<W: $crate::game_pkt::Write + $crate::game_pkt::Seek>(
+                &self,
+                writer: &mut W,
+                endian: $crate::game_pkt::Endian,
+                _args: Self::Args<'_>,
+            ) -> binrw::BinResult<()> {
+                self.bits().write_options(writer, endian, ())
+            }
+        }
+    };
+}
+pub(crate) use impl_bitflags_binrw;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ZeroOpt<T>(pub Option<T>);
 

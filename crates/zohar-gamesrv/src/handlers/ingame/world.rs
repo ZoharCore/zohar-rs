@@ -2,10 +2,13 @@ use crate::ContentCoords;
 use crate::adapters::ToProtocol;
 use tracing::warn;
 use zohar_domain::MapId;
-use zohar_domain::appearance::{EntityPublicState, EntitySnapshot};
+use zohar_domain::appearance::{
+    EntityBuffFlags, EntityPublicState, EntitySnapshot, EntityStateFlags,
+};
 use zohar_domain::entity::EntityId;
+use zohar_domain::util::FlagsMapper;
 use zohar_protocol::game_pkt::ingame::InGameS2c;
-use zohar_protocol::game_pkt::ingame::world::WorldS2c;
+use zohar_protocol::game_pkt::ingame::world::{self, WorldS2c};
 
 pub(super) fn encode_entity_spawn(
     snapshot: EntitySnapshot,
@@ -28,8 +31,8 @@ pub(super) fn encode_entity_spawn(
         race_num,
         move_speed: snapshot.public_state.speeds.move_speed,
         attack_speed: snapshot.public_state.speeds.attack_speed,
-        state_flags: snapshot.public_state.flags.state_flags,
-        buff_flags: snapshot.public_state.flags.buff_flags,
+        state_flags: encode_entity_state_flags(snapshot.public_state.flags.state_flags),
+        buff_flags: encode_entity_buff_flags(snapshot.public_state.flags.buff_flags),
     };
 
     let mut out = vec![show_pkt.into()];
@@ -76,8 +79,8 @@ pub(super) fn encode_entity_public_state_change(
             hair_part: public_state.equipment.hair_part,
             move_speed: public_state.speeds.move_speed,
             attack_speed: public_state.speeds.attack_speed,
-            state_flags: public_state.flags.state_flags,
-            buff_flags: public_state.flags.buff_flags,
+            state_flags: encode_entity_state_flags(public_state.flags.state_flags),
+            buff_flags: encode_entity_buff_flags(public_state.flags.buff_flags),
             guild_id: public_state.social.guild_id,
             rank_pts: public_state.social.rank_pts,
             pvp_mode: public_state.social.pvp_mode,
@@ -89,4 +92,20 @@ pub(super) fn encode_entity_public_state_change(
 
 fn angle_from_facing(facing: zohar_domain::coords::Facing72) -> f32 {
     facing.get() as f32 * 5.0
+}
+
+fn encode_entity_state_flags(flags: EntityStateFlags) -> world::EntityStateFlags {
+    const MAPPER: FlagsMapper<EntityStateFlags, world::EntityStateFlags> = FlagsMapper::new(&[
+        (EntityStateFlags::DEAD, world::EntityStateFlags::DEAD),
+        (EntityStateFlags::SPAWN, world::EntityStateFlags::SPAWN),
+    ]);
+
+    MAPPER.map(flags)
+}
+
+fn encode_entity_buff_flags(flags: EntityBuffFlags) -> world::EntityBuffFlags {
+    const MAPPER: FlagsMapper<EntityBuffFlags, world::EntityBuffFlags> =
+        FlagsMapper::new(&[(EntityBuffFlags::SPAWN, world::EntityBuffFlags::SPAWN)]);
+
+    MAPPER.map(flags)
 }

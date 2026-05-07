@@ -482,6 +482,7 @@ mod tests {
                 defense: 4,
                 damage_multiplier: 1.4,
             },
+            rewards: Default::default(),
             bhv_flags: BehaviorFlags::empty(),
             empire: None,
         };

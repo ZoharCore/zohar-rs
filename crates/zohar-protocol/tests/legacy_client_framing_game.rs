@@ -4,11 +4,15 @@ mod packet_framing_support;
 
 use packet_framing_support::{assert_packet_frame, encoded_bytes};
 use zohar_protocol::game_pkt::ingame::chat::{ChatC2s, ChatKind, ChatS2c};
-use zohar_protocol::game_pkt::ingame::combat::{CombatC2s, CombatS2c};
+use zohar_protocol::game_pkt::ingame::combat::{
+    CombatC2s, CombatS2c, FloatingDamageFlags, ProjectileKind, SpecialEffectKind,
+};
 use zohar_protocol::game_pkt::ingame::movement::{MovementC2s, MovementKind, MovementS2c};
 use zohar_protocol::game_pkt::ingame::stats::{WireStatPoint, WireStatSnapshot};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
-use zohar_protocol::game_pkt::ingame::world::{EntityType, WorldS2c};
+use zohar_protocol::game_pkt::ingame::world::{
+    EntityBuffFlags, EntityStateFlags, EntityType, WorldS2c,
+};
 use zohar_protocol::game_pkt::select::{CreatePlayerError, Player};
 use zohar_protocol::game_pkt::{
     Empire, HandshakeGameC2s, HandshakeGameS2c, LoadingC2s, LoadingS2c, LoginC2s, LoginS2c, NetId,
@@ -380,11 +384,28 @@ fn combat_s2c_packets_keep_their_legacy_lengths() {
     assert_packet_frame(
         &CombatS2c::TriggerFloatingDamage {
             target: NetId(2),
-            flags: 1,
+            flags: FloatingDamageFlags::NORMAL,
             damage: 123,
         },
         0x87,
         10,
+    );
+    assert_packet_frame(
+        &CombatS2c::TriggerProjectileEffect {
+            kind: ProjectileKind::Experience,
+            from_entity: NetId(1),
+            to_entity: NetId(2),
+        },
+        0x46,
+        10,
+    );
+    assert_packet_frame(
+        &CombatS2c::TriggerSpecialEffect {
+            kind: SpecialEffectKind::CriticalStrike,
+            target: NetId(2),
+        },
+        0x72,
+        6,
     );
 }
 
@@ -411,8 +432,8 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
             race_num: 0,
             move_speed: 100,
             attack_speed: 100,
-            state_flags: 0,
-            buff_flags: 0,
+            state_flags: EntityStateFlags::empty(),
+            buff_flags: EntityBuffFlags::empty(),
         },
         0x01,
         35,
@@ -442,8 +463,8 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
             hair_part: 3,
             move_speed: 125,
             attack_speed: 110,
-            state_flags: 0,
-            buff_flags: 0,
+            state_flags: EntityStateFlags::empty(),
+            buff_flags: EntityBuffFlags::empty(),
             guild_id: 7,
             rank_pts: 0,
             pvp_mode: 0,
@@ -453,4 +474,14 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
         35,
     );
     assert_packet_frame(&WorldS2c::DestroyEntity { net_id: NetId(1) }, 0x02, 5);
+}
+
+#[test]
+fn world_entity_flags_retain_unknown_wire_bits() {
+    let state_flags = EntityStateFlags::from_bits_retain(0b1000_0101);
+    let buff_flags = EntityBuffFlags::from_bits_retain(1_u64 << 17);
+
+    assert!(state_flags.contains(EntityStateFlags::DEAD));
+    assert_eq!(state_flags.bits(), 0b1000_0101);
+    assert_eq!(buff_flags.bits(), 1_u64 << 17);
 }

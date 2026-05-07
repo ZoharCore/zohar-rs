@@ -47,3 +47,35 @@ pub const fn default_mob_balance_rules() -> MobBalanceRules {
         },
     }
 }
+
+pub const fn exp_reward_bonus_malus_percent(player_level: i32, monster_level: i32) -> i32 {
+    let monster_lvl_advantage = monster_level.saturating_sub(player_level);
+
+    match monster_lvl_advantage {
+        // capped linear bonus: player lower level than mob (player handicap)
+        15.. => 180,
+        0..=14 => 100 + monster_lvl_advantage * 5,
+
+        // capped nonlinear malus: player higher level than mob (player advantage)
+        -1 => 100,
+        -2 => 98,
+        -3 => 96,
+        -4 => 94,
+        -5 => 92,
+        -6 => 90,
+
+        -7 => 85,
+        -8 => 80,
+
+        -9 => 70,
+        -10 => 50,
+        -11 => 30,
+
+        -12 => 20,
+        -13 => 10,
+
+        -14 => 5,
+
+        ..=-15 => 1,
+    }
+}

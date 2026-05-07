@@ -10,3 +10,4 @@ admin-brp = ["bevy", "zohar-domain/admin-brp"]
 zohar-domain = { path = "../zohar-domain" }
 
 bevy = { workspace = true, optional = true }
+bitflags.workspace = true

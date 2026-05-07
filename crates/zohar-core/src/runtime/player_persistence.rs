@@ -385,6 +385,8 @@ mod tests {
                 local_pos: LocalPos::new(x, y),
             },
             progression: PlayerProgressionSnapshot {
+                level: 1,
+                exp_in_level: 0,
                 core_stat_allocations: CoreStatAllocations::default(),
                 stat_reset_count: 0,
             },

@@ -11,12 +11,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 
 use super::aggro::MobAggroDispatchBuffer;
+use super::facts::{
+    ActorDamaged, ActorRef, ActorSpecialEffect, ActorSpecialEffectKind, FrameFacts,
+    PointVisualEffect,
+};
 use super::state::{
     LocalTransform, MapDirtyEntityPublicStates, MapPendingMovements, MapReplication, MapSpawnRules,
     MobAggro, MobAggroQueue, MobBrainMode, MobBrainState, MobMarker, MobMotion, MobMotionState,
     MobStatsComp, NetEntityId, PendingMovement, PlayerActivityComp, PlayerCommandQueue,
-    PlayerIndex, PlayerMotion, PlayerMotionState, PlayerMovementAnimation, PlayerStatTickerComp,
-    PlayerStatsComp, RuntimeState, SimDuration,
+    PlayerIndex, PlayerMotion, PlayerMotionState, PlayerMovementAnimation, PlayerProgressionComp,
+    PlayerStatTickerComp, PlayerStatsComp, RuntimeState, SharedConfig, SimDuration,
 };
 use super::util::sample_player_motion_at;
 use crate::MapEventSender;
@@ -26,7 +30,7 @@ use crate::runtime::time::SimTickerClock;
 use crate::types::MapInstanceKey;
 use zohar_domain::appearance::{
     EntityKind, EntityPublicEquipment, EntityPublicFlags, EntityPublicSocial, EntityPublicSpeeds,
-    EntityPublicState, PlayerAppearance, PlayerVisualProfile,
+    EntityPublicState, EntityStateFlags, PlayerAppearance, PlayerVisualProfile,
 };
 use zohar_domain::coords::{
     Facing72, LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize,
@@ -35,7 +39,8 @@ use zohar_domain::entity::mob::spawn::{
     Direction, FacingStrategy, SpawnArea, SpawnRuleDef, SpawnTemplate,
 };
 use zohar_domain::entity::mob::{
-    MobBattleType, MobCombatStats, MobId, MobKind, MobPrototypeDef, MobRank, PortalBehavior,
+    MobBattleType, MobCombatStats, MobId, MobKind, MobPrototypeDef, MobRank, MobRewards,
+    PortalBehavior,
 };
 use zohar_domain::entity::player::skill::SkillId;
 use zohar_domain::entity::player::{
@@ -44,15 +49,17 @@ use zohar_domain::entity::player::{
 };
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 use zohar_domain::{BehaviorFlags, MapId, TerrainFlags};
+use zohar_gameplay::combat::HitFlags;
 use zohar_gameplay::stats::game::{
     ActorStatSource, CompiledModifier, CompiledStatContribution, CoreStatBlock,
-    DeterministicGrowthVersion, PlayerGrowthFormula, PlayerResourceFormula, PlayerStatSource,
-    SourceSpeeds, Stat,
+    DeterministicGrowthVersion, PlayerGrowthFormula, PlayerProgressionState, PlayerResourceFormula,
+    PlayerStatSource, SourceSpeeds, Stat,
 };
 use zohar_map_port::{
     AttackIntent, AttackTargetIntent, ChatChannel, ChatIntent as PortChatIntent, ClientIntent,
     ClientIntentMsg, ClientTimestamp, CoreStatAllocationIntent, CoreStatKind, EnterMsg, LeaveMsg,
     MoveIntent, MovementArg, PlayerEvent, PlayerProgressionIntent, PortalDestination,
+    ProjectileEffectKind, SpecialEffectType,
 };
 
 fn sim_ms(value: u64) -> super::state::SimInstant {
@@ -100,6 +107,16 @@ fn test_configs(map_key: MapInstanceKey) -> (SharedConfig, MapConfig) {
 }
 
 fn test_player_stat_rules() -> crate::PlayerStatRules {
+    test_player_stat_rules_with_level_exp((1..=120).map(|level| crate::LevelExpEntry {
+        level,
+        next_exp: i64::from(level) * 300,
+        death_loss_pct: 0,
+    }))
+}
+
+fn test_player_stat_rules_with_level_exp(
+    level_exp: impl IntoIterator<Item = crate::LevelExpEntry>,
+) -> crate::PlayerStatRules {
     fn class_config(
         class: PlayerClass,
         base_stats: CoreStatBlock,
@@ -146,11 +163,7 @@ fn test_player_stat_rules() -> crate::PlayerStatRules {
                 class_config(PlayerClass::Shaman, CoreStatBlock::new(3, 4, 3, 6)),
             ),
         ]),
-        crate::LevelExpTable::new((1..=120).map(|level| crate::LevelExpEntry {
-            level,
-            next_exp: i64::from(level) * 300,
-            death_loss_pct: 0,
-        })),
+        crate::LevelExpTable::new(level_exp),
     )
 }
 
@@ -209,6 +222,7 @@ fn test_mob_proto(
         attack_range: 150,
         combat_extent_m: 1.0,
         combat: test_mob_combat(level),
+        rewards: Default::default(),
         bhv_flags,
         empire: None,
     })
@@ -232,6 +246,7 @@ fn test_portal_proto(
         attack_range: 0,
         combat_extent_m: 1.0,
         combat: test_mob_combat(1),
+        rewards: Default::default(),
         bhv_flags: BehaviorFlags::empty(),
         empire: None,
     })
@@ -251,6 +266,37 @@ fn test_mob_proto_with_combat(
     attack_range: u16,
     bhv_flags: BehaviorFlags,
 ) -> Arc<MobPrototypeDef> {
+    test_mob_proto_with_combat_and_rewards(
+        mob_id,
+        mob_kind,
+        name,
+        rank,
+        battle_type,
+        level,
+        move_speed,
+        attack_speed,
+        aggressive_sight,
+        attack_range,
+        bhv_flags,
+        MobRewards::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn test_mob_proto_with_combat_and_rewards(
+    mob_id: MobId,
+    mob_kind: MobKind,
+    name: impl Into<String>,
+    rank: MobRank,
+    battle_type: MobBattleType,
+    level: u32,
+    move_speed: u8,
+    attack_speed: u8,
+    aggressive_sight: u16,
+    attack_range: u16,
+    bhv_flags: BehaviorFlags,
+    rewards: MobRewards,
+) -> Arc<MobPrototypeDef> {
     Arc::new(MobPrototypeDef {
         mob_id,
         mob_kind,
@@ -264,6 +310,7 @@ fn test_mob_proto_with_combat(
         attack_range,
         combat_extent_m: 1.0,
         combat: test_mob_combat(level),
+        rewards,
         bhv_flags,
         empire: None,
     })
@@ -571,6 +618,32 @@ fn damage_info_events(events: &[PlayerEvent]) -> Vec<(EntityId, u8, i32)> {
         .collect()
 }
 
+fn special_effect_events(events: &[PlayerEvent]) -> Vec<(EntityId, SpecialEffectType)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::SpecialEffect { entity_id, effect } => Some((*entity_id, *effect)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn projectile_effect_events(
+    events: &[PlayerEvent],
+) -> Vec<(ProjectileEffectKind, EntityId, EntityId)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::CreateProjectileEffect {
+                effect,
+                start_entity_id,
+                end_entity_id,
+            } => Some((*effect, *start_entity_id, *end_entity_id)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn attack_movement_count(events: &[PlayerEvent], entity_id: EntityId) -> usize {
     events
         .iter()
@@ -669,6 +742,8 @@ fn pending_snapshot(player_id: PlayerId) -> PlayerSnapshot {
             current_stamina: None,
         },
         progression: PlayerProgressionSnapshot {
+            level: 1,
+            exp_in_level: 0,
             core_stat_allocations: CoreStatAllocations::default(),
             stat_reset_count: 0,
         },
@@ -693,6 +768,12 @@ fn first_mob_net_id(app: &mut App) -> EntityId {
         .expect("mob net id")
 }
 
+fn mob_net_ids(app: &mut App) -> Vec<EntityId> {
+    let world = app.world_mut();
+    let mut q = world.query::<(&MobMarker, &NetEntityId)>();
+    q.iter(world).map(|(_, net_id)| net_id.net_id).collect()
+}
+
 fn mob_hp(app: &App, mob_entity: Entity) -> i32 {
     app.world()
         .entity(mob_entity)
@@ -710,6 +791,77 @@ fn player_hp(app: &App, player_id: PlayerId) -> i32 {
         .expect("player stats")
         .0
         .read_packet(Stat::Hp)
+}
+
+fn set_player_progression_for_test(
+    app: &mut App,
+    player_id: PlayerId,
+    level: i32,
+    exp_in_level: u32,
+    next_exp_in_level: u32,
+) {
+    let player_entity = player_entity(app, player_id);
+    let mut entity = app.world_mut().entity_mut(player_entity);
+    entity
+        .get_mut::<PlayerProgressionComp>()
+        .expect("player progression")
+        .0
+        .level = level;
+    entity
+        .get_mut::<PlayerProgressionComp>()
+        .expect("player progression")
+        .0
+        .exp_in_level = i64::from(exp_in_level);
+    entity
+        .get_mut::<PlayerStatsComp>()
+        .expect("player stats")
+        .0
+        .with_api_mut(|api| {
+            api.set_player_progression(PlayerProgressionState::new(
+                level,
+                exp_in_level,
+                next_exp_in_level,
+            ));
+        });
+}
+
+fn set_player_resource_for_test(app: &mut App, player_id: PlayerId, stat: Stat, value: i32) {
+    let player_entity = player_entity(app, player_id);
+    app.world_mut()
+        .entity_mut(player_entity)
+        .get_mut::<PlayerStatsComp>()
+        .expect("player stats")
+        .0
+        .with_api_mut(|api| api.set_resource(stat, value).expect("set player resource"));
+}
+
+fn kill_mob_and_finalize_death(
+    app: &mut App,
+    inbound_tx: &MapEventSender,
+    rx: &mut Receiver<PlayerEvent>,
+    player_id: PlayerId,
+    mob_net_id: EntityId,
+    finalized_at_ms: u64,
+) -> Vec<PlayerEvent> {
+    let mut events = Vec::new();
+    for _ in 0..64 {
+        attack_target(inbound_tx, player_id, mob_net_id, 0);
+        advance_tick(app);
+        events.extend(drain_player_events(rx));
+        if stunned_events(&events).contains(&mob_net_id) {
+            break;
+        }
+    }
+    assert!(
+        stunned_events(&events).contains(&mob_net_id),
+        "test mob should enter dying state before reward finalization, got {events:?}"
+    );
+
+    set_player_resource_for_test(app, player_id, Stat::Hp, 1);
+    set_sim_now(app, finalized_at_ms);
+    run_actor_lifecycle(app);
+    events.extend(drain_player_events(rx));
+    events
 }
 
 fn map_entity(app: &App) -> Entity {
@@ -760,7 +912,9 @@ fn run_mob_ai(app: &mut App) {
 
 fn run_actor_lifecycle(app: &mut App) {
     super::actor_life::process_life_events(app.world_mut());
+    super::rewards::record_mob_death_reward_claims(app.world_mut());
     super::actor_life::process_actor_lifecycle(app.world_mut());
+    super::rewards::grant_mob_death_rewards(app.world_mut());
     super::cleanup::process_cleanup_events(app.world_mut());
     super::player::persistence::process_player_dirty_events(app.world_mut());
     super::projection::project_frame_facts(app.world_mut());
@@ -1146,6 +1300,197 @@ fn speed_stat_sync_replicates_public_state_change_to_visible_players() {
         }),
         "visible observers should receive public-state speed change, got {bob_updates:?}"
     );
+}
+
+#[test]
+fn level_step_stat_sync_stays_subject_only() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let alice_id = PlayerId::from(1);
+    let alice_net_id = EntityId(5_102);
+    let mut alice_rx = enter_player(
+        &inbound_tx,
+        alice_id,
+        alice_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    let mut bob_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(2),
+        EntityId(5_103),
+        LocalPos::new(10.5, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    {
+        let entity = player_entity(&app, alice_id);
+        let mut entity = app.world_mut().entity_mut(entity);
+        let mut stats = entity.get_mut::<PlayerStatsComp>().expect("player stats");
+        stats.0.with_api_mut(|api| {
+            api.set_player_progression(PlayerProgressionState::new(1, 25, 100));
+        });
+    }
+
+    advance_tick(&mut app);
+    let alice_stats = stat_events(&drain_player_events(&mut alice_rx));
+    let bob_stats = stat_events(&drain_player_events(&mut bob_rx));
+    assert!(alice_stats.contains(&(alice_net_id, Stat::LevelStep, 1)));
+    assert!(
+        !bob_stats.contains(&(alice_net_id, Stat::LevelStep, 1)),
+        "observer level-step visuals should be explicit point effects, got {bob_stats:?}"
+    );
+}
+
+#[test]
+fn point_visual_effects_drive_observer_level_step_and_level_up_packets() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let alice_id = PlayerId::from(1);
+    let alice_net_id = EntityId(5_102);
+    let mut alice_rx = enter_player(
+        &inbound_tx,
+        alice_id,
+        alice_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    let mut bob_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(2),
+        EntityId(5_103),
+        LocalPos::new(10.5, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    let alice_entity = player_entity(&app, alice_id);
+    app.world_mut()
+        .resource_mut::<FrameFacts>()
+        .visuals
+        .point_effects
+        .push(PointVisualEffect::LevelStep {
+            actor: ActorRef::new(alice_entity, alice_net_id),
+        });
+    advance_tick(&mut app);
+    let alice_stats = stat_events(&drain_player_events(&mut alice_rx));
+    let bob_stats = stat_events(&drain_player_events(&mut bob_rx));
+    assert!(!alice_stats.contains(&(alice_net_id, Stat::LevelStep, 0)));
+    assert!(
+        bob_stats.contains(&(alice_net_id, Stat::LevelStep, 0)),
+        "visible observers should receive level-step point effects, got {bob_stats:?}"
+    );
+
+    app.world_mut()
+        .resource_mut::<FrameFacts>()
+        .visuals
+        .point_effects
+        .push(PointVisualEffect::LevelUp {
+            actor: ActorRef::new(alice_entity, alice_net_id),
+            level: 2,
+        });
+    advance_tick(&mut app);
+    let alice_stats = stat_events(&drain_player_events(&mut alice_rx));
+    let bob_stats = stat_events(&drain_player_events(&mut bob_rx));
+    assert!(!alice_stats.contains(&(alice_net_id, Stat::Level, 2)));
+    assert!(
+        bob_stats.contains(&(alice_net_id, Stat::Level, 2)),
+        "visible observers should receive level-up point effects with the new absolute level for nameplates, got {bob_stats:?}"
+    );
+}
+
+#[test]
+fn special_effects_use_actor_view_and_subject_fanout() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let alice_id = PlayerId::from(1);
+    let alice_net_id = EntityId(5_102);
+    let mut alice_rx = enter_player(
+        &inbound_tx,
+        alice_id,
+        alice_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    let mut bob_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(2),
+        EntityId(5_103),
+        LocalPos::new(10.5, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    let alice_entity = player_entity(&app, alice_id);
+    app.world_mut()
+        .resource_mut::<FrameFacts>()
+        .visuals
+        .special_effects
+        .push(ActorSpecialEffect {
+            actor: ActorRef::new(alice_entity, alice_net_id),
+            effect: ActorSpecialEffectKind::Critical,
+        });
+    advance_tick(&mut app);
+
+    let alice_effects = special_effect_events(&drain_player_events(&mut alice_rx));
+    let bob_effects = special_effect_events(&drain_player_events(&mut bob_rx));
+    assert!(alice_effects.contains(&(alice_net_id, SpecialEffectType::Critical)));
+    assert!(
+        bob_effects.contains(&(alice_net_id, SpecialEffectType::Critical)),
+        "visible observers should receive actor special effects, got {bob_effects:?}"
+    );
+}
+
+#[test]
+fn critical_damage_projects_legacy_critical_special_effect() {
+    let map_id = MapId::new(41);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let alice_id = PlayerId::from(1);
+    let alice_net_id = EntityId(5_102);
+    let bob_id = PlayerId::from(2);
+    let bob_net_id = EntityId(5_103);
+    let mut alice_rx = enter_player(
+        &inbound_tx,
+        alice_id,
+        alice_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    let mut bob_rx = enter_player(&inbound_tx, bob_id, bob_net_id, LocalPos::new(10.5, 10.0));
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    let alice_entity = player_entity(&app, alice_id);
+    let bob_entity = player_entity(&app, bob_id);
+    app.world_mut()
+        .resource_mut::<FrameFacts>()
+        .combat
+        .damaged
+        .push(ActorDamaged {
+            attacker: ActorRef::new(alice_entity, alice_net_id),
+            victim: ActorRef::new(bob_entity, bob_net_id),
+            damage: 11,
+            flags: HitFlags::NORMAL | HitFlags::CRITICAL,
+        });
+    advance_tick(&mut app);
+
+    let alice_effects = special_effect_events(&drain_player_events(&mut alice_rx));
+    let bob_effects = special_effect_events(&drain_player_events(&mut bob_rx));
+    assert!(alice_effects.contains(&(bob_net_id, SpecialEffectType::Critical)));
+    assert!(bob_effects.contains(&(bob_net_id, SpecialEffectType::Critical)));
 }
 
 #[test]
@@ -2372,6 +2717,20 @@ fn player_killing_mob_emits_dead_packet_to_visible_players() {
         dead_events(&events).contains(&mob_net_id),
         "mob death should emit legacy dead packet after dying delay, got {events:?}"
     );
+    let dead_snapshot = super::spawn_events::make_entity_snapshot(
+        app.world(),
+        app.world().resource::<SharedConfig>(),
+        mob_net_id,
+    )
+    .expect("dead mob snapshot");
+    assert!(
+        dead_snapshot
+            .public_state
+            .flags
+            .state_flags
+            .contains(EntityStateFlags::DEAD),
+        "snapshots for already-dead actors must carry the legacy DEAD state flag"
+    );
 
     attack_target(&inbound_tx, player_id, mob_net_id, 0);
     advance_tick(&mut app);
@@ -2424,6 +2783,136 @@ fn player_killing_mob_emits_dead_packet_to_visible_players() {
         assert_eq!(rule_state.respawn_at, None);
         assert_eq!(rule_state.entities.len(), 1);
     }
+}
+
+#[test]
+fn mob_death_reward_applies_exp_steps_level_up_refill_and_visuals_once() {
+    let map_id = MapId::new(41);
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    shared.player_stats = Arc::new(test_player_stat_rules_with_level_exp((1..=120).map(
+        |level| crate::LevelExpEntry {
+            level,
+            next_exp: i64::from(level) * 10,
+            death_loss_pct: 0,
+        },
+    )));
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 2,
+        regen_time: Duration::from_secs(60),
+    }));
+
+    let proto = test_mob_proto_with_combat_and_rewards(
+        mob_id,
+        MobKind::Monster,
+        "reward_wolf",
+        MobRank::Pawn,
+        MobBattleType::Melee,
+        1,
+        100,
+        100,
+        0,
+        150,
+        BehaviorFlags::empty(),
+        MobRewards { experience: 1_000 },
+    );
+    Arc::make_mut(&mut shared.mobs).insert(mob_id, proto);
+
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+    let mobs = mob_net_ids(&mut app);
+    assert_eq!(mobs.len(), 2);
+
+    let alice_id = PlayerId::from(1);
+    let alice_net_id = EntityId(5_220);
+    let bob_id = PlayerId::from(2);
+    let bob_net_id = EntityId(5_221);
+    let mut alice_rx = enter_player(
+        &inbound_tx,
+        alice_id,
+        alice_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    let mut bob_rx = enter_player(&inbound_tx, bob_id, bob_net_id, LocalPos::new(10.0, 10.5));
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    set_player_progression_for_test(&mut app, alice_id, 1, 7, 10);
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    let mut alice_events = kill_mob_and_finalize_death(
+        &mut app,
+        &inbound_tx,
+        &mut alice_rx,
+        alice_id,
+        mobs[0],
+        10_000,
+    );
+    let bob_events = drain_player_events(&mut bob_rx);
+    let alice_stats = stat_events(&alice_events);
+    assert!(
+        alice_stats.contains(&(alice_net_id, Stat::Exp, 8)),
+        "expected exp stat update, got {alice_events:?}"
+    );
+    assert!(
+        alice_stats.contains(&(alice_net_id, Stat::LevelStep, 3)),
+        "expected level-step stat update, got {alice_events:?}"
+    );
+    assert!(
+        alice_stats.contains(&(alice_net_id, Stat::StatPoints, 1)),
+        "expected stat-point update, got {alice_events:?}"
+    );
+    assert!(
+        player_hp(&app, alice_id) > 1,
+        "level-step reward should refill HP"
+    );
+    assert!(
+        stat_events(&bob_events).contains(&(alice_net_id, Stat::LevelStep, 0)),
+        "observer should receive the explicit level-step point visual"
+    );
+    assert!(
+        projectile_effect_events(&alice_events)
+            .iter()
+            .any(|event| *event == (ProjectileEffectKind::Exp, mobs[0], alice_net_id))
+    );
+
+    set_player_progression_for_test(&mut app, alice_id, 1, 9, 10);
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut alice_rx);
+    let _ = drain_player_events(&mut bob_rx);
+
+    alice_events = kill_mob_and_finalize_death(
+        &mut app,
+        &inbound_tx,
+        &mut alice_rx,
+        alice_id,
+        mobs[1],
+        20_000,
+    );
+    let bob_events = drain_player_events(&mut bob_rx);
+    let alice_stats = stat_events(&alice_events);
+    assert!(alice_stats.contains(&(alice_net_id, Stat::Level, 2)));
+    assert!(alice_stats.contains(&(alice_net_id, Stat::Exp, 0)));
+    assert!(
+        stat_events(&bob_events).contains(&(alice_net_id, Stat::Level, 2)),
+        "observer should receive the explicit level-up point visual"
+    );
+
+    set_sim_now(&mut app, 21_000);
+    run_actor_lifecycle(&mut app);
+    let repeated = drain_player_events(&mut alice_rx);
+    assert!(
+        projectile_effect_events(&repeated)
+            .into_iter()
+            .all(|(_, start, _)| start != mobs[1]),
+        "finalized death should not grant the same mob reward twice"
+    );
 }
 
 #[test]

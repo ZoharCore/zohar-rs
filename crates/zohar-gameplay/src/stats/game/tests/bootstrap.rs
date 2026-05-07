@@ -29,6 +29,19 @@ fn warrior_config() -> PlayerClassStatsConfig {
     }
 }
 
+fn level_exp_table() -> LevelExpTable {
+    LevelExpTable::new((1..=120).map(|level| LevelExpEntry {
+        level,
+        next_exp: match level {
+            1 => 300,
+            10 => 33_000,
+            120 => 2_500_000_000,
+            _ => i64::from(level) * 1_000,
+        },
+        death_loss_pct: 5,
+    }))
+}
+
 #[test]
 fn player_class_stats_table_resolves_absolute_stats() {
     let table = PlayerClassStatsTable::new(vec![(PlayerClass::Warrior, warrior_config())]);
@@ -52,23 +65,7 @@ fn player_class_stats_table_resolves_absolute_stats() {
 
 #[test]
 fn level_exp_table_builds_progression_snapshots_and_max_level() {
-    let table = LevelExpTable::new([
-        LevelExpEntry {
-            level: 1,
-            next_exp: 300,
-            death_loss_pct: 5,
-        },
-        LevelExpEntry {
-            level: 10,
-            next_exp: 33_000,
-            death_loss_pct: 4,
-        },
-        LevelExpEntry {
-            level: 120,
-            next_exp: 2_500_000_000,
-            death_loss_pct: 1,
-        },
-    ]);
+    let table = level_exp_table();
 
     let progression = table
         .progression_for_level(10, 12_345)
@@ -84,11 +81,7 @@ fn level_exp_table_builds_progression_snapshots_and_max_level() {
 fn player_stat_rules_hydrate_bootstrap_and_packet_projection() {
     let rules = PlayerStatRules::new(
         PlayerClassStatsTable::new(vec![(PlayerClass::Warrior, warrior_config())]),
-        LevelExpTable::new([LevelExpEntry {
-            level: 10,
-            next_exp: 33_000,
-            death_loss_pct: 4,
-        }]),
+        level_exp_table(),
     );
 
     let hydrated = rules

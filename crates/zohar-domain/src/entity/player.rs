@@ -185,6 +185,8 @@ pub struct PlayerGameplayBootstrap {
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerProgressionSnapshot {
+    pub level: i32,
+    pub exp_in_level: i64,
     pub core_stat_allocations: CoreStatAllocations,
     pub stat_reset_count: i32,
 }

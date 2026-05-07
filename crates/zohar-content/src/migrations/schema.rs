@@ -164,6 +164,7 @@ mod tests {
         assert!(columns.iter().any(|column| column == "max_hp"));
         assert!(columns.iter().any(|column| column == "defense"));
         assert!(columns.iter().any(|column| column == "damage_multiplier"));
+        assert!(columns.iter().any(|column| column == "experience"));
     }
 
     #[tokio::test]

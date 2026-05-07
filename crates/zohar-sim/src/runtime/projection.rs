@@ -1,12 +1,16 @@
 use bevy::prelude::*;
-use zohar_domain::entity::EntityId;
-use zohar_gameplay::stats::game::PlayerStaminaTimerCommand;
-use zohar_map_port::{ChatChannel, PlayerEvent};
-
-use super::facts::{FrameFacts, PlayerStaminaTimerChanged, reset_frame_facts};
-use super::state::{
-    MapReplication, MobStatsComp, NetEntityIndex, PlayerMarker, PlayerOutboxComp, RuntimeState,
+use zohar_gameplay::combat::HitFlags;
+use zohar_gameplay::stats::game::{PlayerStaminaTimerCommand, Stat};
+use zohar_map_port::{
+    ChatChannel, PlayerEvent, ProjectileEffectKind, SpecialEffectType, StatUpdate,
 };
+
+use super::facts::{
+    ActorSpecialEffect, ActorSpecialEffectKind, FrameFacts, PlayerStaminaTimerChanged,
+    PointVisualEffect, ProjectileVisualEffectKind, reset_frame_facts,
+};
+use super::fanout::{ActorAudience, broadcast_actor_event, push_reliable};
+use super::state::{MobStatsComp, PlayerMarker};
 
 /// Project accumulated frame facts into map-port events.
 ///
@@ -49,20 +53,75 @@ pub(crate) fn project_frame_facts(world: &mut World) {
                 effect.flags,
             );
         }
+
+        let mut special_effects = Vec::new();
+        if effect.flags.contains(HitFlags::CRITICAL) {
+            special_effects.push(ActorSpecialEffectKind::Critical);
+        }
+        if effect.flags.contains(HitFlags::PENETRATE) {
+            special_effects.push(ActorSpecialEffectKind::Piercing);
+        }
+        for special_effect in special_effects {
+            broadcast_special_effect(
+                world,
+                ActorSpecialEffect {
+                    actor: effect.victim,
+                    effect: special_effect,
+                },
+            );
+        }
     }
 
     let dying_started = world.resource::<FrameFacts>().life.dying_started.clone();
     for effect in dying_started {
-        broadcast_lifecycle_event(world, effect.actor.id, |entity_id| {
-            PlayerEvent::EntityStunned { entity_id }
-        });
+        broadcast_actor_event(
+            world,
+            effect.actor.id,
+            ActorAudience::ViewAndSelf,
+            |entity_id| PlayerEvent::EntityStunned { entity_id },
+        );
     }
 
     let death_finalized = world.resource::<FrameFacts>().life.death_finalized.clone();
     for effect in death_finalized {
-        broadcast_lifecycle_event(world, effect.actor.id, |entity_id| {
-            PlayerEvent::EntityDead { entity_id }
-        });
+        broadcast_actor_event(
+            world,
+            effect.actor.id,
+            ActorAudience::ViewAndSelf,
+            |entity_id| PlayerEvent::EntityDead { entity_id },
+        );
+    }
+
+    let projectile_effects = world
+        .resource::<FrameFacts>()
+        .visuals
+        .projectile_effects
+        .clone();
+    for effect in projectile_effects {
+        broadcast_actor_event(
+            world,
+            effect.start.id,
+            ActorAudience::ViewAndSelf,
+            |start_id| PlayerEvent::CreateProjectileEffect {
+                effect: map_projectile_effect(effect.effect),
+                start_entity_id: start_id,
+                end_entity_id: effect.end.id,
+            },
+        );
+    }
+
+    let point_effects = world.resource::<FrameFacts>().visuals.point_effects.clone();
+    for effect in point_effects {
+        broadcast_point_visual_effect(world, effect);
+    }
+
+    let special_effects = world
+        .resource::<FrameFacts>()
+        .visuals
+        .special_effects
+        .clone();
+    for effect in special_effects {
+        broadcast_special_effect(world, effect);
     }
 
     let despawned = world.resource::<FrameFacts>().cleanup.despawned.clone();
@@ -99,57 +158,52 @@ pub(crate) fn project_frame_facts(world: &mut World) {
     reset_frame_facts(world);
 }
 
-fn broadcast_lifecycle_event(
-    world: &mut World,
-    target_id: EntityId,
-    make_event: impl Fn(EntityId) -> PlayerEvent,
-) {
-    let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
-        return;
-    };
-    let Some(target_entity) = world
-        .resource::<NetEntityIndex>()
-        .0
-        .get(&target_id)
-        .copied()
-    else {
-        return;
-    };
+fn broadcast_point_visual_effect(world: &mut World, effect: PointVisualEffect) {
+    let actor = effect.actor();
+    broadcast_actor_event(world, actor.id, ActorAudience::Observers, |entity_id| {
+        PlayerEvent::SetEntityStats {
+            entity_id,
+            stats: vec![point_visual_stat_update(effect)],
+        }
+    });
+}
 
-    let mut recipient_ids = world
-        .entity(map_entity)
-        .get::<MapReplication>()
-        .map(|replication| replication.0.observers_for(target_id))
-        .unwrap_or_default();
-    if world.entity(target_entity).contains::<PlayerMarker>() {
-        recipient_ids.push(target_id);
-    }
+fn broadcast_special_effect(world: &mut World, effect: ActorSpecialEffect) {
+    let special = effect.effect;
+    broadcast_actor_event(
+        world,
+        effect.actor.id,
+        ActorAudience::ViewAndSelf,
+        |entity_id| PlayerEvent::SpecialEffect {
+            entity_id,
+            effect: map_special_effect(special),
+        },
+    );
+}
 
-    recipient_ids.sort_unstable_by_key(|entity_id| entity_id.0);
-    recipient_ids.dedup();
-
-    let recipients = recipient_ids
-        .into_iter()
-        .filter_map(|recipient_id| {
-            world
-                .resource::<NetEntityIndex>()
-                .0
-                .get(&recipient_id)
-                .copied()
-        })
-        .collect::<Vec<_>>();
-
-    for player_entity in recipients {
-        push_reliable(world, player_entity, make_event(target_id));
+const fn map_projectile_effect(effect: ProjectileVisualEffectKind) -> ProjectileEffectKind {
+    match effect {
+        ProjectileVisualEffectKind::Experience => ProjectileEffectKind::Exp,
     }
 }
 
-fn push_reliable(world: &mut World, player_entity: Entity, event: PlayerEvent) {
-    if let Some(mut outbox) = world
-        .entity_mut(player_entity)
-        .get_mut::<PlayerOutboxComp>()
-    {
-        outbox.0.push_reliable(event);
+const fn map_special_effect(effect: ActorSpecialEffectKind) -> SpecialEffectType {
+    match effect {
+        ActorSpecialEffectKind::Critical => SpecialEffectType::Critical,
+        ActorSpecialEffectKind::Piercing => SpecialEffectType::Penetrate,
+    }
+}
+
+const fn point_visual_stat_update(effect: PointVisualEffect) -> StatUpdate {
+    match effect {
+        PointVisualEffect::LevelStep { .. } => StatUpdate {
+            stat: Stat::LevelStep,
+            absolute: 0, // client ignores value, only plays an animation
+        },
+        PointVisualEffect::LevelUp { level, .. } => StatUpdate {
+            stat: Stat::Level,
+            absolute: level, // client updates the level on the nameplate text and plays animation
+        },
     }
 }
 

@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use zohar_domain::entity::EntityId;
+use zohar_domain::util::FlagsMapper;
 use zohar_gameplay::combat::HitFlags;
 use zohar_gameplay::stats::game::Stat;
 use zohar_map_port::{DamageInfoFlags, PlayerEvent};
@@ -147,7 +148,16 @@ fn push_damage_info(
 }
 
 fn damage_info_flags(flags: HitFlags) -> DamageInfoFlags {
-    DamageInfoFlags(flags.bits())
+    const MAPPER: FlagsMapper<HitFlags, DamageInfoFlags> = FlagsMapper::new(&[
+        (HitFlags::NORMAL, DamageInfoFlags::NORMAL),
+        (HitFlags::POISON, DamageInfoFlags::POISON),
+        (HitFlags::DODGE, DamageInfoFlags::DODGE),
+        (HitFlags::BLOCK, DamageInfoFlags::BLOCK),
+        (HitFlags::PENETRATE, DamageInfoFlags::PENETRATE),
+        (HitFlags::CRITICAL, DamageInfoFlags::CRITICAL),
+    ]);
+
+    MAPPER.map(flags)
 }
 
 fn health_bar_percent_for_entity_id(world: &World, entity_id: EntityId) -> Option<u8> {

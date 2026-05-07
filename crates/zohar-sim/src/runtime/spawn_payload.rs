@@ -1,15 +1,16 @@
 use bevy::prelude::World;
 use zohar_domain::appearance::{
-    EntityKind, EntityNameplate, EntityPublicEquipment, EntityPublicFlags, EntityPublicSocial,
-    EntityPublicSpeeds, EntityPublicState, EntitySnapshot, PlayerAppearance,
+    EntityBuffFlags, EntityKind, EntityNameplate, EntityPublicEquipment, EntityPublicFlags,
+    EntityPublicSocial, EntityPublicSpeeds, EntityPublicState, EntitySnapshot, EntityStateFlags,
+    PlayerAppearance,
 };
 use zohar_domain::coords::{Facing72, LocalPos};
 use zohar_domain::entity::EntityId;
 use zohar_domain::entity::mob::MobKind;
 
 use crate::runtime::common::{
-    LocalTransform, MapEmpire, MobRef, NetEntityId, NetEntityIndex, PlayerAppearanceComp,
-    PlayerMarker, RuntimeState, SharedConfig,
+    ActorLifeComp, LocalTransform, MapEmpire, MobRef, NetEntityId, NetEntityIndex,
+    PlayerAppearanceComp, PlayerMarker, RuntimeState, SharedConfig,
 };
 
 pub(crate) fn make_entity_snapshot(
@@ -30,12 +31,11 @@ pub(crate) fn make_entity_snapshot(
         target_ref.get::<LocalTransform>(),
         target_ref.get::<PlayerAppearanceComp>(),
     ) {
-        return Some(make_player_snapshot(
-            net_id.net_id,
-            transform.pos,
-            transform.rot,
-            &appearance.0,
-        ));
+        let snapshot = snapshot_with_life_phase(
+            make_player_snapshot(net_id.net_id, transform.pos, transform.rot, &appearance.0),
+            target_ref.get::<ActorLifeComp>(),
+        );
+        return Some(snapshot);
     }
 
     let mob_ref = target_ref.get::<MobRef>()?;
@@ -67,9 +67,20 @@ pub(crate) fn make_entity_snapshot(
             mob_id: mob_ref.mob_id,
             mob_kind: proto.mob_kind,
         },
-        public_state: mob_public_state(proto.move_speed, proto.attack_speed),
+        public_state: public_state_with_life_phase(
+            mob_public_state(proto.mob_kind, proto.move_speed, proto.attack_speed),
+            target_ref.get::<ActorLifeComp>(),
+        ),
         nameplate,
     })
+}
+
+fn snapshot_with_life_phase(
+    mut snapshot: EntitySnapshot,
+    life: Option<&ActorLifeComp>,
+) -> EntitySnapshot {
+    snapshot.public_state = public_state_with_life_phase(snapshot.public_state, life);
+    snapshot
 }
 
 pub(crate) fn make_entity_public_state(
@@ -85,12 +96,18 @@ pub(crate) fn make_entity_public_state(
     let target_ref = world.entity(target_entity);
 
     if let Some(appearance) = target_ref.get::<PlayerAppearanceComp>() {
-        return Some(player_public_state(&appearance.0));
+        return Some(public_state_with_life_phase(
+            player_public_state(&appearance.0),
+            target_ref.get::<ActorLifeComp>(),
+        ));
     }
 
     let mob_ref = target_ref.get::<MobRef>()?;
     let proto = shared.mobs.get(&mob_ref.mob_id)?;
-    Some(mob_public_state(proto.move_speed, proto.attack_speed))
+    Some(public_state_with_life_phase(
+        mob_public_state(proto.mob_kind, proto.move_speed, proto.attack_speed),
+        target_ref.get::<ActorLifeComp>(),
+    ))
 }
 
 pub(crate) fn make_player_snapshot(
@@ -135,14 +152,36 @@ fn player_public_state(appearance: &PlayerAppearance) -> EntityPublicState {
     }
 }
 
-fn mob_public_state(move_speed: u8, attack_speed: u8) -> EntityPublicState {
+fn mob_public_state(mob_kind: MobKind, move_speed: u8, attack_speed: u8) -> EntityPublicState {
+    let flags = if mob_kind == MobKind::Stone {
+        EntityPublicFlags {
+            state_flags: EntityStateFlags::SPAWN,
+            buff_flags: EntityBuffFlags::SPAWN,
+        }
+    } else {
+        EntityPublicFlags::default()
+    };
+
     EntityPublicState {
         equipment: EntityPublicEquipment::default(),
         speeds: EntityPublicSpeeds {
             move_speed,
             attack_speed,
         },
-        flags: EntityPublicFlags::default(),
+        flags,
         social: EntityPublicSocial::default(),
     }
+}
+
+fn public_state_with_life_phase(
+    mut public_state: EntityPublicState,
+    life: Option<&ActorLifeComp>,
+) -> EntityPublicState {
+    if life.is_some_and(ActorLifeComp::is_dead) {
+        public_state
+            .flags
+            .state_flags
+            .insert(EntityStateFlags::DEAD);
+    }
+    public_state
 }

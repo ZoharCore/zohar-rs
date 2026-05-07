@@ -107,4 +107,5 @@ pub struct ContentMob {
     pub max_hp: i64,
     pub defense: i64,
     pub damage_multiplier: f64,
+    pub experience: i64,
 }

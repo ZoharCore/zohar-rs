@@ -28,9 +28,9 @@ pub enum WorldS2c {
         move_speed: u8,
         attack_speed: u8,
 
-        state_flags: u8,
+        state_flags: EntityStateFlags,
 
-        buff_flags: u64,
+        buff_flags: EntityBuffFlags,
     },
 
     #[brw(magic = 0x88_u8)]
@@ -71,8 +71,8 @@ pub enum WorldS2c {
         move_speed: u8,
         attack_speed: u8,
 
-        state_flags: u8,
-        buff_flags: u64,
+        state_flags: EntityStateFlags,
+        buff_flags: EntityBuffFlags,
 
         guild_id: u32,
         rank_pts: i16,
@@ -100,3 +100,23 @@ pub enum EntityType {
     Player = 6,
     Goto = 9,
 }
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct EntityStateFlags: u8 {
+        const DEAD = 1 << 0;
+        const SPAWN = 1 << 1;
+        const KILLER = 1 << 3;
+        const PARTY = 1 << 4;
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct EntityBuffFlags: u64 {
+        const SPAWN = 1 << 2;
+    }
+}
+
+game_pkt::impl_bitflags_binrw!(EntityStateFlags, u8);
+game_pkt::impl_bitflags_binrw!(EntityBuffFlags, u64);

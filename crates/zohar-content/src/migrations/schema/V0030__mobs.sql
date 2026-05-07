@@ -25,7 +25,8 @@ CREATE TABLE mob_proto (
   damage_max INTEGER NOT NULL DEFAULT 1 CHECK (damage_max >= damage_min),
   max_hp INTEGER NOT NULL DEFAULT 1 CHECK (max_hp >= 1),
   defense INTEGER NOT NULL DEFAULT 0 CHECK (defense >= 0),
-  damage_multiplier REAL NOT NULL DEFAULT 1.0 CHECK (damage_multiplier >= 0.0)
+  damage_multiplier REAL NOT NULL DEFAULT 1.0 CHECK (damage_multiplier >= 0.0),
+  experience INTEGER NOT NULL DEFAULT 0 CHECK (experience >= 0)
 );
 
 CREATE TABLE mob_chat_strategy (

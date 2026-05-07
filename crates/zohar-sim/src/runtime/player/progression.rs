@@ -217,6 +217,8 @@ fn validate_core_stat_intent(
     Ok(ValidatedCoreStatSave {
         stat,
         progression: PlayerProgressionSnapshot {
+            level: progression.0.level,
+            exp_in_level: progression.0.exp_in_level,
             core_stat_allocations: allocations,
             stat_reset_count,
         },

@@ -179,7 +179,7 @@ where
             Stat::NextExp,
             clamp_u32_to_i32(progression.next_exp_in_level),
         );
-        self.set_base_projection_stat(Stat::LevelStep, progression.quarter_chunks_level_step());
+        self.set_base_projection_stat(Stat::LevelStep, progression.level_step());
     }
 
     #[cfg(test)]

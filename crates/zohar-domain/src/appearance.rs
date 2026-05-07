@@ -62,11 +62,30 @@ impl Default for EntityPublicSpeeds {
     }
 }
 
+bitflags::bitflags! {
+    #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+    #[cfg_attr(feature = "admin-brp", reflect(opaque))]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct EntityStateFlags: u8 {
+        const DEAD = 1 << 0;
+        const SPAWN = 1 << 1;
+    }
+}
+
+bitflags::bitflags! {
+    #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+    #[cfg_attr(feature = "admin-brp", reflect(opaque))]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct EntityBuffFlags: u64 {
+        const SPAWN = 1 << 2;
+    }
+}
+
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EntityPublicFlags {
-    pub state_flags: u8,
-    pub buff_flags: u64,
+    pub state_flags: EntityStateFlags,
+    pub buff_flags: EntityBuffFlags,
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]

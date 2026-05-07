@@ -9,7 +9,8 @@ pub use bridge::{ClientIntentMsg, EnterMsg, GlobalShoutMsg, LeaveMsg};
 pub use messages::{
     AttackIntent, AttackTargetIntent, ChatIntent, ClientIntent, CoreStatAllocationIntent,
     DamageInfoFlags, MoveIntent, MovementEvent, PlayerEvent, PlayerProgressionIntent,
-    PortalDestination, SkillLevelIntent, StatUpdate, TargetIntent,
+    PortalDestination, ProjectileEffectKind, SkillLevelIntent, SpecialEffectType, StatUpdate,
+    TargetIntent,
 };
 pub use values::{ChatChannel, ClientTimestamp, MovementArg, PacketDuration};
 pub use zohar_domain::coords::{Facing72, Facing72Error};

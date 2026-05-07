@@ -16,6 +16,7 @@ pub(crate) struct FrameFacts {
     pub(crate) cleanup: CleanupFacts,
     pub(crate) persistence: PersistenceFacts,
     pub(crate) projection: ProjectionFacts,
+    pub(crate) visuals: VisualFacts,
 }
 
 #[derive(Debug, Default)]
@@ -57,6 +58,13 @@ impl PersistenceFacts {
 #[derive(Debug, Default)]
 pub(crate) struct ProjectionFacts {
     pub(crate) stamina_timer_changed: Vec<PlayerStaminaTimerChanged>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct VisualFacts {
+    pub(crate) projectile_effects: Vec<ProjectileVisualEffect>,
+    pub(crate) point_effects: Vec<PointVisualEffect>,
+    pub(crate) special_effects: Vec<ActorSpecialEffect>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +115,44 @@ pub(crate) struct PlayerStaminaTimerChanged {
     pub(crate) player: ActorRef,
     pub(crate) command: PlayerStaminaTimerCommand,
     pub(crate) current_stamina: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProjectileVisualEffect {
+    pub(crate) effect: ProjectileVisualEffectKind,
+    pub(crate) start: ActorRef,
+    pub(crate) end: ActorRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectileVisualEffectKind {
+    Experience,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointVisualEffect {
+    LevelStep { actor: ActorRef },
+    LevelUp { actor: ActorRef, level: i32 },
+}
+
+impl PointVisualEffect {
+    pub(crate) const fn actor(self) -> ActorRef {
+        match self {
+            Self::LevelStep { actor } | Self::LevelUp { actor, .. } => actor,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActorSpecialEffect {
+    pub(crate) actor: ActorRef,
+    pub(crate) effect: ActorSpecialEffectKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActorSpecialEffectKind {
+    Critical,
+    Piercing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

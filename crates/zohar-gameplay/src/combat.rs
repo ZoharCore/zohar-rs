@@ -12,19 +12,15 @@ pub struct DamageRolls {
     pub low_damage_fallback: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HitFlags(u8);
-
-impl HitFlags {
-    pub const NORMAL: Self = Self(1 << 0);
-    pub const POISON: Self = Self(1 << 1);
-    pub const DODGE: Self = Self(1 << 2);
-    pub const BLOCK: Self = Self(1 << 3);
-    pub const PENETRATE: Self = Self(1 << 4);
-    pub const CRITICAL: Self = Self(1 << 5);
-
-    pub const fn bits(self) -> u8 {
-        self.0
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct HitFlags: u8 {
+        const NORMAL = 1 << 0;
+        const POISON = 1 << 1;
+        const DODGE = 1 << 2;
+        const BLOCK = 1 << 3;
+        const PENETRATE = 1 << 4;
+        const CRITICAL = 1 << 5;
     }
 }
 

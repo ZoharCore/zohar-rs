@@ -290,6 +290,8 @@ fn player_snapshot(
 
 fn player_progression_snapshot(progression: &PlayerProgressionComp) -> PlayerProgressionSnapshot {
     PlayerProgressionSnapshot {
+        level: progression.0.level,
+        exp_in_level: progression.0.exp_in_level,
         core_stat_allocations: progression.0.core_stat_allocations,
         stat_reset_count: progression.0.stat_reset_count,
     }
@@ -553,6 +555,8 @@ mod tests {
                 assert_eq!(
                     snapshot.progression,
                     PlayerProgressionSnapshot {
+                        level: 1,
+                        exp_in_level: 0,
                         core_stat_allocations: CoreStatAllocations::default(),
                         stat_reset_count: 0,
                     }

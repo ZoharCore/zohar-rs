@@ -28,21 +28,31 @@ pub struct TargetIntent {
     pub target: EntityId,
 }
 
+bitflags::bitflags! {
+    #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+    #[cfg_attr(feature = "admin-brp", reflect(opaque))]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct DamageInfoFlags: u8 {
+        const NORMAL = 1 << 0;
+        const POISON = 1 << 1;
+        const DODGE = 1 << 2;
+        const BLOCK = 1 << 3;
+        const PENETRATE = 1 << 4;
+        const CRITICAL = 1 << 5;
+    }
+}
+
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DamageInfoFlags(pub u8);
+pub enum ProjectileEffectKind {
+    Exp,
+}
 
-impl DamageInfoFlags {
-    pub const NORMAL: Self = Self(1 << 0);
-    pub const POISON: Self = Self(1 << 1);
-    pub const DODGE: Self = Self(1 << 2);
-    pub const BLOCK: Self = Self(1 << 3);
-    pub const PENETRATE: Self = Self(1 << 4);
-    pub const CRITICAL: Self = Self(1 << 5);
-
-    pub fn bits(self) -> u8 {
-        self.0
-    }
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialEffectType {
+    Critical,
+    Penetrate,
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
@@ -146,6 +156,15 @@ pub enum PlayerEvent {
         entity_id: EntityId,
         flags: DamageInfoFlags,
         damage: i32,
+    },
+    CreateProjectileEffect {
+        effect: ProjectileEffectKind,
+        start_entity_id: EntityId,
+        end_entity_id: EntityId,
+    },
+    SpecialEffect {
+        effect: SpecialEffectType,
+        entity_id: EntityId,
     },
     EntityStunned {
         entity_id: EntityId,

@@ -31,6 +31,7 @@ use super::replication::{
     aoi_reconcile, flush_changed_player_movement_animations, queue_changed_player_public_states,
     replication_flush,
 };
+use super::rewards::{grant_mob_death_rewards, record_mob_death_reward_claims};
 use super::schedule::{advance_sim_time, has_active_players, sync_fixed_tick_rate};
 use super::spawn::{bootstrap_map_runtime, signal_startup_ready, spawn_rules};
 use super::state::{
@@ -311,7 +312,9 @@ impl Plugin for LifeRuntimePlugin {
             FixedUpdate,
             (
                 process_life_events,
+                record_mob_death_reward_claims,
                 process_actor_lifecycle,
+                grant_mob_death_rewards,
                 process_cleanup_events,
             )
                 .chain()

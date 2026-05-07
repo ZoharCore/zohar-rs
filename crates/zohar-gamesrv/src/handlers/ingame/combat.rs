@@ -3,13 +3,16 @@ use super::{InGameCtx, InGamePhaseEffects};
 use crate::adapters::{ToDomain, ToProtocol};
 use tracing::{debug, warn};
 use zohar_domain::entity::EntityId;
+use zohar_domain::util::FlagsMapper;
 use zohar_map_port::{
     AttackIntent as PortAttackIntent, AttackTargetIntent, ClientIntent, ClientIntentMsg,
-    DamageInfoFlags, TargetIntent,
+    DamageInfoFlags, ProjectileEffectKind, SpecialEffectType, TargetIntent,
 };
 use zohar_protocol::game_pkt::ZeroOpt;
-use zohar_protocol::game_pkt::ingame::combat::CombatC2s;
-use zohar_protocol::game_pkt::ingame::{InGameS2c, combat};
+use zohar_protocol::game_pkt::ingame::InGameS2c;
+use zohar_protocol::game_pkt::ingame::combat::{
+    CombatC2s, CombatS2c, FloatingDamageFlags, ProjectileKind, SpecialEffectKind,
+};
 
 pub(super) async fn handle_packet(
     packet: CombatC2s,
@@ -72,10 +75,13 @@ pub(super) async fn handle_packet(
 }
 
 pub(super) fn encode_entity_health_bar(entity_id: EntityId, hp_pct: u8) -> Vec<InGameS2c> {
-    vec![InGameS2c::Combat(combat::CombatS2c::SyncEntityHealthBar {
-        target: entity_id.to_protocol(),
-        hp_pct: hp_pct.min(100),
-    })]
+    vec![
+        CombatS2c::SyncEntityHealthBar {
+            target: entity_id.to_protocol(),
+            hp_pct: hp_pct.min(100),
+        }
+        .into(),
+    ]
 }
 
 pub(super) fn encode_damage_info(
@@ -83,23 +89,84 @@ pub(super) fn encode_damage_info(
     flags: DamageInfoFlags,
     damage: i32,
 ) -> Vec<InGameS2c> {
-    vec![InGameS2c::Combat(
-        combat::CombatS2c::TriggerFloatingDamage {
+    vec![
+        CombatS2c::TriggerFloatingDamage {
             target: entity_id.to_protocol(),
-            flags: flags.bits(),
+            flags: encode_floating_damage_flags(flags),
             damage,
-        },
-    )]
+        }
+        .into(),
+    ]
 }
 
 pub(super) fn encode_entity_stunned(entity_id: EntityId) -> Vec<InGameS2c> {
-    vec![InGameS2c::Combat(combat::CombatS2c::SetEntityStunned {
-        target: entity_id.to_protocol(),
-    })]
+    vec![
+        CombatS2c::SetEntityStunned {
+            target: entity_id.to_protocol(),
+        }
+        .into(),
+    ]
 }
 
 pub(super) fn encode_entity_dead(entity_id: EntityId) -> Vec<InGameS2c> {
-    vec![InGameS2c::Combat(combat::CombatS2c::SetEntityDead {
-        target: entity_id.to_protocol(),
-    })]
+    vec![
+        CombatS2c::SetEntityDead {
+            target: entity_id.to_protocol(),
+        }
+        .into(),
+    ]
+}
+
+pub(super) fn encode_projectile(
+    effect: ProjectileEffectKind,
+    start_entity_id: EntityId,
+    end_entity_id: EntityId,
+) -> Vec<InGameS2c> {
+    vec![
+        CombatS2c::TriggerProjectileEffect {
+            kind: encode_projectile_kind(effect),
+            from_entity: start_entity_id.to_protocol(),
+            to_entity: end_entity_id.to_protocol(),
+        }
+        .into(),
+    ]
+}
+
+pub(super) fn encode_special_effect(
+    effect: SpecialEffectType,
+    entity_id: EntityId,
+) -> Vec<InGameS2c> {
+    vec![
+        CombatS2c::TriggerSpecialEffect {
+            kind: encode_special_effect_kind(effect),
+            target: entity_id.to_protocol(),
+        }
+        .into(),
+    ]
+}
+
+const fn encode_projectile_kind(effect: ProjectileEffectKind) -> ProjectileKind {
+    match effect {
+        ProjectileEffectKind::Exp => ProjectileKind::Experience,
+    }
+}
+
+const fn encode_special_effect_kind(effect: SpecialEffectType) -> SpecialEffectKind {
+    match effect {
+        SpecialEffectType::Critical => SpecialEffectKind::CriticalStrike,
+        SpecialEffectType::Penetrate => SpecialEffectKind::PiercingStrike,
+    }
+}
+
+fn encode_floating_damage_flags(flags: DamageInfoFlags) -> FloatingDamageFlags {
+    const MAPPER: FlagsMapper<DamageInfoFlags, FloatingDamageFlags> = FlagsMapper::new(&[
+        (DamageInfoFlags::NORMAL, FloatingDamageFlags::NORMAL),
+        (DamageInfoFlags::POISON, FloatingDamageFlags::POISON),
+        (DamageInfoFlags::DODGE, FloatingDamageFlags::DODGE),
+        (DamageInfoFlags::BLOCK, FloatingDamageFlags::BLOCK),
+        (DamageInfoFlags::PENETRATE, FloatingDamageFlags::PENETRATE),
+        (DamageInfoFlags::CRITICAL, FloatingDamageFlags::CRITICAL),
+    ]);
+
+    MAPPER.map(flags)
 }

@@ -6,11 +6,12 @@ edition.workspace = true
 [features]
 default = []
 auth = ["dep:binrw", "dep:num_enum"]
-game = ["dep:binrw", "dep:num_enum"]
+game = ["dep:binrw", "dep:bitflags", "dep:num_enum"]
 token = ["dep:hmac", "dep:sha2"]
 
 [dependencies]
 binrw = { workspace = true, optional = true }
+bitflags = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 num_enum = { version = "0.7", optional = true }

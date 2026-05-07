@@ -20,7 +20,7 @@ use zohar_domain::entity::mob::spawn::{
 };
 use zohar_domain::entity::mob::{
     MobBattleType, MobCombatStats, MobId, MobKind, MobPrototype, MobPrototypeDef, MobRank,
-    PortalBehavior,
+    MobRewards, PortalBehavior,
 };
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 use zohar_domain::util::FlagsMapper;
@@ -201,6 +201,9 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
                 max_hp: i64_to_i32_saturating(mob.max_hp),
                 defense: i64_to_i32_saturating(mob.defense),
                 damage_multiplier: mob.damage_multiplier as f32,
+            },
+            rewards: MobRewards {
+                experience: mob.experience,
             },
             bhv_flags: mob.ai_flags.to_domain(),
             empire: None, // TODO FUTURE: add support for mob empires in catalog
@@ -634,6 +637,7 @@ mod tests {
             max_hp: 126,
             defense: 4,
             damage_multiplier: 1.0,
+            experience: 15,
         }
     }
 

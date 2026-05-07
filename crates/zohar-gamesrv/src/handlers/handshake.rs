@@ -112,9 +112,7 @@ async fn apply_effects(
     conn: &mut Connection<ThisPhase>,
     effects: PhaseEffects<ThisPhase>,
 ) -> PhaseResult<Option<<ThisPhase as zohar_net::connection::NextState>::Data>> {
-    for packet in effects.send {
-        conn.send(packet).await?;
-    }
+    conn.send_many(effects.send).await?;
     if let Some(error) = effects.disconnect {
         return Err(error);
     }

@@ -37,7 +37,7 @@ crate::route_packets! {
         System(system::SystemS2c) from 0x41 | 0x6A | 0x79,
         World(world::WorldS2c) from 0x01 | 0x02 | 0x13 | 0x88,
         Stats(stats::StatsS2c) from 0x10 | 0x11,
-        Combat(combat::CombatS2c) from 0x0D | 0x0E | 0x3F | 0x87,
+        Combat(combat::CombatS2c) from 0x0D | 0x0E | 0x3F | 0x46 | 0x72 | 0x87,
         Trading(trading::TradingS2c) from 0x51,
         Guild(guild::GuildS2c) from 0x61,
         Fishing(fishing::FishingS2c) from 0x71,

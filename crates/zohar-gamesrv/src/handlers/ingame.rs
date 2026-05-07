@@ -237,6 +237,14 @@ fn map_event_to_packets(
             flags,
             damage,
         } => combat::encode_damage_info(entity_id, flags, damage),
+        PlayerEvent::CreateProjectileEffect {
+            effect,
+            start_entity_id,
+            end_entity_id,
+        } => combat::encode_projectile(effect, start_entity_id, end_entity_id),
+        PlayerEvent::SpecialEffect { effect, entity_id } => {
+            combat::encode_special_effect(effect, entity_id)
+        }
         PlayerEvent::EntityStunned { entity_id } => combat::encode_entity_stunned(entity_id),
         PlayerEvent::EntityDead { entity_id } => combat::encode_entity_dead(entity_id),
         PlayerEvent::EntityPublicStateChanged { entity_id, state } => {
@@ -276,36 +284,61 @@ async fn apply_runtime_effects(
     conn: &mut Connection<ThisPhase>,
     effects: InGamePhaseEffects,
 ) -> PhaseResult<Option<()>> {
-    for packet in effects.send {
-        send_outbound_packet(conn, packet).await?;
-    }
+    conn.send_many(effects.send).await?;
     if let Some(error) = effects.disconnect {
         return Err(error);
     }
     Ok(effects.transition)
 }
 
-async fn send_outbound_packet(
-    conn: &mut Connection<ThisPhase>,
-    packet: InGameS2c,
-) -> PhaseResult<()> {
-    conn.send(packet).await?;
-    Ok(())
-}
-
 async fn drain_outbound_burst(
     conn: &mut Connection<ThisPhase>,
     state: &mut InGameCtx<'_>,
     map_rx: &mut tokio::sync::mpsc::Receiver<PlayerEvent>,
+    first_event: Option<PlayerEvent>,
     max_events: usize,
-) -> PhaseResult<()> {
+) -> PhaseResult<Option<()>> {
+    let mut pending_packets = Vec::new();
+    let mut next_event = first_event;
+
     for _ in 0..max_events {
-        let Ok(event) = map_rx.try_recv() else {
-            break;
+        let event = match next_event.take() {
+            Some(event) => event,
+            None => {
+                let Ok(event) = map_rx.try_recv() else {
+                    break;
+                };
+                event
+            }
         };
-        let effects = map_event_to_effects(event, state).await?;
-        let _ = apply_runtime_effects(conn, effects).await?;
+        let effects = match map_event_to_effects(event, state).await {
+            Ok(effects) => effects,
+            Err(error) => {
+                flush_pending_packets(conn, &mut pending_packets).await?;
+                return Err(error);
+            }
+        };
+
+        pending_packets.extend(effects.send);
+        if let Some(error) = effects.disconnect {
+            flush_pending_packets(conn, &mut pending_packets).await?;
+            return Err(error);
+        }
+        if let Some(transition) = effects.transition {
+            flush_pending_packets(conn, &mut pending_packets).await?;
+            return Ok(Some(transition));
+        }
     }
+
+    conn.send_many(pending_packets).await?;
+    Ok(None)
+}
+
+async fn flush_pending_packets(
+    conn: &mut Connection<ThisPhase>,
+    pending_packets: &mut Vec<InGameS2c>,
+) -> PhaseResult<()> {
+    conn.send_many(std::mem::take(pending_packets)).await?;
     Ok(())
 }
 
@@ -318,9 +351,7 @@ async fn drive_ingame(
         return Err(disconnect("server draining"));
     }
 
-    for packet in enter_packets(state) {
-        send_outbound_packet(&mut conn, packet).await?;
-    }
+    conn.send_many(enter_packets(state)).await?;
 
     let mut heartbeat = make_heartbeat_interval(state.ctx.heartbeat_interval);
     let mut drain_rx = Some(state.ctx.drain.subscribe());
@@ -329,7 +360,11 @@ async fn drive_ingame(
     loop {
         // Keep outbound map traffic progressing even when inbound client traffic is
         // continuously ready, preventing observer movement starvation.
-        drain_outbound_burst(&mut conn, state, &mut map_rx, MAP_EVENT_BURST_LIMIT).await?;
+        if let Some(data) =
+            drain_outbound_burst(&mut conn, state, &mut map_rx, None, MAP_EVENT_BURST_LIMIT).await?
+        {
+            return Ok(conn.into_next_with_phase(data).await?);
+        }
 
         let effects = tokio::select! {
             _ = wait_for_server_drain(&mut drain_rx) => {
@@ -343,10 +378,16 @@ async fn drive_ingame(
                 handle_packet(packet, state).await?
             }
             outbound = map_rx.recv() => {
-                if let Some(event) = outbound {
-                    let effects = map_event_to_effects(event, state).await?;
-                    let _ = apply_runtime_effects(&mut conn, effects).await?;
-                }
+                if let Some(event) = outbound
+                    && let Some(data) = drain_outbound_burst(
+                        &mut conn,
+                        state,
+                        &mut map_rx,
+                        Some(event),
+                        MAP_EVENT_BURST_LIMIT,
+                    ).await? {
+                        return Ok(conn.into_next_with_phase(data).await?);
+                    }
                 continue;
             }
         };
