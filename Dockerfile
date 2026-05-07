@@ -15,8 +15,8 @@ ENV RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=mold"
 ENV PROTOC=/usr/bin/protoc
 ENV PROTOC_INCLUDE=/usr/include
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,id=zohar-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=zohar-cargo-git,target=/usr/local/cargo/git \
     cargo install --locked cargo-chef
 
 FROM chef AS planner
@@ -28,8 +28,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS cacher
 
 COPY --from=planner /work/recipe.json recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,id=zohar-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=zohar-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=zohar-cargo-target-release,target=/work/target,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json
 
 FROM cacher AS builder
@@ -37,8 +38,9 @@ FROM cacher AS builder
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,id=zohar-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=zohar-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=zohar-cargo-target-release,target=/work/target,sharing=locked \
     cargo build --release \
     -p zohar-content --bin content_runtime_cli \
     -p zohar-authsrv --bin zohar-auth \
@@ -78,4 +80,3 @@ FROM runtime-base AS core-runtime
 COPY --from=builder /out/bin/zohar-core /usr/local/bin/zohar-core
 RUN mkdir -p /var/lib/zohar
 COPY --from=builder /out/content.db /var/lib/zohar/content.db
-

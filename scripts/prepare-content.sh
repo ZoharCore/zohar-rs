@@ -10,6 +10,6 @@ if [[ ! -d "$src" ]]; then
 fi
 
 mkdir -p "$dst"
-rsync -a --delete "$src"/ "$dst"/
+rsync -a --checksum --delete --exclude='.DS_Store' "$src"/ "$dst"/
 
 echo "staged content into $dst from $src"

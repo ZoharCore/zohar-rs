@@ -1,5 +1,9 @@
 .jj
+.git
+target
+tmp
+**/.DS_Store
+scripts/__pycache__
 *.db
 *.db-wal
 *.db-shm
-
