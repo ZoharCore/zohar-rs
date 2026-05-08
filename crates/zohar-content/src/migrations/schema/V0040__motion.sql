@@ -5,12 +5,12 @@ CREATE TABLE enum_motion_set_kind (value TEXT PRIMARY KEY);
 CREATE TABLE enum_motion_action (value TEXT PRIMARY KEY);
 
 CREATE TABLE motion_set (
-  motion_set_id INTEGER PRIMARY KEY,
+  motion_set_id TEXT PRIMARY KEY,
   set_kind TEXT NOT NULL REFERENCES enum_motion_set_kind(value)
 );
 
 CREATE TABLE motion_set_mob (
-  motion_set_id INTEGER NOT NULL REFERENCES motion_set(motion_set_id),
+  motion_set_id TEXT NOT NULL REFERENCES motion_set(motion_set_id),
   mob_id INTEGER PRIMARY KEY REFERENCES mob_proto(mob_id)
 );
 CREATE INDEX motion_set_mob_set_idx ON motion_set_mob(motion_set_id);
@@ -23,7 +23,7 @@ CREATE TABLE player_motion_profile (
 );
 
 CREATE TABLE motion_set_player_profile (
-  motion_set_id INTEGER NOT NULL REFERENCES motion_set(motion_set_id),
+  motion_set_id TEXT NOT NULL REFERENCES motion_set(motion_set_id),
   profile_id INTEGER PRIMARY KEY REFERENCES player_motion_profile(profile_id)
 );
 CREATE INDEX motion_set_player_profile_set_idx ON motion_set_player_profile(motion_set_id);
@@ -37,7 +37,7 @@ CREATE INDEX motion_set_player_profile_set_idx ON motion_set_player_profile(moti
 -- 171 SKILL_1, 172 SKILL_2, 173 SKILL_3, 174 SKILL_4, 175 SKILL_5.
 CREATE TABLE motion_entry (
   motion_id INTEGER PRIMARY KEY,
-  motion_set_id INTEGER NOT NULL REFERENCES motion_set(motion_set_id),
+  motion_set_id TEXT NOT NULL REFERENCES motion_set(motion_set_id),
   motion_mode TEXT NOT NULL REFERENCES enum_motion_mode(value),
   motion_action TEXT NOT NULL REFERENCES enum_motion_action(value),
   duration_ms INTEGER NOT NULL,

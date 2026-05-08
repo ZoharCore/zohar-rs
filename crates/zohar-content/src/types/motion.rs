@@ -113,7 +113,7 @@ pub struct PlayerMotionProfile {
 #[derive(Debug, Clone)]
 pub struct ContentMotion {
     pub motion_id: i64,
-    pub motion_set_id: i64,
+    pub motion_set_id: String,
     pub set_kind: MotionSetKind,
     pub mob_id: Option<i64>,
     pub profile_id: Option<i64>,
