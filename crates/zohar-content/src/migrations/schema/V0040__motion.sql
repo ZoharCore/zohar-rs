@@ -40,10 +40,43 @@ CREATE TABLE motion_entry (
   motion_set_id TEXT NOT NULL REFERENCES motion_set(motion_set_id),
   motion_mode TEXT NOT NULL REFERENCES enum_motion_mode(value),
   motion_action TEXT NOT NULL REFERENCES enum_motion_action(value),
+  variant_index INTEGER NOT NULL DEFAULT 0,
+  weight INTEGER NOT NULL DEFAULT 100,
   duration_ms INTEGER NOT NULL,
   accum_x REAL,
   accum_y REAL,
-  source TEXT NOT NULL
+  source TEXT NOT NULL,
+  UNIQUE (motion_set_id, motion_mode, motion_action, variant_index)
 );
 
-CREATE INDEX motion_entry_set_idx ON motion_entry(motion_set_id, motion_mode, motion_action);
+CREATE TABLE motion_hit_window (
+  motion_id INTEGER NOT NULL REFERENCES motion_entry(motion_id) ON DELETE CASCADE,
+  hit_index INTEGER NOT NULL DEFAULT 0,
+  start_ms INTEGER NOT NULL,
+  end_ms INTEGER,
+  PRIMARY KEY (motion_id, hit_index)
+);
+CREATE INDEX idx_motion_hit_window_motion ON motion_hit_window(motion_id);
+
+CREATE TABLE motion_fly_event (
+  motion_id INTEGER NOT NULL REFERENCES motion_entry(motion_id) ON DELETE CASCADE,
+  event_index INTEGER NOT NULL DEFAULT 0,
+  release_ms INTEGER NOT NULL,
+  fly_file TEXT,
+  PRIMARY KEY (motion_id, event_index)
+);
+CREATE INDEX idx_motion_fly_event_motion ON motion_fly_event(motion_id);
+
+CREATE TABLE motion_fly_data (
+  fly_file TEXT PRIMARY KEY,
+  init_vel REAL NOT NULL DEFAULT 200.0,
+  bomb_range REAL NOT NULL DEFAULT 10.0,
+  accel_x REAL NOT NULL DEFAULT 0.0,
+  accel_y REAL NOT NULL DEFAULT 0.0,
+  accel_z REAL NOT NULL DEFAULT 0.0,
+  gravity REAL NOT NULL DEFAULT 0.0,
+  is_homing INTEGER NOT NULL DEFAULT 0,
+  homing_start_time REAL NOT NULL DEFAULT 0.0,
+  homing_max_angle REAL NOT NULL DEFAULT 0.0,
+  max_range REAL NOT NULL DEFAULT 2500.0
+);

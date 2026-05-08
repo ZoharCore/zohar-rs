@@ -119,6 +119,8 @@ pub struct ContentMotion {
     pub profile_id: Option<i64>,
     pub motion_mode: MotionMode,
     pub motion_action: MotionAction,
+    pub variant_index: i64,
+    pub weight: i64,
     pub duration_ms: i64,
     pub accum_x: Option<f64>,
     pub accum_y: Option<f64>,

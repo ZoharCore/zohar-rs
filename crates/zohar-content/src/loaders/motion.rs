@@ -9,7 +9,8 @@ pub async fn load_motion(conn: &SqlitePool) -> Result<Vec<ContentMotion>, Conten
     let rows = sqlx::query(
         "SELECT e.motion_id, e.motion_set_id, s.set_kind,
                 sm.mob_id, sp.profile_id,
-                e.motion_mode, e.motion_action, e.duration_ms, e.accum_x, e.accum_y, e.source
+                e.motion_mode, e.motion_action, e.variant_index, e.weight,
+                e.duration_ms, e.accum_x, e.accum_y, e.source
          FROM motion_entry e
          INNER JOIN motion_set s ON s.motion_set_id = e.motion_set_id
          LEFT JOIN motion_set_mob sm ON sm.motion_set_id = e.motion_set_id
@@ -36,10 +37,12 @@ pub async fn load_motion(conn: &SqlitePool) -> Result<Vec<ContentMotion>, Conten
                 profile_id: row.try_get(4)?,
                 motion_mode,
                 motion_action,
-                duration_ms: row.try_get(7)?,
-                accum_x: row.try_get(8)?,
-                accum_y: row.try_get(9)?,
-                source: row.try_get(10)?,
+                variant_index: row.try_get(7)?,
+                weight: row.try_get(8)?,
+                duration_ms: row.try_get(9)?,
+                accum_x: row.try_get(10)?,
+                accum_y: row.try_get(11)?,
+                source: row.try_get(12)?,
             })
         })
         .collect()
