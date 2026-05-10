@@ -15,7 +15,7 @@ pub(super) fn encode_entity_spawn(
     map_id: MapId,
     coords: &ContentCoords,
 ) -> Vec<InGameS2c> {
-    let Some(world_pos) = coords.local_to_world(map_id, snapshot.pos) else {
+    let Some(world_pos) = coords.local_to_world(&map_id, snapshot.pos) else {
         warn!(?snapshot, "unable to encode spawn due to invalid position");
         return Vec::new();
     };

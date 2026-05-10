@@ -8,8 +8,7 @@
 -- while still validating coordinate safety against map dimensions.
 
 CREATE TABLE map_def (
-  map_id INTEGER PRIMARY KEY,
-  code TEXT NOT NULL UNIQUE,
+  map_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   map_width REAL NOT NULL CHECK (map_width > 0),
   map_height REAL NOT NULL CHECK (map_height > 0),
@@ -17,13 +16,13 @@ CREATE TABLE map_def (
 );
 
 CREATE TABLE map_placement (
-  map_id INTEGER PRIMARY KEY REFERENCES map_def(map_id),
+  map_id TEXT PRIMARY KEY REFERENCES map_def(map_id),
   base_x REAL NOT NULL,
   base_y REAL NOT NULL
 );
 
 CREATE TABLE map_terrain_flags (
-  map_id INTEGER PRIMARY KEY REFERENCES map_def(map_id),
+  map_id TEXT PRIMARY KEY REFERENCES map_def(map_id),
   cell_size_m REAL NOT NULL CHECK (cell_size_m > 0),
   codec TEXT NOT NULL,
   raw_len INTEGER NOT NULL CHECK (raw_len >= 0),
@@ -31,7 +30,7 @@ CREATE TABLE map_terrain_flags (
 );
 
 CREATE TABLE map_town_spawn (
-  map_id INTEGER NOT NULL REFERENCES map_def(map_id),
+  map_id TEXT NOT NULL REFERENCES map_def(map_id),
   empire TEXT NOT NULL REFERENCES enum_empire(value),
   x REAL NOT NULL CHECK (x >= 0),
   y REAL NOT NULL CHECK (y >= 0),
@@ -40,7 +39,7 @@ CREATE TABLE map_town_spawn (
 
 CREATE TABLE empire_start_config (
   empire TEXT PRIMARY KEY REFERENCES enum_empire(value),
-  start_map_id INTEGER NOT NULL REFERENCES map_def(map_id),
+  start_map_id TEXT NOT NULL REFERENCES map_def(map_id),
   start_x REAL NOT NULL CHECK (start_x >= 0),
   start_y REAL NOT NULL CHECK (start_y >= 0)
 );

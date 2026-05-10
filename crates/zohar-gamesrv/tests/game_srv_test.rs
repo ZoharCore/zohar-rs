@@ -85,8 +85,7 @@ fn spawn_test_map_runtime() -> zohar_sim::MapEventSender {
             mob_chat: Arc::default(),
         },
         MapConfig {
-            map_key: MapInstanceKey::shared(1, MapId::new(1)),
-            map_code: "zohar_map_a1".to_string(),
+            map_key: MapInstanceKey::shared(1, MapId::new("zohar_map_a1")),
             empire: None,
             local_size: LocalSize::new(16_384.0, 16_384.0),
             navigator: None,
@@ -573,10 +572,11 @@ async fn setup_test_env_with_options_and_heartbeat(
     }
 
     let coords = Arc::new(ContentCoords::from_catalog(&test_content_catalog())?);
-    let map_code = coords
-        .map_code_by_id(MapId::new(1))
-        .ok_or_else(|| anyhow::anyhow!("missing map code for map id 1"))?
-        .to_string();
+    let map_id = MapId::new("zohar_map_a1");
+    if !coords.is_valid_map(&map_id) {
+        anyhow::bail!("missing map zohar_map_a1");
+    }
+    let map_code = map_id.as_str().to_string();
     let map_events = spawn_test_map_runtime();
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -603,7 +603,7 @@ async fn setup_test_env_with_options_and_heartbeat(
         map_events,
         player_persistence: PlayerPersistenceCoordinatorHandle::disabled(),
         advertised_endpoint: addr,
-        map_code,
+        map_id: MapId::new(map_code),
         map_resolver,
         cluster_events,
         drain: ServerDrainController::new(),
@@ -1005,8 +1005,7 @@ fn test_content_catalog() -> ContentCatalog {
         level_exp: test_level_exp_rows(),
         maps: vec![
             ContentMap {
-                map_id: 1,
-                code: "zohar_map_a1".to_string(),
+                map_id: "zohar_map_a1".to_string(),
                 name: "a1".to_string(),
                 map_width: 1024.0,
                 map_height: 1280.0,
@@ -1015,8 +1014,7 @@ fn test_content_catalog() -> ContentCatalog {
                 base_y: Some(8960.0),
             },
             ContentMap {
-                map_id: 21,
-                code: "zohar_map_b1".to_string(),
+                map_id: "zohar_map_b1".to_string(),
                 name: "b1".to_string(),
                 map_width: 1024.0,
                 map_height: 1280.0,
@@ -1025,8 +1023,7 @@ fn test_content_catalog() -> ContentCatalog {
                 base_y: Some(1024.0),
             },
             ContentMap {
-                map_id: 41,
-                code: "zohar_map_c1".to_string(),
+                map_id: "zohar_map_c1".to_string(),
                 name: "c1".to_string(),
                 map_width: 1024.0,
                 map_height: 1280.0,
@@ -1038,19 +1035,19 @@ fn test_content_catalog() -> ContentCatalog {
         empire_start_configs: vec![
             EmpireStartConfig {
                 empire: ContentEmpire::Red,
-                start_map_id: 1,
+                start_map_id: "zohar_map_a1".to_string(),
                 start_x: 597.0,
                 start_y: 682.0,
             },
             EmpireStartConfig {
                 empire: ContentEmpire::Yellow,
-                start_map_id: 21,
+                start_map_id: "zohar_map_b1".to_string(),
                 start_x: 557.0,
                 start_y: 555.0,
             },
             EmpireStartConfig {
                 empire: ContentEmpire::Blue,
-                start_map_id: 41,
+                start_map_id: "zohar_map_c1".to_string(),
                 start_x: 480.0,
                 start_y: 736.0,
             },

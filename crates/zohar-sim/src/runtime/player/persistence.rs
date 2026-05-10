@@ -310,7 +310,7 @@ fn player_runtime_snapshot(
     PlayerRuntimeSnapshot {
         id: player_id,
         runtime_epoch,
-        map_key: map.map_code.clone(),
+        map_key: map.map_key.map_id.clone(),
         playtime,
         current_hp: resources.hp,
         current_sp: resources.sp,
@@ -445,8 +445,7 @@ mod tests {
 
     fn test_map_config(navigator: Option<Arc<MapNavigator>>) -> MapConfig {
         MapConfig {
-            map_key: MapInstanceKey::shared(1, MapId::new(1)),
-            map_code: "zohar_map_a1".to_string(),
+            map_key: MapInstanceKey::shared(1, MapId::new("zohar_map_a1")),
             empire: None,
             local_size: LocalSize::new(16_384.0, 16_384.0),
             navigator,
@@ -546,7 +545,7 @@ mod tests {
                 assert_eq!(snapshot.player_id(), player_id);
                 assert!(matches!(urgency, SaveUrgency::Autosave));
                 assert!(reply.is_none());
-                assert_eq!(snapshot.runtime.map_key, "zohar_map_a1");
+                assert_eq!(snapshot.runtime.map_key, MapId::new("zohar_map_a1"));
                 assert_eq!(snapshot.runtime.playtime.as_secs(), 145);
                 assert_eq!(snapshot.runtime.local_pos, LocalPos::new(11.0, 22.0));
                 assert_eq!(snapshot.runtime.current_hp, Some(321));

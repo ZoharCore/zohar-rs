@@ -2,7 +2,7 @@ use super::{InGamePhaseEffects, prefixed_info_feedback};
 use crate::handlers::ingame::InGameCtx;
 use crate::handlers::ingame::relocation::{
     RelocationError, ResolvedRelocation, dispatch_handoff, resolve_local_relocation,
-    resolve_map_code_relocation, resolve_world_relocation,
+    resolve_map_id_relocation, resolve_world_relocation,
 };
 use zohar_domain::coords::{LocalPos, WorldPos};
 
@@ -83,7 +83,7 @@ async fn execute_goto(
 #[derive(Debug, Clone, PartialEq)]
 enum GotoTarget {
     LocalCoords { x: f32, y: f32 },
-    MapCode(String),
+    MapId(zohar_domain::MapId),
 }
 
 fn parse_goto_target(
@@ -101,7 +101,7 @@ fn parse_goto_target(
 
             Ok(GotoTarget::LocalCoords { x, y })
         }
-        None => Ok(GotoTarget::MapCode(target)),
+        None => Ok(GotoTarget::MapId(zohar_domain::MapId::new(target))),
     }
 }
 
@@ -111,8 +111,8 @@ fn resolve_goto_relocation(
 ) -> Result<ResolvedRelocation, TeleportCommandError> {
     match target {
         GotoTarget::LocalCoords { x, y } => resolve_local_goto_destination(state, x, y),
-        GotoTarget::MapCode(map_code) => {
-            resolve_map_code_relocation(state, &map_code).map_err(TeleportCommandError::from)
+        GotoTarget::MapId(map_id) => {
+            resolve_map_id_relocation(state, &map_id).map_err(TeleportCommandError::from)
         }
     }
 }

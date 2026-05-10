@@ -55,8 +55,7 @@ impl Plugin for ContentPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.shared.clone());
         app.insert_resource(MapConfig {
-            map_key: self.map.map_key,
-            map_code: self.map.map_code.clone(),
+            map_key: self.map.map_key.clone(),
             empire: self.map.empire,
             local_size: self.map.local_size,
             navigator: self.map.navigator.clone(),

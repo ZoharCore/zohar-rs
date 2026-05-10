@@ -76,7 +76,7 @@ pub(crate) fn wire_infra(
         channel_id: config.channel,
         map_events,
         advertised_endpoint,
-        map_code: config.map.clone(),
+        map_id: zohar_domain::MapId::new(config.map.clone()),
         map_resolver,
         cluster_events,
         player_persistence,

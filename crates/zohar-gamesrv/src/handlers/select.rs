@@ -24,7 +24,7 @@ use zohar_db::{
     CreatePlayerOutcome, Game, GameDb, PlayerRuntimeStateRow, PlayerStatesView, PlayerSummaryRow,
     PlayersView, ProfilesView, SessionsView,
 };
-use zohar_domain::Empire as DomainEmpire;
+use zohar_domain::{Empire as DomainEmpire, MapId};
 use zohar_gameplay::stats::game::PlayerStatRules;
 use zohar_net::connection::NextConnection;
 use zohar_net::connection::game_conn::{Select as ThisPhase, SelectedPlayer};
@@ -529,23 +529,23 @@ async fn resolve_player_endpoint(
         .flatten()
         .and_then(|profile| profile.empire)
         .unwrap_or(DomainEmpire::Red);
-    let map_code = resolve_player_map_code(runtime_state, state, fallback_empire)?;
+    let map_id = resolve_player_map_id(runtime_state, state, fallback_empire)?;
     let endpoint = state
         .runtime
         .map_resolver
-        .resolve(state.runtime.channel_id, &map_code)
+        .resolve(state.runtime.channel_id, map_id.as_str())
         .await
         .map_err(|err| {
             warn!(
                 error = ?err,
                 player_id = ?player.id,
-                map_code = %map_code,
+                map_id = %map_id,
                 "Map routing resolve failed"
             );
             anyhow::anyhow!(
-                "map routing resolve failed for player_id={:?} map_code={}: {err}",
+                "map routing resolve failed for player_id={:?} map_id={}: {err}",
                 player.id,
-                map_code
+                map_id
             )
         })?;
     let endpoint = WireServerAddr::from_socket_addr(endpoint)
@@ -554,20 +554,15 @@ async fn resolve_player_endpoint(
     Ok(endpoint)
 }
 
-fn resolve_player_map_code(
+fn resolve_player_map_id(
     runtime_state: Option<&PlayerRuntimeStateRow>,
     state: &SelectCtx<'_>,
     fallback_empire: DomainEmpire,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<MapId> {
     match &state.runtime.routing {
         SelectRouting::Core { coords } => {
             let spawn = coords.resolve_spawn_for_player(runtime_state, fallback_empire);
-            coords
-                .map_code_by_id(spawn.map_id)
-                .map(ToOwned::to_owned)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("missing map code for map_id={}", spawn.map_id.get())
-                })
+            Ok(spawn.map_id)
         }
         SelectRouting::Gateway { empire_start_maps } => {
             // Gateway routing only needs map identity. Core remains source of truth for exact
@@ -576,11 +571,11 @@ fn resolve_player_map_code(
                 .and_then(|runtime| runtime.map_key.as_deref())
                 .filter(|value| !value.is_empty())
             {
-                Ok(map_key.to_owned())
+                Ok(MapId::new(map_key))
             } else {
                 Ok(empire_start_maps
-                    .map_code_for_empire(fallback_empire)
-                    .to_owned())
+                    .map_id_for_empire(fallback_empire)
+                    .clone())
             }
         }
     }

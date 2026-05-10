@@ -11,7 +11,7 @@ pub enum Empire {
 #[derive(Debug, Clone)]
 pub struct EmpireStartConfig {
     pub empire: Empire,
-    pub start_map_id: i64,
+    pub start_map_id: String,
     pub start_x: f32,
     pub start_y: f32,
 }

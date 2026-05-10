@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use zohar_db::Game;
+use zohar_domain::MapId;
 use zohar_gameplay::stats::game::PlayerStatRules;
 use zohar_net::{listen, listen_on, listen_with_ready};
 use zohar_protocol::token::TokenSigner;
@@ -52,7 +53,7 @@ pub struct GameContext {
     pub channel_id: u32,
     pub map_events: MapEventSender,
     pub advertised_endpoint: SocketAddr,
-    pub map_code: String,
+    pub map_id: MapId,
     pub map_resolver: Arc<MapEndpointResolver>,
     pub cluster_events: Arc<ClusterEventBus>,
     pub player_persistence: PlayerPersistenceCoordinatorHandle,

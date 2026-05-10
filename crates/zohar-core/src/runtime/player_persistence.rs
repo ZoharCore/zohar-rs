@@ -377,7 +377,7 @@ mod tests {
             runtime: PlayerRuntimeSnapshot {
                 id: player_id,
                 runtime_epoch: Default::default(),
-                map_key: "zohar_map_a1".to_string(),
+                map_key: "zohar_map_a1".into(),
                 playtime: PlayerPlaytime::ZERO,
                 current_hp: None,
                 current_sp: None,

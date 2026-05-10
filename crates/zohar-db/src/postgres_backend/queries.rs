@@ -550,7 +550,7 @@ pub mod game {
         )
         .bind(i64::from(runtime.id))
         .bind(i64::from(runtime.runtime_epoch))
-        .bind(&runtime.map_key)
+        .bind(runtime.map_key.as_str())
         .bind(runtime.local_pos.x)
         .bind(runtime.local_pos.y)
         .bind(runtime.current_hp)
@@ -859,7 +859,7 @@ pub mod game {
              FROM updated_runtime runtime
              WHERE prog.player_id = runtime.player_id",
         )
-        .bind(&runtime.map_key)
+        .bind(runtime.map_key.as_str())
         .bind(runtime.local_pos.x)
         .bind(runtime.local_pos.y)
         .bind(i64::from(runtime.id))

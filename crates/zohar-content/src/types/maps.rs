@@ -3,8 +3,7 @@ use bitflags::bitflags;
 
 #[derive(Debug, Clone)]
 pub struct ContentMap {
-    pub map_id: i64,
-    pub code: String,
+    pub map_id: String,
     pub name: String,
     pub map_width: f32,
     pub map_height: f32,
@@ -15,7 +14,7 @@ pub struct ContentMap {
 
 #[derive(Debug, Clone)]
 pub struct MapTownSpawn {
-    pub map_id: i64,
+    pub map_id: String,
     pub empire: Empire,
     pub x: f32,
     pub y: f32,
@@ -33,7 +32,7 @@ bitflags! {
 
 #[derive(Debug, Clone)]
 pub struct TerrainFlagsGrid {
-    pub map_id: i64,
+    pub map_id: String,
     pub cell_size_m: f32,
     pub grid_width: usize,
     pub grid_height: usize,

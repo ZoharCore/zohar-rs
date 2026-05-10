@@ -43,7 +43,7 @@ pub(crate) fn bootstrap_map_runtime(world: &mut World) {
     let map_entity = world
         .spawn((
             MapMarker,
-            map_config.map_key,
+            map_config.map_key.clone(),
             MapEmpire(map_config.empire),
             MapSpatial(crate::aoi::SpatialIndex::new()),
             MapReplication::default(),

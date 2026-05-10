@@ -7,7 +7,7 @@ use crate::types::maps::{ContentMap, MapTownSpawn, TerrainFlags, TerrainFlagsGri
 
 pub async fn load_maps(conn: &SqlitePool) -> Result<Vec<ContentMap>, ContentError> {
     let rows = sqlx::query(
-        "SELECT d.map_id, d.code, d.name, d.map_width, d.map_height,
+        "SELECT d.map_id, d.name, d.map_width, d.map_height,
                 d.empire, p.base_x, p.base_y
          FROM map_def d
          LEFT JOIN map_placement p ON p.map_id = d.map_id
@@ -18,7 +18,7 @@ pub async fn load_maps(conn: &SqlitePool) -> Result<Vec<ContentMap>, ContentErro
 
     rows.into_iter()
         .map(|row| {
-            let empire_str: Option<String> = row.try_get(5)?;
+            let empire_str: Option<String> = row.try_get(4)?;
             let empire = match empire_str {
                 Some(s) => Some(crate::error::parse_enum(&s, "Empire")?),
                 None => None,
@@ -26,13 +26,12 @@ pub async fn load_maps(conn: &SqlitePool) -> Result<Vec<ContentMap>, ContentErro
 
             Ok(ContentMap {
                 map_id: row.try_get(0)?,
-                code: row.try_get(1)?,
-                name: row.try_get(2)?,
-                map_width: row.try_get(3)?,
-                map_height: row.try_get(4)?,
+                name: row.try_get(1)?,
+                map_width: row.try_get(2)?,
+                map_height: row.try_get(3)?,
                 empire,
-                base_x: row.try_get(6)?,
-                base_y: row.try_get(7)?,
+                base_x: row.try_get(5)?,
+                base_y: row.try_get(6)?,
             })
         })
         .collect()
@@ -68,14 +67,14 @@ pub async fn load_map_flag_grids(
     .fetch_all(conn)
     .await?;
 
-    let map_dims: HashMap<i64, (f32, f32)> = maps
+    let map_dims: HashMap<String, (f32, f32)> = maps
         .iter()
-        .map(|map| (map.map_id, (map.map_width, map.map_height)))
+        .map(|map| (map.map_id.clone(), (map.map_width, map.map_height)))
         .collect();
 
     let mut out = Vec::new();
     for row in rows {
-        let map_id: i64 = row.try_get(0)?;
+        let map_id: String = row.try_get(0)?;
         let Some((map_width, map_height)) = map_dims.get(&map_id).copied() else {
             warn!(map_id, "Skipping map_terrain_flags row for unknown map");
             continue;
@@ -203,8 +202,8 @@ mod tests {
             .expect("conn");
         apply_schema_migrations(&pool).await.expect("schema");
         sqlx::query(
-            "INSERT INTO map_def (map_id, code, name, map_width, map_height)
-             VALUES (1, 'map_a', 'Map A', 1024.0, 1280.0)",
+            "INSERT INTO map_def (map_id, name, map_width, map_height)
+             VALUES ('map_a', 'Map A', 1024.0, 1280.0)",
         )
         .execute(&pool)
         .await
@@ -219,8 +218,7 @@ mod tests {
             .expect("conn");
         sqlx::query(
             "CREATE TABLE map_def (
-                map_id INTEGER PRIMARY KEY,
-                code TEXT NOT NULL UNIQUE,
+                map_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 map_width REAL NOT NULL,
                 map_height REAL NOT NULL
@@ -231,7 +229,7 @@ mod tests {
         .expect("map_def");
         sqlx::query(
             "CREATE TABLE map_terrain_flags (
-                map_id INTEGER PRIMARY KEY,
+                map_id TEXT PRIMARY KEY,
                 cell_size_m REAL NOT NULL,
                 codec TEXT NOT NULL,
                 raw_len INTEGER NOT NULL,
@@ -246,8 +244,7 @@ mod tests {
 
     fn maps_fixture() -> Vec<ContentMap> {
         vec![ContentMap {
-            map_id: 1,
-            code: "map_a".to_string(),
+            map_id: "map_a".to_string(),
             name: "Map A".to_string(),
             map_width: 1024.0,
             map_height: 1280.0,
@@ -264,7 +261,8 @@ mod tests {
         let raw = vec![1u8; 1024 * 1280 * 4];
         sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
-             VALUES (1, 0.5, 'NONE', ?1, ?2)",
+             VALUES ('map_a',
+ 0.5, 'NONE', ?1, ?2)",
         )
         .bind(raw.len() as i64)
         .bind(raw.clone())
@@ -286,7 +284,8 @@ mod tests {
         let compressed = zstd::stream::encode_all(raw_zstd.as_slice(), 3).expect("zstd");
         sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
-             VALUES (1, 0.5, 'ZSTD', ?1, ?2)",
+             VALUES ('map_a',
+ 0.5, 'ZSTD', ?1, ?2)",
         )
         .bind(raw_zstd.len() as i64)
         .bind(compressed)
@@ -304,7 +303,8 @@ mod tests {
         let (_dir3, pool3) = setup_pool_without_triggers().await;
         sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
-             VALUES (1, 0.3, 'NONE', 4, X'01020304')",
+             VALUES ('map_a',
+ 0.3, 'NONE', 4, X'01020304')",
         )
         .execute(&pool3)
         .await
@@ -319,7 +319,8 @@ mod tests {
         let (_dir4, pool4) = setup_pool_without_triggers().await;
         sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
-             VALUES (1, 0.5, 'NONE', 3, X'01020304')",
+             VALUES ('map_a',
+ 0.5, 'NONE', 3, X'01020304')",
         )
         .execute(&pool4)
         .await

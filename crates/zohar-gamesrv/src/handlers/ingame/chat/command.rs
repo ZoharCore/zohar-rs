@@ -138,7 +138,7 @@ pub(super) fn try_send_client_intent(
     {
         warn!(
             player_id = ?state.player_id,
-            map_id = state.map_id.get(),
+            map_id = %state.map_id,
             error = ?err,
             action = command_name,
             "Failed to enqueue client intent to map runtime"

@@ -35,8 +35,7 @@ pub enum SpawnTarget {
 
 #[derive(Debug, Clone)]
 pub struct SpawnRuleRecord {
-    pub map_id: i64,
-    pub map_code: String,
+    pub map_id: String,
     pub target: SpawnTarget,
     pub spawn_type: SpawnType,
     pub spawn_source: SpawnSource,

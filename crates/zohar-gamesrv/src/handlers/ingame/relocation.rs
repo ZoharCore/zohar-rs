@@ -12,7 +12,6 @@ use zohar_protocol::game_pkt::{WireServerAddr, ingame::system::SystemS2c};
 #[derive(Debug)]
 pub(super) struct ResolvedRelocation {
     map_id: zohar_domain::MapId,
-    map_code: String,
     local_pos: LocalPos,
 }
 
@@ -24,29 +23,29 @@ pub(super) fn resolve_world_relocation(
         return Err(RelocationError::UnknownWorldDestination);
     };
 
-    resolve_relocation(state, map_id, local_pos)
+    Ok(ResolvedRelocation { map_id, local_pos })
 }
 
 pub(super) fn resolve_local_relocation(
     state: &InGameCtx<'_>,
     local_pos: LocalPos,
 ) -> Result<ResolvedRelocation, RelocationError> {
-    let Some(_) = state.ctx.coords.local_to_world(state.map_id, local_pos) else {
+    let Some(_) = state.ctx.coords.local_to_world(&state.map_id, local_pos) else {
         return Err(RelocationError::LocalDestinationOutOfBounds);
     };
 
-    resolve_relocation(state, state.map_id, local_pos)
+    Ok(ResolvedRelocation {
+        map_id: state.map_id.clone(),
+        local_pos,
+    })
 }
-
-pub(super) fn resolve_map_code_relocation(
+pub(super) fn resolve_map_id_relocation(
     state: &InGameCtx<'_>,
-    map_code: &str,
+    map_id: &zohar_domain::MapId,
 ) -> Result<ResolvedRelocation, RelocationError> {
-    let map_id = state
-        .ctx
-        .coords
-        .map_id_by_code(map_code)
-        .ok_or(RelocationError::UnknownMapCode)?;
+    if !state.ctx.coords.is_valid_map(map_id) {
+        return Err(RelocationError::UnknownMapCode);
+    }
 
     let local_pos = state
         .ctx
@@ -54,30 +53,18 @@ pub(super) fn resolve_map_code_relocation(
         .resolve_town_spawn(map_id, state.player_empire)
         .ok_or(RelocationError::AmbiguousTownSpawn)?;
 
-    let Some(_) = state.ctx.coords.local_to_world(map_id, local_pos) else {
-        return Err(RelocationError::InvalidResolvedMapPosition);
-    };
-
-    resolve_relocation(state, map_id, local_pos)
+    Ok(ResolvedRelocation {
+        map_id: map_id.clone(),
+        local_pos,
+    })
 }
 
 fn resolve_relocation(
-    state: &InGameCtx<'_>,
+    _state: &InGameCtx<'_>,
     map_id: zohar_domain::MapId,
-    _local_pos: LocalPos,
+    local_pos: LocalPos,
 ) -> Result<ResolvedRelocation, RelocationError> {
-    let map_code = state
-        .ctx
-        .coords
-        .map_code_by_id(map_id)
-        .map(ToOwned::to_owned)
-        .ok_or(RelocationError::RoutingUnavailable)?;
-
-    Ok(ResolvedRelocation {
-        map_id,
-        map_code,
-        local_pos: _local_pos,
-    })
+    Ok(ResolvedRelocation { map_id, local_pos })
 }
 
 pub(super) async fn dispatch_handoff(
@@ -85,16 +72,12 @@ pub(super) async fn dispatch_handoff(
     source: &'static str,
     relocation: ResolvedRelocation,
 ) -> Result<InGamePhaseEffects, RelocationError> {
-    let ResolvedRelocation {
-        map_id,
-        map_code,
-        local_pos,
-    } = relocation;
+    let ResolvedRelocation { map_id, local_pos } = relocation;
 
     let endpoint = match state
         .ctx
         .map_resolver
-        .resolve(state.ctx.channel_id, &map_code)
+        .resolve(state.ctx.channel_id, map_id.as_str())
         .await
     {
         Ok(endpoint) => endpoint,
@@ -102,8 +85,7 @@ pub(super) async fn dispatch_handoff(
             warn!(
                 source,
                 player_id = ?state.player_id,
-                map_id = map_id.get(),
-                map_code = %map_code,
+                map_id = %map_id,
                 error = ?error,
                 "Failed to resolve relocation destination endpoint"
             );
@@ -123,14 +105,13 @@ pub(super) async fn dispatch_handoff(
         })
         .await
     {
-        Ok(snapshot) => snapshot.with_runtime_location(map_code.clone(), local_pos),
+        Ok(snapshot) => snapshot.with_runtime_location(map_id.clone(), local_pos),
         Err(error) => {
             warn!(
                 source,
                 username = %state.username,
                 player_id = ?state.player_id,
-                map_id = map_id.get(),
-                map_code = %map_code,
+                map_id = %map_id,
                 error = %error,
                 "Failed to capture player snapshot before handoff"
             );
@@ -151,8 +132,7 @@ pub(super) async fn dispatch_handoff(
             source,
             username = %state.username,
             player_id = ?state.player_id,
-            map_id = map_id.get(),
-            map_code = %map_code,
+            map_id = %map_id,
             error = %error,
             "Failed to prepare player handoff"
         );
@@ -237,8 +217,12 @@ fn resolve_town_relocation(state: &InGameCtx<'_>) -> Result<ResolvedRelocation, 
     let spawn = state
         .ctx
         .coords
-        .resolve_town_restart(state.map_id, state.player_empire);
-    resolve_relocation(state, spawn.map_id, spawn.local_pos)
+        .resolve_town_restart(&state.map_id, state.player_empire);
+
+    Ok(ResolvedRelocation {
+        map_id: spawn.map_id,
+        local_pos: spawn.local_pos,
+    })
 }
 
 fn portal_info_feedback(message: impl AsRef<str>) -> InGamePhaseEffects {

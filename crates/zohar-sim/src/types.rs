@@ -15,15 +15,16 @@ impl InstanceId {
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Component, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MapInstanceKey {
     pub channel_id: u32,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub map_id: MapId,
     pub instance: MapInstanceKind,
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MapInstanceKind {
     Shared,
     Instanced(InstanceId),
@@ -46,7 +47,7 @@ impl MapInstanceKey {
         }
     }
 
-    pub fn template_map_id(self) -> MapId {
-        self.map_id
+    pub fn template_map_id(&self) -> MapId {
+        self.map_id.clone()
     }
 }

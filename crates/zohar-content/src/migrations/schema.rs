@@ -205,8 +205,8 @@ mod tests {
         apply_schema_migrations(&pool).await.expect("schema");
 
         sqlx::query(
-            "INSERT INTO map_def (map_id, code, name, map_width, map_height)
-             VALUES (1, 'map_a', 'Map A', 1024.0, 1280.0)",
+            "INSERT INTO map_def (map_id, name, map_width, map_height)
+             VALUES ('map_a', 'Map A', 1024.0, 1280.0)",
         )
         .execute(&pool)
         .await
@@ -215,7 +215,7 @@ mod tests {
         // Mismatched raw_len
         let err = sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
-             VALUES (1, 0.5, 'NONE', 3, X'010203')",
+             VALUES ('map_a', 0.5, 'NONE', 3, X'010203')",
         )
         .execute(&pool)
         .await
@@ -230,7 +230,7 @@ mod tests {
         // Non-integral cell derivation
         let err = sqlx::query(
             "INSERT INTO map_terrain_flags (map_id, cell_size_m, codec, raw_len, data)
-             VALUES (1, 0.3, 'NONE', 4, X'01020304')",
+             VALUES ('map_a', 0.3, 'NONE', 4, X'01020304')",
         )
         .execute(&pool)
         .await

@@ -219,12 +219,7 @@ pub(crate) fn build_map_navigators(catalog: &ContentCatalog) -> HashMap<MapId, A
     let mut out = HashMap::new();
 
     for map_terrain_flags in &catalog.map_terrain_flags {
-        let Some(map_id) = def_id_from_i64::<zohar_domain::MapDefTag>(
-            map_terrain_flags.map_id,
-            "map_terrain_flags.map_id",
-        ) else {
-            continue;
-        };
+        let map_id = MapId::new(map_terrain_flags.map_id.clone());
 
         let terrain_flags: Vec<TerrainFlags> = map_terrain_flags
             .data
@@ -357,9 +352,9 @@ pub(crate) fn build_spawn_rules(catalog: &ContentCatalog) -> HashMap<MapId, Vec<
     let map_bounds: HashMap<MapId, (f32, f32)> = catalog
         .maps
         .iter()
-        .filter_map(|map| {
-            let map_id = def_id_from_i64::<zohar_domain::MapDefTag>(map.map_id, "maps.map_id")?;
-            Some((map_id, (map.map_width, map.map_height)))
+        .map(|map| {
+            let map_id = MapId::new(map.map_id.clone());
+            (map_id, (map.map_width, map.map_height))
         })
         .collect();
 
@@ -402,14 +397,9 @@ pub(crate) fn build_spawn_rules(catalog: &ContentCatalog) -> HashMap<MapId, Vec<
         .collect();
 
     for spawn in &catalog.spawn_rules {
-        let Some(map_id) =
-            def_id_from_i64::<zohar_domain::MapDefTag>(spawn.map_id, "spawn_rules.map_id")
-        else {
-            continue;
-        };
-
-        let template = match (&spawn.target, spawn.spawn_type) {
-            (SpawnTarget::Mob(raw_mob_id), _) => {
+        let map_id = MapId::new(spawn.map_id.clone());
+        let template = match &spawn.target {
+            SpawnTarget::Mob(raw_mob_id) => {
                 let Some(mob_id) = def_id_from_i64::<zohar_domain::entity::mob::MobDefTag>(
                     *raw_mob_id,
                     "spawn_rules.mob_id",
@@ -419,7 +409,7 @@ pub(crate) fn build_spawn_rules(catalog: &ContentCatalog) -> HashMap<MapId, Vec<
                 };
                 SpawnTemplate::Mob(mob_id)
             }
-            (SpawnTarget::Group(group_id), _) => {
+            SpawnTarget::Group(group_id) => {
                 let Some(members) = mob_groups.get(group_id).cloned() else {
                     warn!(?spawn, group_id, "Missing mob_group for spawn, skipping");
                     continue;
@@ -430,7 +420,7 @@ pub(crate) fn build_spawn_rules(catalog: &ContentCatalog) -> HashMap<MapId, Vec<
                 }
                 SpawnTemplate::Group(members)
             }
-            (SpawnTarget::GroupGroup(group_group_id), _) => {
+            SpawnTarget::GroupGroup(group_group_id) => {
                 let Some(choices) = mob_group_groups.get(group_group_id).cloned() else {
                     warn!(
                         ?spawn,
@@ -601,11 +591,10 @@ mod tests {
     use zohar_content::types::mobs::ContentMob;
     use zohar_content::types::spawns::{SpawnRuleRecord, SpawnSource, SpawnTarget, SpawnType};
 
-    fn valid_map(map_id: i64) -> ContentMap {
+    fn valid_map(map_id: &str) -> ContentMap {
         ContentMap {
-            map_id,
-            code: format!("map_{map_id}"),
-            name: "map".to_string(),
+            map_id: map_id.to_string(),
+            name: format!("map_{map_id}"),
             map_width: 512.0,
             map_height: 512.0,
             empire: None,
@@ -613,6 +602,7 @@ mod tests {
             base_y: Some(0.0),
         }
     }
+
 
     fn valid_mob(mob_id: i64, mob_type: MobType) -> ContentMob {
         ContentMob {
@@ -641,10 +631,9 @@ mod tests {
         }
     }
 
-    fn spawn_record(map_id: i64, target: SpawnTarget, direction: i64) -> SpawnRuleRecord {
+    fn spawn_record(map_id: &str, target: SpawnTarget, direction: i64) -> SpawnRuleRecord {
         SpawnRuleRecord {
-            map_id,
-            map_code: "map_1".to_string(),
+            map_id: map_id.to_string(),
             target,
             spawn_type: SpawnType::Mob,
             spawn_source: SpawnSource::Npc,
@@ -722,23 +711,22 @@ mod tests {
     }
 
     #[test]
-    fn build_spawn_rules_skips_out_of_range_map_and_mob_ids() {
+    fn build_spawn_rules_skips_out_of_range_mob_ids() {
         let catalog = ContentCatalog {
-            maps: vec![valid_map(1)],
+            maps: vec![valid_map("map1")],
             mob_groups: vec![MobGroupRecord {
                 group_id: 1,
                 code: None,
                 entries: vec![],
             }],
             spawn_rules: vec![
-                spawn_record(1, SpawnTarget::Mob(101), 1),
-                spawn_record(i64::from(u32::MAX) + 1, SpawnTarget::Mob(101), 1),
-                spawn_record(1, SpawnTarget::Mob(i64::from(u32::MAX) + 1), 1),
+                spawn_record("map1", SpawnTarget::Mob(101), 1),
+                spawn_record("map1", SpawnTarget::Mob(i64::from(u32::MAX) + 1), 1),
             ],
             ..ContentCatalog::default()
         };
 
         let rules = build_spawn_rules(&catalog);
-        assert_eq!(rules.get(&MapId::new(1)).map(Vec::len), Some(1));
+        assert_eq!(rules.get(&MapId::new("map1")).map(Vec::len), Some(1));
     }
 }

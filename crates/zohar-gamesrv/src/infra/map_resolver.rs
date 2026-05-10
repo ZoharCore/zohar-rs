@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use tokio::sync::RwLock;
+use zohar_domain::MapId;
 
 #[cfg(feature = "kube-resolver")]
 use anyhow::Context;
@@ -34,13 +35,13 @@ enum MapEndpointResolverImpl {
 }
 
 impl MapEndpointResolver {
-    pub async fn resolve(&self, channel_id: u32, map_code: &str) -> anyhow::Result<SocketAddr> {
+    pub async fn resolve(&self, channel_id: u32, map_id_str: &str) -> anyhow::Result<SocketAddr> {
         match &self.inner {
             MapEndpointResolverImpl::Static(resolver) => {
-                resolver.resolve(channel_id, map_code).await
+                resolver.resolve(channel_id, map_id_str).await
             }
             MapEndpointResolverImpl::KubeAgones(resolver) => {
-                resolver.resolve(channel_id, map_code).await
+                resolver.resolve(channel_id, map_id_str).await
             }
         }
     }
@@ -64,7 +65,7 @@ impl From<KubeAgonesMapResolver> for MapEndpointResolver {
 
 #[derive(Default, Clone)]
 pub struct StaticMapResolver {
-    endpoints: Arc<RwLock<HashMap<(u32, String), SocketAddr>>>,
+    endpoints: Arc<RwLock<HashMap<(u32, MapId), SocketAddr>>>,
 }
 
 impl StaticMapResolver {
@@ -72,27 +73,27 @@ impl StaticMapResolver {
         Self::default()
     }
 
-    pub async fn insert(&self, channel_id: u32, map_code: impl Into<String>, endpoint: SocketAddr) {
+    pub async fn insert(&self, channel_id: u32, map_id: impl Into<MapId>, endpoint: SocketAddr) {
         self.endpoints
             .write()
             .await
-            .insert((channel_id, map_code.into()), endpoint);
+            .insert((channel_id, map_id.into()), endpoint);
     }
 
-    pub async fn remove(&self, channel_id: u32, map_code: &str) {
+    pub async fn remove(&self, channel_id: u32, map_id: &MapId) {
         self.endpoints
             .write()
             .await
-            .remove(&(channel_id, map_code.to_string()));
+            .remove(&(channel_id, map_id.clone()));
     }
 
-    pub async fn resolve(&self, channel_id: u32, map_code: &str) -> anyhow::Result<SocketAddr> {
-        let key = (channel_id, map_code.to_string());
+    pub async fn resolve(&self, channel_id: u32, map_id_str: &str) -> anyhow::Result<SocketAddr> {
+        let key = (channel_id, MapId::new(map_id_str));
         let Some(endpoint) = self.endpoints.read().await.get(&key).copied() else {
             return Err(anyhow!(
                 "no endpoint registered for channel={} map={}",
                 channel_id,
-                map_code
+                map_id_str
             ));
         };
         Ok(endpoint)
@@ -229,14 +230,14 @@ fn parse_service_lb_ip(svc: &DynamicObject) -> Option<Ipv4Addr> {
 }
 
 impl KubeAgonesMapResolver {
-    pub async fn resolve(&self, channel_id: u32, map_code: &str) -> anyhow::Result<SocketAddr> {
+    pub async fn resolve(&self, channel_id: u32, map_id_str: &str) -> anyhow::Result<SocketAddr> {
         #[cfg(not(feature = "kube-resolver"))]
         {
             #[allow(clippy::needless_return)]
             return Err(anyhow!(
                 "kube resolver disabled for channel={} map={}",
                 channel_id,
-                map_code
+                map_id_str
             ));
         }
 
@@ -246,7 +247,7 @@ impl KubeAgonesMapResolver {
                 return Err(anyhow!(
                     "kube client unavailable for channel={} map={}",
                     channel_id,
-                    map_code
+                    map_id_str
                 ));
             };
 
@@ -256,7 +257,7 @@ impl KubeAgonesMapResolver {
                     let ar = ApiResource::from_gvk(&gvk);
                     let api: Api<DynamicObject> =
                         Api::namespaced_with(client, &self.namespace, &ar);
-                    let selector = format!("channel={},map={}", channel_id, map_code);
+                    let selector = format!("channel={},map={}", channel_id, map_id_str);
 
                     let list = api
                         .list(&ListParams::default().labels(&selector))
@@ -268,7 +269,7 @@ impl KubeAgonesMapResolver {
                         anyhow!(
                             "no agones gameserver found for channel={} map={}",
                             channel_id,
-                            map_code
+                            map_id_str
                         )
                     })?;
                     let mut endpoint = parse_gameserver_endpoint(gs)?;
@@ -284,7 +285,7 @@ impl KubeAgonesMapResolver {
                         Api::namespaced_with(client, &self.namespace, &ar);
                     let selector = format!(
                         "app.kubernetes.io/component=map-endpoint,channel={},map={}",
-                        channel_id, map_code
+                        channel_id, map_id_str
                     );
                     let list = api
                         .list(&ListParams::default().labels(&selector))
@@ -296,7 +297,7 @@ impl KubeAgonesMapResolver {
                         anyhow!(
                             "no map endpoint service found for channel={} map={}",
                             channel_id,
-                            map_code
+                            map_id_str
                         )
                     })?;
                     let port = parse_service_node_port(svc)?;

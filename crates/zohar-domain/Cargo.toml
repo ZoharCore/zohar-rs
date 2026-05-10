@@ -13,3 +13,4 @@ enum-map = "2.7.3"
 rand.workspace = true
 
 euclid = "0.22"
+smol_str = "0.3"

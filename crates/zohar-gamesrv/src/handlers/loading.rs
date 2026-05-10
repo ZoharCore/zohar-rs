@@ -55,7 +55,7 @@ async fn handle_enter(state: &LoadingCtx<'_>) -> PhaseResult<PhaseEffects<ThisPh
     let spawn_pos = state
         .ctx
         .coords
-        .local_to_world(state.entry.map_id, state.entry.initial_pos)
+        .local_to_world(&state.entry.map_id, state.entry.initial_pos)
         .expect("resolved local spawn position must map to world coordinates");
     info!(
         username = %state.username,

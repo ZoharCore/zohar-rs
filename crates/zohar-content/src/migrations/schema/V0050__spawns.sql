@@ -42,7 +42,7 @@ CREATE TABLE enum_spawn_source
 CREATE TABLE map_spawn_rule
 (
     spawn_id              INTEGER PRIMARY KEY,
-    map_id                INTEGER NOT NULL REFERENCES map_def (map_id),
+    map_id                TEXT    NOT NULL REFERENCES map_def (map_id),
     target_mob_id         INTEGER REFERENCES mob_proto (mob_id),
     target_group_id       INTEGER REFERENCES mob_group (group_id),
     target_group_group_id INTEGER REFERENCES mob_group_group (group_group_id),

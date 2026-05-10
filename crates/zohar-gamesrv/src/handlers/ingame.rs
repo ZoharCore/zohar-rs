@@ -276,7 +276,7 @@ async fn map_event_to_effects(
         PlayerEvent::RestartTown => handle_restart_town(state).await,
         other => Ok(InGamePhaseEffects::send_many(map_event_to_packets(
             other,
-            state.map_id,
+            state.map_id.clone(),
             state.ctx.coords.as_ref(),
         ))),
     }
@@ -423,20 +423,13 @@ fn prepare_ingame<'a>(
     let map_id = entry.map_id;
     let player_empire = entry.visual_profile.empire;
 
-    let Some(map_code) = ctx.coords.map_code_by_id(map_id) else {
-        return Err(SessionEnd::AfterLogin {
-            username,
-            lease_action: SessionLeaseAction::Release,
-        });
-    };
-
     // Validate we landed on the correct map core. Endpoint equality is not stable across
     // exposure modes (e.g. Agones hostPort vs NodePort fronted Service).
-    if map_code != ctx.map_code {
+    if map_id != ctx.map_id {
         warn!(
             username = %username,
-            player_map = %map_code,
-            core_map = %ctx.map_code,
+            player_map = %map_id,
+            core_map = %ctx.map_id,
             channel_id = ctx.channel_id,
             "Player connected to wrong map core"
         );

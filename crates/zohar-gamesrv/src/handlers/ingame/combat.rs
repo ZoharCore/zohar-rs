@@ -39,7 +39,7 @@ pub(super) async fn handle_packet(
             if let Err(err) = state.ctx.map_events.try_send_client_intent(intent_msg) {
                 warn!(
                     player_id = ?state.player_id,
-                    map_id = state.map_id.get(),
+                    map_id = %state.map_id,
                     target = u32::from(target),
                     error = ?err,
                     "Failed to enqueue attack intent to map runtime"
@@ -57,7 +57,7 @@ pub(super) async fn handle_packet(
             if let Err(err) = state.ctx.map_events.try_send_client_intent(intent_msg) {
                 warn!(
                     player_id = ?state.player_id,
-                    map_id = state.map_id.get(),
+                    map_id = %state.map_id,
                     target = u32::from(target),
                     error = ?err,
                     "Failed to enqueue target selection intent to map runtime"
@@ -65,7 +65,7 @@ pub(super) async fn handle_packet(
             }
             debug!(
                 player_id = ?state.player_id,
-                map_id = state.map_id.get(),
+                map_id = %state.map_id,
                 target = u32::from(target),
                 "Received client target selection"
             );

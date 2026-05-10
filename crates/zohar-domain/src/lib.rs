@@ -85,8 +85,33 @@ impl<T> From<DefId<T>> for u32 {
     }
 }
 
-#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum MapDefTag {}
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct MapId(smol_str::SmolStr);
 
-pub type MapId = DefId<MapDefTag>;
+impl MapId {
+    pub fn new(s: impl Into<smol_str::SmolStr>) -> Self {
+        Self(s.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<String> for MapId {
+    fn from(s: String) -> Self {
+        Self(s.into())
+    }
+}
+
+impl From<&str> for MapId {
+    fn from(s: &str) -> Self {
+        Self(s.into())
+    }
+}
+
+impl std::fmt::Display for MapId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

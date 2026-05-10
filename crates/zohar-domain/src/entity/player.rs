@@ -2,7 +2,7 @@ pub mod skill;
 
 use std::time::Duration;
 
-use crate::DbId;
+use crate::{DbId, MapId};
 use crate::coords::LocalPos;
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
@@ -196,7 +196,8 @@ pub struct PlayerProgressionSnapshot {
 pub struct PlayerRuntimeSnapshot {
     pub id: PlayerId,
     pub runtime_epoch: PlayerRuntimeEpoch,
-    pub map_key: String,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
+    pub map_key: MapId,
     #[cfg_attr(feature = "admin-brp", reflect(remote = crate::coords::LocalPosReflect))]
     pub local_pos: LocalPos,
     pub playtime: PlayerPlaytime,
@@ -217,7 +218,7 @@ impl PlayerSnapshot {
         self.runtime.id
     }
 
-    pub fn with_runtime_location(mut self, map_key: String, local_pos: LocalPos) -> Self {
+    pub fn with_runtime_location(mut self, map_key: MapId, local_pos: LocalPos) -> Self {
         self.runtime.map_key = map_key;
         self.runtime.local_pos = local_pos;
         self

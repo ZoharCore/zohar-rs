@@ -30,10 +30,10 @@ pub(super) async fn handle_packet(
             let packet_ts = u32::from(ts);
             let facing = Facing72::from_wrapped(rot);
 
-            let Some(local_pos) = state.ctx.coords.world_wire_to_local(state.map_id, pos) else {
+            let Some(local_pos) = state.ctx.coords.world_wire_to_local(&state.map_id, pos) else {
                 warn!(
                     player_id = ?state.player_id,
-                    map_id = state.map_id.get(),
+                    map_id = %state.map_id,
                     wire_x = pos.x_cm,
                     wire_y = pos.y_cm,
                     "Ignoring out-of-bounds movement position"
@@ -54,7 +54,7 @@ pub(super) async fn handle_packet(
             if let Err(err) = state.ctx.map_events.try_send_client_intent(intent_msg) {
                 warn!(
                     player_id = ?state.player_id,
-                    map_id = state.map_id.get(),
+                    map_id = %state.map_id,
                     kind = ?kind,
                     ts = packet_ts,
                     error = ?err,
@@ -72,9 +72,9 @@ pub(super) fn encode_entity_move(
     coords: &ContentCoords,
 ) -> Vec<InGameS2c> {
     let local_pos = movement.position;
-    let Some(world_pos) = coords.local_to_world(map_id, local_pos) else {
+    let Some(world_pos) = coords.local_to_world(&map_id, local_pos) else {
         warn!(
-            map_id = map_id.get(),
+            map_id = %map_id,
             entity_id = movement.entity_id.0,
             kind = ?movement.kind,
             local_x = local_pos.x,

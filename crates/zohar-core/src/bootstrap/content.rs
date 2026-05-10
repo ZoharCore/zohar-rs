@@ -32,16 +32,14 @@ pub(crate) fn load_content(
     let coords = Arc::new(ContentCoords::from_catalog(catalog)?);
     let player_stats = Arc::new(build_player_stat_rules(catalog));
 
-    let map_id = require_map_id(coords.map_id_by_code(&config.map), &config.map)?;
-    let map_key = MapInstanceKey::shared(config.channel, map_id);
+    let map_id = require_map_id(coords.map_id_from_str(&config.map), &config.map)?;
+    let map_key = MapInstanceKey::shared(config.channel, map_id.clone());
 
     let entity_motion_speeds = Arc::new(build_entity_motion_speeds(catalog));
     let all_spawn_rules = build_spawn_rules(catalog);
     let all_mobs = Arc::new(build_mob_proto(catalog));
     let mob_chat = Arc::new(build_mob_chat_content(catalog));
     let all_navigators = build_map_navigators(catalog);
-    let all_empires = coords.map_empires_by_id();
-
     let shared_config = SharedConfig {
         motion_speeds: entity_motion_speeds,
         mobs: all_mobs,
@@ -50,11 +48,10 @@ pub(crate) fn load_content(
         mob_chat,
     };
     let map_config = MapConfig {
-        map_key,
-        map_code: config.map.clone(),
-        empire: all_empires.get(&map_id).copied().flatten(),
+        map_key: map_key.clone(),
+        empire: coords.map_empire(&map_id),
         local_size: coords
-            .map_local_size(map_id)
+            .map_local_size(&map_id)
             .ok_or_else(|| anyhow!("missing local bounds for map '{}'", config.map))?,
         navigator: all_navigators.get(&map_id).cloned(),
         spawn_rules: all_spawn_rules.get(&map_id).cloned().unwrap_or_default(),
@@ -71,7 +68,7 @@ pub(crate) fn load_content(
 
 fn require_map_id(
     map_id: Option<zohar_domain::MapId>,
-    map_code: &str,
+    map_id_str: &str,
 ) -> anyhow::Result<zohar_domain::MapId> {
-    map_id.ok_or_else(|| anyhow!("unknown map code '{map_code}'"))
+    map_id.ok_or_else(|| anyhow!("unknown map code '{map_id_str}'"))
 }

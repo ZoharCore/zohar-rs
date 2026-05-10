@@ -97,7 +97,6 @@ fn test_configs(map_key: MapInstanceKey) -> (SharedConfig, MapConfig) {
         },
         MapConfig {
             map_key,
-            map_code: "test_map".to_string(),
             empire: None,
             local_size: LocalSize::new(16_384.0, 16_384.0),
             navigator: None,
@@ -768,7 +767,7 @@ fn pending_snapshot(player_id: PlayerId) -> PlayerSnapshot {
         runtime: PlayerRuntimeSnapshot {
             id: player_id,
             runtime_epoch: Default::default(),
-            map_key: "queued_map".to_string(),
+            map_key: "queued_map".into(),
             local_pos: LocalPos::new(1.0, 1.0),
             playtime: PlayerPlaytime::ZERO,
             current_hp: None,
@@ -898,7 +897,7 @@ fn dead_player_runtime(
     PlayerId,
     EntityId,
 ) {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -1232,7 +1231,7 @@ fn sample_player_visual_position_at_uses_segment_progress_not_latest_endpoint() 
 
 #[test]
 fn startup_ready_signal_fires_after_map_bootstrap() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
     let (startup_tx, startup_rx) = tokio::sync::oneshot::channel();
     let (mut app, _map_events) = build_map_app_with_options(
@@ -1250,7 +1249,7 @@ fn startup_ready_signal_fires_after_map_bootstrap() {
 
 #[test]
 fn player_enter_enqueues_self_spawn_snapshot_once() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1324,7 +1323,7 @@ fn player_enter_enqueues_self_spawn_snapshot_once() {
 
 #[test]
 fn core_stat_progression_intent_emits_stat_updates() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1372,7 +1371,7 @@ fn core_stat_progression_intent_emits_stat_updates() {
 
 #[test]
 fn speed_stat_sync_replicates_public_state_change_to_visible_players() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1439,7 +1438,7 @@ fn speed_stat_sync_replicates_public_state_change_to_visible_players() {
 
 #[test]
 fn level_step_stat_sync_stays_subject_only() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1483,7 +1482,7 @@ fn level_step_stat_sync_stays_subject_only() {
 
 #[test]
 fn point_visual_effects_drive_observer_level_step_and_level_up_packets() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1543,7 +1542,7 @@ fn point_visual_effects_drive_observer_level_step_and_level_up_packets() {
 
 #[test]
 fn special_effects_use_actor_view_and_subject_fanout() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1588,7 +1587,7 @@ fn special_effects_use_actor_view_and_subject_fanout() {
 
 #[test]
 fn critical_damage_projects_legacy_critical_special_effect() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1630,7 +1629,7 @@ fn critical_damage_projects_legacy_critical_special_effect() {
 
 #[test]
 fn dirty_public_states_coalesce_by_entity_and_materialize_latest_state() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1689,7 +1688,7 @@ fn dirty_public_states_coalesce_by_entity_and_materialize_latest_state() {
 
 #[test]
 fn deferred_dirty_marker_for_removed_player_is_ignored() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1721,7 +1720,7 @@ fn deferred_dirty_marker_for_removed_player_is_ignored() {
 
 #[test]
 fn passive_hp_recovery_emits_stat_update_when_cadence_is_due() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1788,7 +1787,7 @@ fn passive_hp_recovery_emits_stat_update_when_cadence_is_due() {
 
 #[test]
 fn passive_stamina_recovery_restores_after_legacy_stop_delay() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1867,7 +1866,7 @@ fn passive_stamina_recovery_restores_after_legacy_stop_delay() {
 
 #[test]
 fn stamina_depletion_movement_animation_replicates_to_observers() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1945,7 +1944,7 @@ fn stamina_depletion_movement_animation_replicates_to_observers() {
 
 #[test]
 fn core_stat_progression_reports_cap_feedback() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -1989,7 +1988,7 @@ fn core_stat_progression_reports_cap_feedback() {
 
 #[test]
 fn core_stat_progression_does_not_apply_when_flush_enqueue_fails() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (handle, _rx) = player_persistence_channel(1);
@@ -2035,7 +2034,7 @@ fn core_stat_progression_does_not_apply_when_flush_enqueue_fails() {
 
 #[test]
 fn player_enter_bootstraps_existing_visible_entities_before_fixed_update() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -2098,7 +2097,7 @@ fn player_enter_bootstraps_existing_visible_entities_before_fixed_update() {
 
 #[test]
 fn two_players_each_receive_self_spawn_and_one_peer_spawn_without_duplicate_self() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
@@ -2127,7 +2126,7 @@ fn two_players_each_receive_self_spawn_and_one_peer_spawn_without_duplicate_self
 
 #[test]
 fn player_move_ignores_navigation_blockers_in_pre_alpha_policy() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, mut map) = test_configs(map_key);
     map.navigator = Some(test_navigator(16, 16, &[(5, 0)]));
@@ -2158,7 +2157,7 @@ fn player_move_ignores_navigation_blockers_in_pre_alpha_policy() {
 
 #[test]
 fn moving_into_map_transfer_portal_emits_portal_entry_event() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let portal_mob_id = MobId::new(19_001);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -2226,7 +2225,7 @@ fn moving_into_map_transfer_portal_emits_portal_entry_event() {
 
 #[test]
 fn moving_across_map_transfer_portal_segment_waits_for_visual_entry() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let portal_mob_id = MobId::new(19_011);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -2298,7 +2297,7 @@ fn moving_across_map_transfer_portal_segment_waits_for_visual_entry() {
 
 #[test]
 fn movement_animation_change_replicates_and_affects_player_move_duration() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, map) = test_configs(map_key);
     Arc::make_mut(&mut shared.motion_speeds).upsert_speed(
@@ -2360,7 +2359,7 @@ fn movement_animation_change_replicates_and_affects_player_move_duration() {
 
 #[test]
 fn player_move_clamps_to_map_bounds_in_pre_alpha_policy() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, mut map) = test_configs(map_key);
     map.local_size = LocalSize::new(8.0, 8.0);
@@ -2392,7 +2391,7 @@ fn player_move_clamps_to_map_bounds_in_pre_alpha_policy() {
 
 #[test]
 fn noisy_player_move_backlog_does_not_evict_other_players_move_backlog() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
     let (shared, map) = test_configs(map_key);
     let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
@@ -2467,7 +2466,7 @@ fn noisy_player_move_backlog_does_not_evict_other_players_move_backlog() {
 
 #[test]
 fn noisy_player_attack_backlog_does_not_evict_other_players_attack_backlog() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -2553,7 +2552,7 @@ fn noisy_player_attack_backlog_does_not_evict_other_players_attack_backlog() {
 
 #[test]
 fn same_tick_move_then_attack_uses_updated_player_position() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -2616,7 +2615,7 @@ fn same_tick_move_then_attack_uses_updated_player_position() {
 
 #[test]
 fn player_attack_applies_damage_to_mob_hp_without_stat_replication() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -2701,7 +2700,7 @@ fn player_attack_applies_damage_to_mob_hp_without_stat_replication() {
 
 #[test]
 fn selected_target_health_updates_require_current_visibility() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -2775,7 +2774,7 @@ fn selected_target_health_updates_require_current_visibility() {
 
 #[test]
 fn player_killing_mob_emits_dead_packet_to_visible_players() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -2922,7 +2921,7 @@ fn player_killing_mob_emits_dead_packet_to_visible_players() {
 
 #[test]
 fn mob_death_reward_applies_exp_steps_level_up_refill_and_visuals_once() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3052,7 +3051,7 @@ fn mob_death_reward_applies_exp_steps_level_up_refill_and_visuals_once() {
 
 #[test]
 fn mob_attack_applies_damage_to_player_hp() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3126,7 +3125,7 @@ fn mob_attack_applies_damage_to_player_hp() {
 
 #[test]
 fn mob_drops_player_target_after_dead_phase() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3371,7 +3370,7 @@ fn dead_event_forces_town_restart_with_half_hp() {
 
 #[test]
 fn same_tick_player_move_is_visible_to_mob_ai() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3431,7 +3430,7 @@ fn same_tick_player_move_is_visible_to_mob_ai() {
 
 #[test]
 fn player_attack_emits_stimulus_dispatch_without_mutating_mob_queue() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3498,7 +3497,7 @@ fn player_attack_emits_stimulus_dispatch_without_mutating_mob_queue() {
 
 #[test]
 fn stimulus_routing_fans_out_pack_before_mob_think_order_matters() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3573,7 +3572,7 @@ fn stimulus_routing_fans_out_pack_before_mob_think_order_matters() {
 
 #[test]
 fn fixed_update_orders_player_intake_before_stimulus_routing_before_mob_ai() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3634,7 +3633,7 @@ fn fixed_update_orders_player_intake_before_stimulus_routing_before_mob_ai() {
 
 #[test]
 fn fixed_timestep_switches_to_idle_rate_without_players() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
     let (app, _inbound_tx) = build_runtime_app(shared, map, false);
 
@@ -3648,7 +3647,7 @@ fn fixed_timestep_switches_to_idle_rate_without_players() {
 
 #[test]
 fn fixed_timestep_switches_back_to_active_rate_on_player_enter() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let (shared, map) = test_configs(MapInstanceKey::shared(1, map_id));
     let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
 
@@ -3677,7 +3676,7 @@ fn fixed_timestep_switches_back_to_active_rate_on_player_enter() {
 
 #[test]
 fn player_attack_intent_causes_non_aggressive_mob_to_retaliate() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3752,7 +3751,7 @@ fn player_attack_intent_causes_non_aggressive_mob_to_retaliate() {
 
 #[test]
 fn mob_chase_ignores_navigation_blockers_with_legacy_straight_segments() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3830,7 +3829,7 @@ fn mob_chase_ignores_navigation_blockers_with_legacy_straight_segments() {
 
 #[test]
 fn idle_wander_retries_blocked_segments_instead_of_walking_through_walls() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3920,7 +3919,7 @@ fn idle_wander_retries_blocked_segments_instead_of_walking_through_walls() {
 
 #[test]
 fn idle_wander_does_not_issue_a_second_move_while_first_move_is_in_flight() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -3993,7 +3992,7 @@ fn idle_wander_does_not_issue_a_second_move_while_first_move_is_in_flight() {
 
 #[test]
 fn idle_wander_post_move_pause_delays_the_next_wander_decision() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4075,7 +4074,7 @@ fn idle_wander_post_move_pause_delays_the_next_wander_decision() {
 
 #[test]
 fn mob_chase_wait_targets_full_follow_distance_and_duration_matches_motion_speed() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4150,7 +4149,7 @@ fn mob_chase_wait_targets_full_follow_distance_and_duration_matches_motion_speed
 
 #[test]
 fn mob_close_chase_stops_at_follow_distance() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4213,7 +4212,7 @@ fn mob_close_chase_stops_at_follow_distance() {
 
 #[test]
 fn mob_attacks_from_current_position_within_threshold() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4287,7 +4286,7 @@ fn mob_attacks_from_current_position_within_threshold() {
 
 #[test]
 fn mob_close_wait_chase_attacks_after_settling() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4361,7 +4360,7 @@ fn mob_close_wait_chase_attacks_after_settling() {
 
 #[test]
 fn melee_attack_windup_suppresses_follow_up_packets() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4431,7 +4430,7 @@ fn melee_attack_windup_suppresses_follow_up_packets() {
 
 #[test]
 fn aggro_received_during_attack_windup_is_processed_after_windup() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4549,7 +4548,7 @@ fn aggro_received_during_attack_windup_is_processed_after_windup() {
 
 #[test]
 fn mob_resumes_wait_chase_after_attack_windup_expires() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4649,7 +4648,7 @@ fn mob_resumes_wait_chase_after_attack_windup_expires() {
 
 #[test]
 fn mid_walk_chase_reissues_wait_from_sampled_current_position_to_full_goal() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4735,7 +4734,7 @@ fn mid_walk_chase_reissues_wait_from_sampled_current_position_to_full_goal() {
 
 #[test]
 fn mid_walk_chase_interrupts_into_attack_once_sampled_position_is_in_range() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4810,7 +4809,7 @@ fn mid_walk_chase_interrupts_into_attack_once_sampled_position_is_in_range() {
 
 #[test]
 fn mid_walk_chase_keeps_current_segment_when_its_end_is_already_attackable() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4874,7 +4873,7 @@ fn mid_walk_chase_keeps_current_segment_when_its_end_is_already_attackable() {
 
 #[test]
 fn issue_mob_action_snaps_endpoints_to_wire_centimeters() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -4964,7 +4963,7 @@ fn issue_mob_action_snaps_endpoints_to_wire_centimeters() {
 
 #[test]
 fn returning_mob_issues_wait_home_segment() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
@@ -5035,7 +5034,7 @@ fn returning_mob_issues_wait_home_segment() {
 
 #[test]
 fn attacking_one_group_member_causes_the_whole_pack_to_retaliate() {
-    let map_id = MapId::new(41);
+    let map_id = MapId::new("map41");
     let mob_id = MobId::new(101);
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, mut map) = test_configs(map_key);
