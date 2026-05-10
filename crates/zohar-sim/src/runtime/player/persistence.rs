@@ -367,18 +367,18 @@ fn snapshot_local_pos(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spatial::motion::EntityMotionSpeedTable;
-    use crate::spatial::navigation::{MapNavigator, TerrainFlagsGrid};
     use crate::core::persistence::{
         PlayerPersistencePort, PlayerPersistenceRequest, SaveUrgency, player_persistence_channel,
     };
+    use crate::core::types::MapInstanceKey;
     use crate::runtime::common::NetEntityId;
     use crate::runtime::player::{
         PendingDurableFlush, PlayerMotionState, PlayerPendingDurableFlush, PlayerProgressionComp,
         PlayerStatsComp,
     };
     use crate::runtime::time::SimInstant;
-    use crate::core::types::MapInstanceKey;
+    use crate::spatial::motion::EntityMotionSpeedTable;
+    use crate::spatial::navigation::{MapNavigator, TerrainFlagsGrid};
     use crate::{MapConfig, SharedConfig, WanderConfig};
     use std::collections::HashMap;
     use std::sync::Arc;

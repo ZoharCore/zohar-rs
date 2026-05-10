@@ -2,8 +2,8 @@
 
 pub mod core;
 pub mod net;
-pub mod spatial;
 pub mod runtime;
+pub mod spatial;
 
 pub use crate::core::chat::{MobChatContent, MobChatLine, MobChatStrategyInterval};
 pub use crate::core::persistence::{
