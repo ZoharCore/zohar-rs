@@ -2,7 +2,7 @@ use super::state::{
     DEFAULT_RUN_MOTION_SPEED_METER_PER_SEC, MAX_MOVE_PACKET_STEP_M, MobMotionState,
     PlayerMotionState, RuntimeState,
 };
-use crate::motion::{
+use crate::spatial::motion::{
     EntityMotionSpeedTable, MotionEntityKey, MotionMoveMode, PlayerMotionProfileKey,
 };
 use bevy::prelude::*;

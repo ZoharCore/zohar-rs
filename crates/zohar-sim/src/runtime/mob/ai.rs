@@ -9,7 +9,7 @@ use zohar_domain::entity::mob::MobPrototypeDef;
 use zohar_domain::entity::{EntityId, MovementKind};
 use zohar_map_port::ClientTimestamp;
 
-use crate::navigation::MapNavigator;
+use crate::spatial::navigation::MapNavigator;
 
 use super::action_pipeline::{
     Action, ActionBuffer, MobActionCompletion, build_mob_attack_action, build_mob_move_action,

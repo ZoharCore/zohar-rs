@@ -2,7 +2,7 @@ use bevy::ecs::world::DeferredWorld;
 use bevy::prelude::*;
 use zohar_map_port::{ChatChannel, ClientIntent, ClientIntentMsg, GlobalShoutMsg, PlayerEvent};
 
-use crate::bridge::InboundEvent;
+use crate::net::bridge::InboundEvent;
 
 use super::super::player::persistence::{
     capture_active_player_snapshot, leave_player_and_snapshot,

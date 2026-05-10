@@ -9,7 +9,7 @@ use super::util::{
     degrees_to_facing, expand_spawn_template, next_entity_id, random_duration_between_ms,
     random_facing,
 };
-use crate::navigation::MapNavigator;
+use crate::spatial::navigation::MapNavigator;
 use bevy::prelude::*;
 use rand::RngExt;
 use std::cmp::Reverse;
@@ -45,7 +45,7 @@ pub(crate) fn bootstrap_map_runtime(world: &mut World) {
             MapMarker,
             map_config.map_key.clone(),
             MapEmpire(map_config.empire),
-            MapSpatial(crate::aoi::SpatialIndex::new()),
+            MapSpatial(crate::spatial::aoi::SpatialIndex::new()),
             MapReplication::default(),
             MapSpawnRules {
                 rules,

@@ -125,7 +125,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{ReachabilityGrid, WalkabilityView};
-    use crate::navigation::{GridCell, TerrainFlagsGrid};
+    use crate::spatial::navigation::{GridCell, TerrainFlagsGrid};
     use zohar_domain::TerrainFlags;
 
     fn test_grid(

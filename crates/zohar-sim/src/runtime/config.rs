@@ -1,7 +1,7 @@
-use crate::chat::MobChatContent;
-use crate::motion::EntityMotionSpeedTable;
-use crate::navigation::MapNavigator;
-use crate::types::MapInstanceKey;
+use crate::core::chat::MobChatContent;
+use crate::spatial::motion::EntityMotionSpeedTable;
+use crate::spatial::navigation::MapNavigator;
+use crate::core::types::MapInstanceKey;
 use bevy::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
