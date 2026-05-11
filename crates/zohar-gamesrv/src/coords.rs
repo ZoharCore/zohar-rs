@@ -174,7 +174,9 @@ impl ContentCoords {
     }
 
     pub fn world_to_local(&self, map_id: &MapId, world_pos: WorldPos) -> Option<LocalPos> {
-        self.maps.get(map_id).and_then(|map| map.to_local(world_pos))
+        self.maps
+            .get(map_id)
+            .and_then(|map| map.to_local(world_pos))
     }
 
     pub fn world_wire_to_local(&self, map_id: &MapId, world_pos: WireWorldPos) -> Option<LocalPos> {
@@ -208,7 +210,11 @@ impl ContentCoords {
         map_id: &MapId,
         preferred_empire: DomainEmpire,
     ) -> Option<LocalPos> {
-        if let Some(pos) = self.town_spawns.get(&(map_id.clone(), preferred_empire)).copied() {
+        if let Some(pos) = self
+            .town_spawns
+            .get(&(map_id.clone(), preferred_empire))
+            .copied()
+        {
             return Some(pos);
         }
 
@@ -249,18 +255,12 @@ impl ContentCoords {
         for map in &catalog.maps {
             let map_id = MapId::new(map.map_id.clone());
 
-            let raw_base_x = map.base_x.with_context(|| {
-                format!(
-                    "map {} is missing map_placement.base_x",
-                    map.map_id
-                )
-            })?;
-            let raw_base_y = map.base_y.with_context(|| {
-                format!(
-                    "map {} is missing map_placement.base_y",
-                    map.map_id
-                )
-            })?;
+            let raw_base_x = map
+                .base_x
+                .with_context(|| format!("map {} is missing map_placement.base_x", map.map_id))?;
+            let raw_base_y = map
+                .base_y
+                .with_context(|| format!("map {} is missing map_placement.base_y", map.map_id))?;
 
             let base_x = raw_base_x;
             let base_y = raw_base_y;
@@ -268,16 +268,10 @@ impl ContentCoords {
             let map_height = map.map_height;
 
             if !base_x.is_finite() || !base_y.is_finite() {
-                bail!(
-                    "map {} has non-finite placement origin",
-                    map.map_id
-                );
+                bail!("map {} has non-finite placement origin", map.map_id);
             }
             if !map_width.is_finite() || !map_height.is_finite() {
-                bail!(
-                    "map {} has non-finite dimensions",
-                    map.map_id
-                );
+                bail!("map {} has non-finite dimensions", map.map_id);
             }
             if map_width <= 0.0 || map_height <= 0.0 {
                 bail!(
@@ -608,7 +602,9 @@ mod tests {
     fn constructor_fails_when_required_start_map_was_skipped() {
         let mut catalog = base_catalog();
         catalog.maps[0].map_id = "skipped_map".to_string();
-        catalog.town_spawns.retain(|spawn| spawn.map_id != "zohar_map_a1");
+        catalog
+            .town_spawns
+            .retain(|spawn| spawn.map_id != "zohar_map_a1");
 
         let err = ContentCoords::from_catalog(&catalog).expect_err("must fail");
         assert!(
@@ -630,12 +626,12 @@ mod tests {
     fn resolves_map_ids_from_exact_map_ids() {
         let coords = ContentCoords::from_catalog(&base_catalog()).expect("coords");
 
-        assert_eq!(coords.map_id_from_str(
-"zohar_map_a1"), Some(MapId::new("zohar_map_a1")));
-        assert_eq!(coords.map_id_from_str(
-"A1"), None);
-        assert_eq!(coords.map_id_from_str(
-"#41"), None);
+        assert_eq!(
+            coords.map_id_from_str("zohar_map_a1"),
+            Some(MapId::new("zohar_map_a1"))
+        );
+        assert_eq!(coords.map_id_from_str("A1"), None);
+        assert_eq!(coords.map_id_from_str("#41"), None);
     }
 
     #[test]
@@ -667,7 +663,9 @@ mod tests {
     #[test]
     fn town_restart_falls_back_to_empire_start_when_map_has_no_town_spawn() {
         let mut catalog = base_catalog();
-        catalog.town_spawns.retain(|spawn| spawn.map_id != "zohar_map_b1");
+        catalog
+            .town_spawns
+            .retain(|spawn| spawn.map_id != "zohar_map_b1");
         let coords = ContentCoords::from_catalog(&catalog).expect("coords");
 
         let spawn = coords.resolve_town_restart(&MapId::new("zohar_map_b1"), DomainEmpire::Red);
