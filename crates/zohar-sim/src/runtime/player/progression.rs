@@ -159,7 +159,12 @@ fn validate_core_stat_intent(
     delta: i8,
 ) -> Result<ValidatedCoreStatSave, ProgressionError> {
     let shared = world.resource::<SharedConfig>().clone();
-    let mut query = world.query::<(&PlayerMarker, &PlayerAppearanceComp, &PlayerProgressionComp, &PlayerStatsComp)>();
+    let mut query = world.query::<(
+        &PlayerMarker,
+        &PlayerAppearanceComp,
+        &PlayerProgressionComp,
+        &PlayerStatsComp,
+    )>();
     let (marker, appearance, progression, stats) = query
         .get(world, player_entity)
         .map_err(|_| ProgressionError::MissingPlayerState)?;
