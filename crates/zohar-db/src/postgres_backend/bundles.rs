@@ -9,7 +9,7 @@ use crate::traits::{AccountRow, AccountsView, AuthDb};
 use crate::traits::{
     AcquireSessionResult, CreatePlayerOutcome, GameDb, PlayerRuntimeStateRow, PlayerStatesView,
     PlayerStatsBootstrapRow, PlayerSummaryRow, PlayerWriteOutcome, PlayersView, ProfileRow,
-    ProfilesView, SessionsView,
+    ProfilesView, ResumeSessionResult, SessionsView,
 };
 #[cfg(feature = "db-game")]
 use zohar_domain::Empire as DomainEmpire;
@@ -246,7 +246,7 @@ impl SessionsView for PgSessionsView<'_> {
         stale_threshold_secs: i64,
         idle_ttl_secs: i64,
         peer_ip: &str,
-    ) -> DbResult<bool> {
+    ) -> DbResult<ResumeSessionResult> {
         queries::game::resume_session_with_token(
             self.pool,
             username,
@@ -270,7 +270,7 @@ impl SessionsView for PgSessionsView<'_> {
         login_token: u32,
         idle_ttl_secs: i64,
         peer_ip: &str,
-    ) -> DbResult<bool> {
+    ) -> DbResult<ResumeSessionResult> {
         queries::game::validate_login_token(
             self.pool,
             username,
