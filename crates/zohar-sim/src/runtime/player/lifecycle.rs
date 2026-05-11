@@ -91,7 +91,8 @@ pub(crate) fn on_player_removed(
         spatial.0.remove(net_id.net_id);
 
         pending_chats.0.retain(|chat| {
-            chat.speaker_player_id != Some(marker.player_id) && chat.speaker_entity_id != net_id.net_id
+            chat.speaker_player_id != Some(marker.player_id)
+                && chat.speaker_entity_id != net_id.net_id
         });
         pending.0.retain(|movement| {
             movement.entity_id != net_id.net_id
