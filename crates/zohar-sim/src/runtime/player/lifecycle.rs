@@ -5,7 +5,7 @@ use zohar_domain::entity::player::PlayerId;
 use zohar_gameplay::stats::game::{HydratedPlayerStats, PlayerStatsRuntime};
 use zohar_map_port::{ClientTimestamp, EnterMsg, LeaveMsg, PlayerEvent};
 
-use crate::outbox::PlayerOutbox;
+use crate::net::outbox::PlayerOutbox;
 use crate::runtime::net::replication::bootstrap_observer_snapshot;
 use crate::runtime::spawn_events::make_player_snapshot;
 

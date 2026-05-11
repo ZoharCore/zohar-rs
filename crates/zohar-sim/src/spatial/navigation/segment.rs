@@ -302,8 +302,8 @@ mod tests {
     use zohar_domain::coords::LocalPos;
 
     use super::{SegmentTrace, clip_segment, segment_clear, walk_segment};
-    use crate::navigation::TerrainFlagsGrid;
-    use crate::navigation::reachability::WalkabilityView;
+    use crate::spatial::navigation::TerrainFlagsGrid;
+    use crate::spatial::navigation::reachability::WalkabilityView;
 
     fn test_grid(
         width: usize,
@@ -351,7 +351,7 @@ mod tests {
                 |cell| walkability.is_walkable_cell(cell),
             ),
             Some(SegmentTrace::Blocked {
-                cell: crate::navigation::GridCell { x: 0, y: 0 },
+                cell: crate::spatial::navigation::GridCell { x: 0, y: 0 },
                 enter_t: 0.0,
             })
         );

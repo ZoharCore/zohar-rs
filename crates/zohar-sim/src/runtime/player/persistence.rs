@@ -9,7 +9,7 @@ use zohar_domain::entity::player::{
 use zohar_gameplay::stats::game::Stat;
 use zohar_map_port::LeaveMsg;
 
-use crate::persistence::PlayerPersistencePort;
+use crate::core::persistence::PlayerPersistencePort;
 use crate::runtime::spatial::sample_player_visual_position_at;
 
 use super::super::common::{LocalTransform, MapConfig, PlayerIndex, RuntimeState};
@@ -367,18 +367,18 @@ fn snapshot_local_pos(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::motion::EntityMotionSpeedTable;
-    use crate::navigation::{MapNavigator, TerrainFlagsGrid};
-    use crate::persistence::{
+    use crate::core::motion::EntityMotionSpeedTable;
+    use crate::core::persistence::{
         PlayerPersistencePort, PlayerPersistenceRequest, SaveUrgency, player_persistence_channel,
     };
+    use crate::core::types::MapInstanceKey;
     use crate::runtime::common::NetEntityId;
     use crate::runtime::player::{
         PendingDurableFlush, PlayerMotionState, PlayerPendingDurableFlush, PlayerProgressionComp,
         PlayerStatsComp,
     };
     use crate::runtime::time::SimInstant;
-    use crate::types::MapInstanceKey;
+    use crate::spatial::navigation::{MapNavigator, TerrainFlagsGrid};
     use crate::{MapConfig, SharedConfig, WanderConfig};
     use std::collections::HashMap;
     use std::sync::Arc;

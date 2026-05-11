@@ -7,7 +7,7 @@ use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementAnimation};
 use zohar_map_port::{MovementEvent, PlayerEvent};
 
-use crate::replication::{InterestConfig, VisibilityDiff};
+use crate::net::replication::{InterestConfig, VisibilityDiff};
 use tracing::warn;
 
 use super::state::{
