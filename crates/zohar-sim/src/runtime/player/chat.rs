@@ -76,12 +76,12 @@ fn enqueue_local_chat_intents(
 
     for chat in chat_intents {
         pending_chats.0.push(PendingLocalChat {
-            speaker_player_id,
+            speaker_player_id: Some(speaker_player_id),
             speaker_entity_id,
-            speaker_empire,
+            speaker_empire: Some(speaker_empire),
             // TODO: only broadcast local speaking packets
             channel: chat.channel,
-            speaker_name: speaker_name.clone(),
+            speaker_name: Some(speaker_name.clone()),
             message: chat.message,
         });
     }

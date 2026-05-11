@@ -524,7 +524,7 @@ fn push_local_chat_event(
         // TODO: only broadcast local speaking packets
         channel: pending_chat.channel,
         sender_entity_id: Some(pending_chat.speaker_entity_id),
-        empire: Some(pending_chat.speaker_empire),
+        empire: pending_chat.speaker_empire,
         message,
     });
 }
@@ -535,18 +535,29 @@ fn local_chat_message_for(
     recipient_empire: Empire,
     preserve_pct: u8,
 ) -> Vec<u8> {
-    let mut message = format_talking_message(&pending_chat.speaker_name, &pending_chat.message);
-    let message_body_start = pending_chat.speaker_name.len() + 3;
-    let message_body_end = message.len().saturating_sub(1);
+    let mut message = if let Some(speaker_name) = &pending_chat.speaker_name {
+        format_talking_message(speaker_name, &pending_chat.message)
+    } else {
+        pending_chat.message.clone()
+    };
 
-    if recipient_empire != pending_chat.speaker_empire && message_body_start < message_body_end {
-        let mut state = world.resource_mut::<RuntimeState>();
-        obfuscate_cross_empire_talking_body(
-            &mut state.rng,
-            pending_chat.speaker_empire,
-            &mut message[message_body_start..message_body_end],
-            preserve_pct,
-        );
+    let message_body_start = if let Some(speaker_name) = &pending_chat.speaker_name {
+        speaker_name.len() + 3
+    } else {
+        0
+    };
+    let message_body_end = message.len().saturating_sub(1); // Account for null terminator
+
+    if let Some(speaker_empire) = pending_chat.speaker_empire {
+        if recipient_empire != speaker_empire && message_body_start < message_body_end {
+            let mut state = world.resource_mut::<RuntimeState>();
+            obfuscate_cross_empire_talking_body(
+                &mut state.rng,
+                speaker_empire,
+                &mut message[message_body_start..message_body_end],
+                preserve_pct,
+            );
+        }
     }
 
     message
