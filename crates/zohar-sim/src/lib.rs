@@ -2,25 +2,25 @@
 
 pub mod core;
 pub mod net;
-pub mod spatial;
 pub mod runtime;
+pub mod spatial;
 
-pub use crate::net::bridge::MapEventSender;
 pub use crate::core::chat::{MobChatContent, MobChatLine, MobChatStrategyInterval};
 pub use crate::core::motion::{
     EntityMotionSpeedTable, MobMotionSpeedTable, MobMotionSpeeds, MotionEntityKey, MotionMoveMode,
     PlayerMotionProfileKey, PlayerMotionSpeedTable, PlayerMotionSpeeds,
 };
-pub use crate::spatial::navigation::{GridCell, MapNavigator, NavPath, TerrainFlagsGrid};
 pub use crate::core::persistence::{
     PlayerPersistenceCoordinatorHandle, PlayerPersistenceQueueError, PlayerPersistenceRequest,
     PlayerPersistenceResult, SaveUrgency, player_persistence_channel,
 };
+pub use crate::core::types::{InstanceId, MapInstanceKey, MapInstanceKind};
+pub use crate::net::bridge::MapEventSender;
+pub use crate::spatial::navigation::{GridCell, MapNavigator, NavPath, TerrainFlagsGrid};
 pub use runtime::{
     MapConfig, PlayerCount, SharedConfig, SimSet, StartupReadySignal, WanderConfig, build_map_app,
     spawn_map_runtime,
 };
-pub use crate::core::types::{InstanceId, MapInstanceKey, MapInstanceKind};
 pub use zohar_gameplay::stats::game::{
     HydratedPlayerStats, LevelExpEntry, LevelExpTable, PlayerClassStatsConfig,
     PlayerClassStatsTable, PlayerStatRules,

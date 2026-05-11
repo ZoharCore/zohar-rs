@@ -26,8 +26,8 @@ use super::util::sample_player_motion_at;
 use crate::MapEventSender;
 use crate::core::motion::{EntityMotionSpeedTable, MotionMoveMode, PlayerMotionProfileKey};
 use crate::core::persistence::{PlayerPersistenceCoordinatorHandle, player_persistence_channel};
-use crate::runtime::time::SimTickerClock;
 use crate::core::types::MapInstanceKey;
+use crate::runtime::time::SimTickerClock;
 use zohar_domain::appearance::{
     EntityKind, EntityPublicEquipment, EntityPublicFlags, EntityPublicSocial, EntityPublicSpeeds,
     EntityPublicState, EntityStateFlags, PlayerAppearance, PlayerVisualProfile,
