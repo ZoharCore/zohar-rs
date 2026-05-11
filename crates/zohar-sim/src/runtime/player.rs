@@ -8,7 +8,7 @@ pub(crate) mod stat_sync;
 pub(crate) mod stat_tickers;
 pub(crate) mod target;
 
-use crate::outbox::PlayerOutbox;
+use crate::net::outbox::PlayerOutbox;
 use bevy::prelude::*;
 use tokio::sync::oneshot;
 use zohar_domain::appearance::PlayerAppearance;
@@ -161,7 +161,7 @@ pub(crate) struct PlayerRestartIntentQueue(pub(crate) Vec<PlayerRestartIntent>);
 
 #[derive(Debug)]
 pub(crate) struct PendingDurableFlush {
-    pub(crate) reply_rx: oneshot::Receiver<crate::persistence::PlayerPersistenceResult>,
+    pub(crate) reply_rx: oneshot::Receiver<crate::core::persistence::PlayerPersistenceResult>,
 }
 
 #[derive(Component, Default)]

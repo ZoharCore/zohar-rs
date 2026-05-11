@@ -4,8 +4,8 @@ use bevy::prelude::*;
 use crossbeam_channel::Receiver;
 use std::time::Duration;
 
-use crate::bridge::{InboundEvent, MapEventSender, inbound_channel};
-use crate::persistence::{PlayerPersistenceCoordinatorHandle, PlayerPersistencePort};
+use crate::core::persistence::{PlayerPersistenceCoordinatorHandle, PlayerPersistencePort};
+use crate::net::bridge::{InboundEvent, MapEventSender, inbound_channel};
 
 use super::action_pipeline::{ActionBuffer, process_actions};
 use super::aggro::{MobAggroDispatchBuffer, route_mob_aggro};

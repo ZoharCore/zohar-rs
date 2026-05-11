@@ -138,7 +138,7 @@ mod tests {
     use zohar_domain::coords::LocalPos;
 
     use super::prune_cells_to_path;
-    use crate::navigation::{GridCell, TerrainFlagsGrid};
+    use crate::spatial::navigation::{GridCell, TerrainFlagsGrid};
 
     fn test_grid(width: usize, height: usize) -> TerrainFlagsGrid {
         TerrainFlagsGrid::new(

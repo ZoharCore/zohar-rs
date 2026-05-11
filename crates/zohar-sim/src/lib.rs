@@ -1,32 +1,29 @@
 //! Bevy-backed map simulation runtime and protocol-facing map APIs.
 
-pub mod aoi;
-mod bridge;
-pub mod chat;
-pub mod motion;
-pub mod navigation;
-mod outbox;
-pub mod persistence;
-mod replication;
+pub mod core;
+pub mod net;
 pub mod runtime;
-pub mod types;
+pub mod spatial;
 
-pub use bridge::MapEventSender;
-pub use chat::{MobChatContent, MobChatLine, MobChatStrategyInterval};
-pub use motion::{
-    EntityMotionSpeedTable, MobMotionSpeedTable, MobMotionSpeeds, MotionEntityKey, MotionMoveMode,
-    PlayerMotionProfileKey, PlayerMotionSpeedTable, PlayerMotionSpeeds,
-};
-pub use navigation::{GridCell, MapNavigator, NavPath, TerrainFlagsGrid};
-pub use persistence::{
+pub use crate::core::chat::{MobChatContent, MobChatLine, MobChatStrategyInterval};
+pub use crate::core::persistence::{
     PlayerPersistenceCoordinatorHandle, PlayerPersistenceQueueError, PlayerPersistenceRequest,
     PlayerPersistenceResult, SaveUrgency, player_persistence_channel,
 };
-pub use runtime::{
+pub use crate::core::types::{InstanceId, MapInstanceKey, MapInstanceKind};
+
+pub use crate::net::bridge::MapEventSender;
+
+pub use crate::core::motion::{
+    EntityMotionSpeedTable, MobMotionSpeedTable, MobMotionSpeeds, MotionEntityKey, MotionMoveMode,
+    PlayerMotionProfileKey, PlayerMotionSpeedTable, PlayerMotionSpeeds,
+};
+pub use crate::spatial::navigation::{GridCell, MapNavigator, NavPath, TerrainFlagsGrid};
+
+pub use crate::runtime::{
     MapConfig, PlayerCount, SharedConfig, SimSet, StartupReadySignal, WanderConfig, build_map_app,
     spawn_map_runtime,
 };
-pub use types::{InstanceId, MapInstanceKey, MapInstanceKind};
 pub use zohar_gameplay::stats::game::{
     HydratedPlayerStats, LevelExpEntry, LevelExpTable, PlayerClassStatsConfig,
     PlayerClassStatsTable, PlayerStatRules,

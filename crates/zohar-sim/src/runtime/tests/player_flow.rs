@@ -1,6 +1,6 @@
 use super::*;
-use crate::chat::MobChatContent;
-use crate::navigation::{MapNavigator, TerrainFlagsGrid};
+use crate::core::chat::MobChatContent;
+use crate::spatial::navigation::{MapNavigator, TerrainFlagsGrid};
 use bevy::prelude::{App, Entity};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -24,10 +24,10 @@ use super::state::{
 };
 use super::util::sample_player_motion_at;
 use crate::MapEventSender;
-use crate::motion::{EntityMotionSpeedTable, MotionMoveMode, PlayerMotionProfileKey};
-use crate::persistence::{PlayerPersistenceCoordinatorHandle, player_persistence_channel};
+use crate::core::motion::{EntityMotionSpeedTable, MotionMoveMode, PlayerMotionProfileKey};
+use crate::core::persistence::{PlayerPersistenceCoordinatorHandle, player_persistence_channel};
+use crate::core::types::MapInstanceKey;
 use crate::runtime::time::SimTickerClock;
-use crate::types::MapInstanceKey;
 use zohar_domain::appearance::{
     EntityKind, EntityPublicEquipment, EntityPublicFlags, EntityPublicSocial, EntityPublicSpeeds,
     EntityPublicState, EntityStateFlags, PlayerAppearance, PlayerVisualProfile,
@@ -2301,7 +2301,7 @@ fn movement_animation_change_replicates_and_affects_player_move_duration() {
     let map_key = MapInstanceKey::shared(1, map_id);
     let (mut shared, map) = test_configs(map_key);
     Arc::make_mut(&mut shared.motion_speeds).upsert_speed(
-        crate::motion::MotionEntityKey::Player(PlayerMotionProfileKey {
+        crate::core::motion::MotionEntityKey::Player(PlayerMotionProfileKey {
             class: zohar_domain::entity::player::PlayerClass::Warrior,
             gender: zohar_domain::entity::player::PlayerGender::Male,
         }),
@@ -2309,7 +2309,7 @@ fn movement_animation_change_replicates_and_affects_player_move_duration() {
         4.5,
     );
     Arc::make_mut(&mut shared.motion_speeds).upsert_speed(
-        crate::motion::MotionEntityKey::Player(PlayerMotionProfileKey {
+        crate::core::motion::MotionEntityKey::Player(PlayerMotionProfileKey {
             class: zohar_domain::entity::player::PlayerClass::Warrior,
             gender: zohar_domain::entity::player::PlayerGender::Male,
         }),
@@ -4943,7 +4943,7 @@ fn issue_mob_action_snaps_endpoints_to_wire_centimeters() {
     let expected_duration = super::util::calculate_mob_move_duration_ms(
         shared.motion_speeds.as_ref(),
         mob_id,
-        crate::motion::MotionMoveMode::Run,
+        crate::core::motion::MotionMoveMode::Run,
         100,
         expected_start,
         expected_end,
