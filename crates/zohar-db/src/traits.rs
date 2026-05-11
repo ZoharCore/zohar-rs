@@ -123,7 +123,6 @@ pub enum AcquireSessionResult {
     AlreadyOnOtherServer { server_id: String },
 }
 
-
 /// Result of attempting to resume a session.
 #[cfg(feature = "db-game")]
 #[derive(Debug, Clone)]
@@ -139,7 +138,6 @@ pub enum ResumeSessionResult {
 // =============================================================================
 // Auth Database Traits
 // =============================================================================
-
 
 /// Auth database bundle trait.
 ///

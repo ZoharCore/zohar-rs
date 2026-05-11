@@ -78,18 +78,14 @@ async fn authenticate_token_login(
         resume_result = try_totp_bootstrap(deps, &input).await?;
     }
 
-    match resume_result {
-        ResumeSessionResult::Resumed => {}
-        ResumeSessionResult::AlreadyActive => {
-            return Ok(AuthDecision::Rejected {
-                reason: LoginFailReason::AlreadyLoggedIn,
-            });
-        }
-        ResumeSessionResult::InvalidToken => {
-            return Ok(AuthDecision::Rejected {
-                reason: LoginFailReason::InvalidCredentials,
-            });
-        }
+    let reason = match resume_result {
+        ResumeSessionResult::Resumed => None,
+        ResumeSessionResult::AlreadyActive => Some(LoginFailReason::AlreadyLoggedIn),
+        ResumeSessionResult::InvalidToken => Some(LoginFailReason::InvalidCredentials),
+    };
+
+    if let Some(reason) = reason {
+        return Ok(AuthDecision::Rejected { reason });
     }
 
     let profile = deps.db.profiles().get_or_create(&input.username).await?;
@@ -105,7 +101,10 @@ async fn authenticate_token_login(
     })
 }
 
-async fn try_persisted_login(deps: &LoginDeps, input: &TokenLoginInput) -> DbResult<ResumeSessionResult> {
+async fn try_persisted_login(
+    deps: &LoginDeps,
+    input: &TokenLoginInput,
+) -> DbResult<ResumeSessionResult> {
     match &deps.mode {
         PersistedCheckMode::ClaimActive {
             server_id,
@@ -139,7 +138,10 @@ async fn try_persisted_login(deps: &LoginDeps, input: &TokenLoginInput) -> DbRes
     }
 }
 
-async fn try_totp_bootstrap(deps: &LoginDeps, input: &TokenLoginInput) -> DbResult<ResumeSessionResult> {
+async fn try_totp_bootstrap(
+    deps: &LoginDeps,
+    input: &TokenLoginInput,
+) -> DbResult<ResumeSessionResult> {
     if !deps
         .token_signer
         .verify(&input.username, input.enc_key, input.token)
