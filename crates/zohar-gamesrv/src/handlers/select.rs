@@ -573,9 +573,7 @@ fn resolve_player_map_id(
             {
                 Ok(MapId::new(map_key))
             } else {
-                Ok(empire_start_maps
-                    .map_id_for_empire(fallback_empire)
-                    .clone())
+                Ok(empire_start_maps.map_id_for_empire(fallback_empire).clone())
             }
         }
     }

@@ -55,11 +55,11 @@ pub(crate) struct PendingMovement {
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[derive(Debug, Clone)]
 pub(crate) struct PendingLocalChat {
-    pub(crate) speaker_player_id: PlayerId,
+    pub(crate) speaker_player_id: Option<PlayerId>,
     pub(crate) speaker_entity_id: EntityId,
-    pub(crate) speaker_empire: Empire,
+    pub(crate) speaker_empire: Option<Empire>,
     pub(crate) channel: ChatChannel,
-    pub(crate) speaker_name: String,
+    pub(crate) speaker_name: Option<String>,
     pub(crate) message: Vec<u8>,
 }
 

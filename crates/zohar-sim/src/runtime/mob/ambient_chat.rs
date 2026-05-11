@@ -1,19 +1,19 @@
 use bevy::prelude::*;
 use rand::{Rng, RngExt};
-use zohar_map_port::{ChatChannel, PlayerEvent};
+use zohar_domain::Empire;
+use zohar_map_port::ChatChannel;
 
-use super::players::player_entities_on_map;
 use super::state::{
-    MobChatState, MobRef, NetEntityId, PlayerOutboxComp, RuntimeState, SharedConfig,
+    MapPendingLocalChats, MobChatState, MobRef, NetEntityId, PendingLocalChat, RuntimeState,
+    SharedConfig,
 };
 
 const CHAT_CONTEXT_IDLE: &str = "idle";
 
 pub(crate) fn emit_idle_chat(world: &mut World) {
-    let recipients = player_entities_on_map(world);
-    if recipients.is_empty() {
+    let Some(map_entity) = world.resource::<RuntimeState>().map_entity else {
         return;
-    }
+    };
 
     let shared = world.resource::<SharedConfig>().clone();
     let now = world.resource::<RuntimeState>().sim_now;
@@ -30,7 +30,7 @@ pub(crate) fn emit_idle_chat(world: &mut World) {
             .collect()
     };
 
-    let mut emissions = Vec::<(zohar_domain::entity::EntityId, Vec<u8>)>::new();
+    let mut emissions = Vec::<(zohar_domain::entity::EntityId, Option<Empire>, Vec<u8>)>::new();
 
     for (mob_entity, mob_id, mob_net_id) in mob_entities {
         let Some(proto) = shared.mobs.get(&mob_id) else {
@@ -88,24 +88,27 @@ pub(crate) fn emit_idle_chat(world: &mut World) {
         if !message.ends_with(&[0]) {
             message.push(0);
         }
-        emissions.push((mob_net_id, message));
+        emissions.push((mob_net_id, proto.empire, message));
     }
 
     if emissions.is_empty() {
         return;
     }
 
-    for recipient in recipients {
-        if let Some(mut outbox) = world.entity_mut(recipient).get_mut::<PlayerOutboxComp>() {
-            for (sender_entity_id, message) in &emissions {
-                outbox.0.push_reliable(PlayerEvent::Chat {
-                    channel: ChatChannel::Speak,
-                    sender_entity_id: Some(*sender_entity_id),
-                    empire: None,
-                    message: message.clone(),
-                });
-            }
-        }
+    let mut map_ent = world.entity_mut(map_entity);
+    let Some(mut pending_chats) = map_ent.get_mut::<MapPendingLocalChats>() else {
+        return;
+    };
+
+    for (sender_entity_id, empire, message) in emissions {
+        pending_chats.0.push(PendingLocalChat {
+            speaker_player_id: None,
+            speaker_entity_id: sender_entity_id,
+            speaker_empire: empire,
+            channel: ChatChannel::Speak,
+            speaker_name: None,
+            message,
+        });
     }
 }
 
