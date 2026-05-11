@@ -377,7 +377,7 @@ mod tests {
         PlayerStatsComp,
     };
     use crate::runtime::time::SimInstant;
-    use crate::spatial::motion::EntityMotionSpeedTable;
+    use crate::core::motion::EntityMotionSpeedTable;
     use crate::spatial::navigation::{MapNavigator, TerrainFlagsGrid};
     use crate::{MapConfig, SharedConfig, WanderConfig};
     use std::collections::HashMap;

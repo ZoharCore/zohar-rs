@@ -14,7 +14,7 @@ pub use crate::core::types::{InstanceId, MapInstanceKey, MapInstanceKind};
 
 pub use crate::net::bridge::MapEventSender;
 
-pub use crate::spatial::motion::{
+pub use crate::core::motion::{
     EntityMotionSpeedTable, MobMotionSpeedTable, MobMotionSpeeds, MotionEntityKey, MotionMoveMode,
     PlayerMotionProfileKey, PlayerMotionSpeedTable, PlayerMotionSpeeds,
 };

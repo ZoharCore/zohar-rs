@@ -3,7 +3,7 @@ use zohar_domain::entity::MovementKind;
 use zohar_domain::entity::mob::MobId;
 use zohar_map_port::PacketDuration;
 
-use crate::spatial::motion::{MotionEntityKey, MotionMoveMode};
+use crate::core::motion::{MotionEntityKey, MotionMoveMode};
 
 use super::super::mob_motion::snap_local_to_wire_cm;
 use super::super::state::SharedConfig;
