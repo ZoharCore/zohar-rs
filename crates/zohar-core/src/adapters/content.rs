@@ -179,20 +179,27 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
             fallback
         });
 
-
         let mut normal_attack_windup_ms = None;
         let mut normal_attack_duration_ms = None;
 
-        let motion_set_id = format!("{}", mob.code);
-        let normal_attacks: Vec<_> = catalog.motion.iter()
-            .filter(|m| m.motion_set_id == motion_set_id
-                && m.set_kind == zohar_content::types::motion::MotionSetKind::Mob
-                && m.motion_mode == zohar_content::types::motion::MotionMode::General
-                && m.motion_action == zohar_content::types::motion::MotionAction::NormalAttack)
+        let motion_set_id = mob.code.to_string();
+        let normal_attacks: Vec<_> = catalog
+            .motion
+            .iter()
+            .filter(|m| {
+                m.motion_set_id == motion_set_id
+                    && m.set_kind == zohar_content::types::motion::MotionSetKind::Mob
+                    && m.motion_mode == zohar_content::types::motion::MotionMode::General
+                    && m.motion_action == zohar_content::types::motion::MotionAction::NormalAttack
+            })
             .collect();
 
         if !normal_attacks.is_empty() {
-            let max_duration = normal_attacks.iter().map(|m| m.duration_ms).max().unwrap_or(0);
+            let max_duration = normal_attacks
+                .iter()
+                .map(|m| m.duration_ms)
+                .max()
+                .unwrap_or(0);
             normal_attack_duration_ms = Some(max_duration as u32);
 
             let mut latest_start = 0;
@@ -205,7 +212,11 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
 
                 // If there are hit windows, use the first one, otherwise assume start is 0
                 let start_ms = m.hit_windows.first().map(|hw| hw.start_ms).unwrap_or(0);
-                let end_ms = m.hit_windows.first().and_then(|hw| hw.end_ms).unwrap_or(m.duration_ms);
+                let end_ms = m
+                    .hit_windows
+                    .first()
+                    .and_then(|hw| hw.end_ms)
+                    .unwrap_or(m.duration_ms);
 
                 latest_start = latest_start.max(start_ms);
                 earliest_end = earliest_end.min(end_ms);
@@ -646,7 +657,6 @@ mod tests {
             base_y: Some(0.0),
         }
     }
-
 
     fn valid_mob(mob_id: i64, mob_type: MobType) -> ContentMob {
         ContentMob {

@@ -297,7 +297,11 @@ impl Plugin for ActionRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            (process_actions, process_mob_attack_windup, process_attack_commands)
+            (
+                process_actions,
+                process_mob_attack_windup,
+                process_attack_commands,
+            )
                 .chain()
                 .in_set(SimSet::Act),
         );

@@ -407,7 +407,10 @@ fn handle_pursuit(
         let legacy_timing = combat::attack_timing_for_mob(context.proto.attack_speed);
 
         // Use normal attack windup/duration if present, else fallback to legacy
-        let packet_duration_ms = context.proto.normal_attack_duration_ms.unwrap_or(legacy_timing.packet_duration.get() as u32);
+        let packet_duration_ms = context
+            .proto
+            .normal_attack_duration_ms
+            .unwrap_or(legacy_timing.packet_duration.get() as u32);
         let cooldown = legacy_timing.cooldown;
 
         let packet_duration = zohar_map_port::PacketDuration::new(packet_duration_ms);

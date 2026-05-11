@@ -1828,11 +1828,11 @@ fn passive_stamina_recovery_restores_after_legacy_stop_delay() {
             .0
             .with_api_mut(|api| api.set_resource(Stat::Stamina, 400).expect("set stamina"));
         let _ = stats.0.drain_sync();
-        drop(stats);
+        // drop(stats);
 
         let mut activity = entity.get_mut::<PlayerActivityComp>().expect("activity");
         activity.last_movement_start_at = Some(sim_ms(0));
-        drop(activity);
+        // drop(activity);
 
         let mut ticker = entity
             .get_mut::<PlayerStatTickerComp>()
@@ -1911,7 +1911,7 @@ fn stamina_depletion_movement_animation_replicates_to_observers() {
             .0
             .with_api_mut(|api| api.set_resource(Stat::Stamina, 1).expect("set stamina"));
         let _ = stats.0.drain_sync();
-        drop(stats);
+        // drop(stats);
 
         entity.insert(PlayerMotion(PlayerMotionState {
             segment_start_pos: initial_pos,
@@ -1926,7 +1926,7 @@ fn stamina_depletion_movement_animation_replicates_to_observers() {
         activity.last_movement_start_at = Some(sim_ms(0));
         activity.last_attack_at = Some(sim_ms(500));
         activity.preferred_movement_animation = MovementAnimation::Run;
-        drop(activity);
+        // drop(activity);
 
         let mut ticker = entity
             .get_mut::<PlayerStatTickerComp>()

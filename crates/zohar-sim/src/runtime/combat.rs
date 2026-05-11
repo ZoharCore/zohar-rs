@@ -62,7 +62,6 @@ struct AppliedDamage {
     killed: bool,
 }
 
-
 pub(crate) fn process_mob_attack_windup(world: &mut World) {
     let now = world.resource::<RuntimeState>().sim_now;
 
@@ -77,14 +76,19 @@ pub(crate) fn process_mob_attack_windup(world: &mut World) {
 
     for (entity, target_entity_id) in to_execute {
         // Remove the component
-        world.entity_mut(entity).remove::<crate::runtime::state::MobAttackWindup>();
+        world
+            .entity_mut(entity)
+            .remove::<crate::runtime::state::MobAttackWindup>();
 
         let target_entity = crate::runtime::spatial::net_entity(world, target_entity_id);
         if let Some(target_entity) = target_entity {
-            world.resource_mut::<AttackCommandBuffer>().0.push(AttackCommand::MobBasicAttack {
-                attacker_entity: entity,
-                victim_entity: target_entity,
-            });
+            world
+                .resource_mut::<AttackCommandBuffer>()
+                .0
+                .push(AttackCommand::MobBasicAttack {
+                    attacker_entity: entity,
+                    victim_entity: target_entity,
+                });
         }
     }
 }

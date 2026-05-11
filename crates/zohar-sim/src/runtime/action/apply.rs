@@ -346,26 +346,41 @@ fn apply_mob_attack(
     // Instead of resolving damage now, we just insert a windup component
     // The windup component will trigger the damage pipeline when it expires
 
-    let mob_id = world.entity(mob_entity).get::<crate::runtime::state::MobRef>().map(|r| r.mob_id);
-    let proto = mob_id.and_then(|id| world.resource::<crate::runtime::state::SharedConfig>().mobs.get(&id));
+    let mob_id = world
+        .entity(mob_entity)
+        .get::<crate::runtime::state::MobRef>()
+        .map(|r| r.mob_id);
+    let proto = mob_id.and_then(|id| {
+        world
+            .resource::<crate::runtime::state::SharedConfig>()
+            .mobs
+            .get(&id)
+    });
 
     // Fallback if not configured
-    let windup_ms = proto.and_then(|p| p.normal_attack_windup_ms).unwrap_or(duration.get() as u32 / 2);
+    let windup_ms = proto
+        .and_then(|p| p.normal_attack_windup_ms)
+        .unwrap_or(duration.get() / 2);
 
-    let execute_at = now.saturating_add(crate::runtime::state::SimDuration::from_millis(windup_ms as u64));
+    let execute_at = now.saturating_add(crate::runtime::state::SimDuration::from_millis(
+        windup_ms as u64,
+    ));
 
-    let target_entity_id = world.entity(target_entity).get::<crate::runtime::state::NetEntityId>().map(|n| n.net_id);
+    let target_entity_id = world
+        .entity(target_entity)
+        .get::<crate::runtime::state::NetEntityId>()
+        .map(|n| n.net_id);
 
     if let Some(target_entity_id) = target_entity_id {
-        world.entity_mut(mob_entity).insert(crate::runtime::state::MobAttackWindup {
-            execute_at,
-            target_entity: target_entity_id,
-        });
+        world
+            .entity_mut(mob_entity)
+            .insert(crate::runtime::state::MobAttackWindup {
+                execute_at,
+                target_entity: target_entity_id,
+            });
     } else {
         tracing::warn!("MobAttackWindup failed: target entity missing NetEntityId");
     }
-
-
 
     super::super::state::PendingMovement {
         mover_player_id: None,

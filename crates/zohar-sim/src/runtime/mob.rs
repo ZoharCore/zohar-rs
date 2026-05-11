@@ -153,6 +153,5 @@ pub(crate) struct MobAttackWindup {
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MobChatState {
-
     pub(crate) next_emit_at: SimInstant,
 }
