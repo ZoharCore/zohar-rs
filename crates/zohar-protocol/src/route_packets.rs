@@ -81,5 +81,22 @@ macro_rules! route_packets {
                 }
             }
         )*
+
+        ::paste::paste! {
+            #[cfg(test)]
+            #[test]
+            #[allow(non_snake_case)]
+            fn [<test_no_overlapping_opcodes_ $EnumName>]() {
+                #[deny(unreachable_patterns)]
+                let _f = |opcode: u8| {
+                    match opcode {
+                        $(
+                            $($opcode)|+ => {}
+                        )*
+                        _ => {}
+                    }
+                };
+            }
+        }
     };
 }
