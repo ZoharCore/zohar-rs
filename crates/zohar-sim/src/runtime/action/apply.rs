@@ -367,7 +367,11 @@ fn apply_mob_attack(
     ));
 
     // Calculate max allowed distance at execution time
-    let attack_range_m = proto.map(|p| crate::runtime::rules::combat::effective_attack_range_m(p.attack_range, p.battle_type)).unwrap_or(1.5);
+    let attack_range_m = proto
+        .map(|p| {
+            crate::runtime::rules::combat::effective_attack_range_m(p.attack_range, p.battle_type)
+        })
+        .unwrap_or(1.5);
     let attack_threshold_m = attack_range_m.max(0.0) * 1.15;
 
     // Add a small buffer for movement extrapolation discrepancies
@@ -386,7 +390,6 @@ fn apply_mob_attack(
                 target_entity: target_entity_id,
                 max_distance_m,
             });
-
     } else {
         tracing::warn!("MobAttackWindup failed: target entity missing NetEntityId");
     }

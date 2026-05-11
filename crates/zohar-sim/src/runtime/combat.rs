@@ -68,10 +68,19 @@ pub(crate) fn process_mob_attack_windup(world: &mut World) {
 
     // Collect entities that are ready to strike
     let mut to_execute = Vec::new();
-    let mut query = world.query::<(Entity, &crate::runtime::state::LocalTransform, &crate::runtime::state::MobAttackWindup)>();
+    let mut query = world.query::<(
+        Entity,
+        &crate::runtime::state::LocalTransform,
+        &crate::runtime::state::MobAttackWindup,
+    )>();
     for (entity, transform, windup) in query.iter(world) {
         if now >= windup.execute_at {
-            to_execute.push((entity, transform.pos, windup.target_entity, windup.max_distance_m));
+            to_execute.push((
+                entity,
+                transform.pos,
+                windup.target_entity,
+                windup.max_distance_m,
+            ));
         }
     }
 
@@ -84,7 +93,8 @@ pub(crate) fn process_mob_attack_windup(world: &mut World) {
         let target_entity = crate::runtime::spatial::net_entity(world, target_entity_id);
         if let Some(target_entity) = target_entity {
             // Check distance
-            let target_pos = crate::runtime::spatial::player_position(world, target_entity_id, now_ts);
+            let target_pos =
+                crate::runtime::spatial::player_position(world, target_entity_id, now_ts);
 
             let in_range = if let Some(target_pos) = target_pos {
                 crate::runtime::rules::movement::distance(pos, target_pos) <= max_distance_m
@@ -104,7 +114,6 @@ pub(crate) fn process_mob_attack_windup(world: &mut World) {
         }
     }
 }
-
 
 pub(crate) fn process_attack_commands(world: &mut World) {
     let commands = {
