@@ -27,7 +27,7 @@ fn select_advertised_endpoint(
 }
 
 async fn resolve_from_agones() -> anyhow::Result<SocketAddr> {
-    let mut sdk = agones::Sdk::new(None, None)
+    let sdk = agones_rest::Sdk::new(None, None)
         .await
         .context("connect to agones sdk")?;
     let health = sdk.health_check();

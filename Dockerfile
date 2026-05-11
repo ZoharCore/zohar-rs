@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:bookworm AS chef
+FROM rust:1.95-bookworm AS chef
 
 WORKDIR /work
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        protobuf-compiler libprotobuf-dev sqlite3 pkg-config libssl-dev ca-certificates \
+        sqlite3 pkg-config libssl-dev ca-certificates \
         clang mold \
     && rm -rf /var/lib/apt/lists/*
 

@@ -27,6 +27,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           components: rustfmt
 
       - name: Check formatting
@@ -42,9 +43,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+        with:
+          toolchain: 1.95.0
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2

@@ -1,0 +1,11 @@
+[package]
+name = "agones-rest"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

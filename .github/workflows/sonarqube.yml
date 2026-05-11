@@ -61,10 +61,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           components: clippy
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2

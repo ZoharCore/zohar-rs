@@ -59,14 +59,6 @@ pub(super) fn resolve_map_id_relocation(
     })
 }
 
-fn resolve_relocation(
-    _state: &InGameCtx<'_>,
-    map_id: zohar_domain::MapId,
-    local_pos: LocalPos,
-) -> Result<ResolvedRelocation, RelocationError> {
-    Ok(ResolvedRelocation { map_id, local_pos })
-}
-
 pub(super) async fn dispatch_handoff(
     state: &mut InGameCtx<'_>,
     source: &'static str,
@@ -254,9 +246,6 @@ pub(super) enum RelocationError {
 
     #[error("Target does not have a unique town spawn for routing.")]
     AmbiguousTownSpawn,
-
-    #[error("Target resolved to an invalid map position.")]
-    InvalidResolvedMapPosition,
 
     #[error("Map routing is unavailable for that destination.")]
     RoutingUnavailable,
