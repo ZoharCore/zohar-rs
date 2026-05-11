@@ -166,6 +166,7 @@ pub fn tick_player_passive_hp_recovery(
         .map(|amount| ResourceApplication::restore(Stat::Hp, amount))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn tick_player_passive_sp_recovery(
     state: &mut PlayerPassiveSpRecoveryState,
     hp: i32,
@@ -501,6 +502,7 @@ fn accrue_passive_hp(
     (amount > 0).then_some(amount)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn accrue_passive_sp(
     state: &mut PlayerPassiveSpRecoveryState,
     hp: i32,
