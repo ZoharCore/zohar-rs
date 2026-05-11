@@ -143,7 +143,16 @@ impl MobBrainState {
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MobAttackWindup {
+    pub(crate) execute_at: SimInstant,
+    pub(crate) target_entity: EntityId,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
 #[derive(Component)]
 pub(crate) struct MobChatState {
+
     pub(crate) next_emit_at: SimInstant,
 }

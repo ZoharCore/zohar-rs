@@ -11,7 +11,7 @@ use super::action_pipeline::{ActionBuffer, process_actions};
 use super::aggro::{MobAggroDispatchBuffer, route_mob_aggro};
 use super::chat::process_chat_intents;
 use super::cleanup::process_cleanup_events;
-use super::combat::{AttackCommandBuffer, process_attack_commands};
+use super::combat::{AttackCommandBuffer, process_attack_commands, process_mob_attack_windup};
 use super::facts::FrameFacts;
 use super::idle_chat::emit_idle_chat;
 use super::ingress::drain_inbound;
@@ -297,7 +297,7 @@ impl Plugin for ActionRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            (process_actions, process_attack_commands)
+            (process_actions, process_mob_attack_windup, process_attack_commands)
                 .chain()
                 .in_set(SimSet::Act),
         );

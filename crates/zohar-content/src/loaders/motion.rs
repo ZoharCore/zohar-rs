@@ -1,11 +1,29 @@
 use sqlx::{Row, SqlitePool};
 
 use crate::error::{ContentError, parse_enum};
+use std::collections::HashMap;
+use crate::types::motion::ContentHitWindow;
 use crate::types::motion::{
     ContentMotion, MotionAction, MotionMode, MotionSetKind, PlayerMotionProfile,
 };
 
 pub async fn load_motion(conn: &SqlitePool) -> Result<Vec<ContentMotion>, ContentError> {
+    let hit_window_rows = sqlx::query(
+        "SELECT motion_id, hit_index, start_ms, end_ms FROM motion_hit_window",
+    )
+    .fetch_all(conn)
+    .await?;
+
+    let mut hit_windows: HashMap<i64, Vec<ContentHitWindow>> = HashMap::new();
+    for row in hit_window_rows {
+        let motion_id: i64 = row.try_get(0)?;
+        hit_windows.entry(motion_id).or_default().push(ContentHitWindow {
+            hit_index: row.try_get(1)?,
+            start_ms: row.try_get(2)?,
+            end_ms: row.try_get(3)?,
+        });
+    }
+
     let rows = sqlx::query(
         "SELECT e.motion_id, e.motion_set_id, s.set_kind,
                 sm.mob_id, sp.profile_id,
@@ -43,6 +61,7 @@ pub async fn load_motion(conn: &SqlitePool) -> Result<Vec<ContentMotion>, Conten
                 accum_x: row.try_get(10)?,
                 accum_y: row.try_get(11)?,
                 source: row.try_get(12)?,
+                hit_windows: hit_windows.remove(&row.try_get::<i64, _>(0)?).unwrap_or_default(),
             })
         })
         .collect()

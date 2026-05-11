@@ -111,6 +111,13 @@ pub struct PlayerMotionProfile {
 }
 
 #[derive(Debug, Clone)]
+pub struct ContentHitWindow {
+    pub hit_index: i64,
+    pub start_ms: i64,
+    pub end_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ContentMotion {
     pub motion_id: i64,
     pub motion_set_id: String,
@@ -125,4 +132,5 @@ pub struct ContentMotion {
     pub accum_x: Option<f64>,
     pub accum_y: Option<f64>,
     pub source: String,
+    pub hit_windows: Vec<ContentHitWindow>,
 }

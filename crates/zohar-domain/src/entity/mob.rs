@@ -83,6 +83,8 @@ pub struct MobPrototypeDef {
     pub aggressive_sight: u16,
     pub attack_range: u16,
     pub combat_extent_m: f32,
+    pub normal_attack_windup_ms: Option<u32>,
+    pub normal_attack_duration_ms: Option<u32>,
     pub combat: MobCombatStats,
     pub rewards: MobRewards,
     #[cfg_attr(feature = "admin-brp", reflect(ignore))]
@@ -104,6 +106,8 @@ impl MobPrototypeDef {
             aggressive_sight: 0,
             attack_range: 150,
             combat_extent_m: 1.0,
+            normal_attack_windup_ms: None,
+            normal_attack_duration_ms: None,
             combat: MobCombatStats {
                 strength: 3,
                 dexterity: 6,
