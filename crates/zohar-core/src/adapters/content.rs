@@ -603,7 +603,6 @@ mod tests {
         }
     }
 
-
     fn valid_mob(mob_id: i64, mob_type: MobType) -> ContentMob {
         ContentMob {
             mob_id,

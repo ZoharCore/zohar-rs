@@ -27,7 +27,7 @@ fn select_advertised_endpoint(
 }
 
 async fn resolve_from_agones() -> anyhow::Result<SocketAddr> {
-    let mut sdk = agones::Sdk::new(None, None)
+    let mut sdk = agones_rest::Sdk::new(None, None)
         .await
         .context("connect to agones sdk")?;
     let health = sdk.health_check();
@@ -58,7 +58,7 @@ async fn resolve_from_agones() -> anyhow::Result<SocketAddr> {
             continue;
         };
         let address = status.address.trim();
-        let Some(port) = status.ports.first().map(|entry| entry.port as u16) else {
+        let Some(port) = status.ports.first().map(|entry| entry.port) else {
             if Instant::now() >= deadline {
                 return Err(anyhow!("agones gameserver has no allocated ports"));
             }

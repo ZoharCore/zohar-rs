@@ -271,6 +271,7 @@ pub trait SessionsView: Send + Sync {
         stale_threshold_secs: i64,
     ) -> impl Future<Output = DbResult<AcquireSessionResult>> + Send;
 
+    #[allow(clippy::too_many_arguments)]
     fn resume_with_token(
         &self,
         username: &str,

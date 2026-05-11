@@ -641,6 +641,7 @@ pub mod game {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn resume_session_with_token(
         pool: &PgPool,
         username: &str,
