@@ -857,12 +857,10 @@ fn set_player_progression_for_test(
     entity
         .get_mut::<PlayerProgressionComp>()
         .expect("player progression")
-        .0
         .level = level;
     entity
         .get_mut::<PlayerProgressionComp>()
         .expect("player progression")
-        .0
         .exp_in_level = i64::from(exp_in_level);
     entity
         .get_mut::<PlayerStatsComp>()

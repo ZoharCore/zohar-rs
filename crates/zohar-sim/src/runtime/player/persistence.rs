@@ -290,10 +290,10 @@ fn player_snapshot(
 
 fn player_progression_snapshot(progression: &PlayerProgressionComp) -> PlayerProgressionSnapshot {
     PlayerProgressionSnapshot {
-        level: progression.0.level,
-        exp_in_level: progression.0.exp_in_level,
-        core_stat_allocations: progression.0.core_stat_allocations,
-        stat_reset_count: progression.0.stat_reset_count,
+        level: progression.level,
+        exp_in_level: progression.exp_in_level,
+        core_stat_allocations: progression.core_stat_allocations,
+        stat_reset_count: progression.stat_reset_count,
     }
 }
 
@@ -468,24 +468,26 @@ mod tests {
     }
 
     fn test_progression() -> PlayerProgressionComp {
-        PlayerProgressionComp(PlayerGameplayBootstrap {
+        PlayerProgressionComp {
+            level: 1,
+            exp_in_level: 0,
+            core_stat_allocations: CoreStatAllocations::default(),
+            stat_reset_count: 0,
+        }
+    }
+
+    fn test_stats(current_hp: i32, current_sp: i32, current_stamina: i32) -> PlayerStatsComp {
+        let gameplay = PlayerGameplayBootstrap {
             player_id: PlayerId::from(1),
             class: PlayerClass::Warrior,
             level: 1,
             exp_in_level: 0,
             core_stat_allocations: CoreStatAllocations::default(),
             stat_reset_count: 0,
-            current_hp: None,
-            current_sp: None,
-            current_stamina: None,
-        })
-    }
-
-    fn test_stats(current_hp: i32, current_sp: i32, current_stamina: i32) -> PlayerStatsComp {
-        let mut gameplay = test_progression().0;
-        gameplay.current_hp = Some(current_hp);
-        gameplay.current_sp = Some(current_sp);
-        gameplay.current_stamina = Some(current_stamina);
+            current_hp: Some(current_hp),
+            current_sp: Some(current_sp),
+            current_stamina: Some(current_stamina),
+        };
         let hydrated = test_player_stat_rules()
             .hydrate_player(&gameplay)
             .expect("player stats should hydrate for tests");

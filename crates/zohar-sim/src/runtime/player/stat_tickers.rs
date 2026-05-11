@@ -16,7 +16,7 @@ use crate::runtime::time::SimTickerClock;
 use super::super::actor_stats::apply_actor_resource;
 use super::super::facts::{ActorRef, FrameFacts, PlayerStaminaTimerChanged};
 use super::super::state::{
-    NetEntityId, PlayerActivityComp, PlayerMovementAnimation, PlayerProgressionComp,
+    NetEntityId, PlayerActivityComp, PlayerAppearanceComp, PlayerMovementAnimation,
     PlayerStatTickerComp, PlayerStatsComp, RuntimeState, SimDuration, SimInstant,
 };
 
@@ -208,8 +208,8 @@ fn tick_passive_sp(
         read_player_stats(world, player_entity, |stats| {
             let profile = world
                 .entity(player_entity)
-                .get::<PlayerProgressionComp>()
-                .map(|progression| sp_recovery_profile(progression.0.class))?;
+                .get::<PlayerAppearanceComp>()
+                .map(|appearance| sp_recovery_profile(appearance.0.class))?;
             Some((
                 stats.0.read_packet(Stat::Hp),
                 stats.0.read_limited(Stat::MaxHp),
