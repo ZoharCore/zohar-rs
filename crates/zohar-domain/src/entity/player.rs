@@ -2,8 +2,8 @@ pub mod skill;
 
 use std::time::Duration;
 
-use crate::{DbId, MapId};
 use crate::coords::LocalPos;
+use crate::{DbId, MapId};
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

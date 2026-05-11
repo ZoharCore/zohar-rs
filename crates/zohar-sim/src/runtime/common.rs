@@ -11,8 +11,9 @@ use zohar_domain::entity::{EntityId, MovementKind};
 pub(crate) use crate::runtime::config::{MapConfig, SharedConfig};
 pub(crate) use crate::runtime::life::{ActorLifeComp, RestartReadiness};
 pub(crate) use crate::runtime::mob::{
-    MobAggro, MobAggroQueue, MobBrainMode, MobBrainState, MobChatState, MobHomeAnchor, MobMarker,
-    MobMotion, MobMotionState, MobPackId, MobRef, MobStatsComp, SpawnRuleState,
+    MobAggro, MobAggroQueue, MobAttackWindup, MobBrainMode, MobBrainState, MobChatState,
+    MobHomeAnchor, MobMarker, MobMotion, MobMotionState, MobPackId, MobRef, MobStatsComp,
+    SpawnRuleState,
 };
 pub(crate) use crate::runtime::player::{
     ChatIntent, ChatIntentQueue, PlayerActivityComp, PlayerAppearanceComp, PlayerCommand,

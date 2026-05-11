@@ -342,13 +342,57 @@ fn apply_mob_attack(
         spatial.0.update_position(entity_id, pos);
     }
     set_mob_brain(world, mob_entity, next_brain);
-    world
-        .resource_mut::<AttackCommandBuffer>()
-        .0
-        .push(AttackCommand::MobBasicAttack {
-            attacker_entity: mob_entity,
-            victim_entity: target_entity,
-        });
+
+    // Instead of resolving damage now, we just insert a windup component
+    // The windup component will trigger the damage pipeline when it expires
+
+    let mob_id = world
+        .entity(mob_entity)
+        .get::<crate::runtime::state::MobRef>()
+        .map(|r| r.mob_id);
+    let proto = mob_id.and_then(|id| {
+        world
+            .resource::<crate::runtime::state::SharedConfig>()
+            .mobs
+            .get(&id)
+    });
+
+    // Fallback if not configured
+    let windup_ms = proto
+        .and_then(|p| p.normal_attack_windup_ms)
+        .unwrap_or(duration.get() / 2);
+
+    let execute_at = now.saturating_add(crate::runtime::state::SimDuration::from_millis(
+        windup_ms as u64,
+    ));
+
+    // Calculate max allowed distance at execution time
+    let attack_range_m = proto
+        .map(|p| {
+            crate::runtime::rules::combat::effective_attack_range_m(p.attack_range, p.battle_type)
+        })
+        .unwrap_or(1.5);
+    let attack_threshold_m = attack_range_m.max(0.0) * 1.15;
+
+    // Add a small buffer for movement extrapolation discrepancies
+    let max_distance_m = attack_threshold_m + 1.0;
+
+    let target_entity_id = world
+        .entity(target_entity)
+        .get::<crate::runtime::state::NetEntityId>()
+        .map(|n| n.net_id);
+
+    if let Some(target_entity_id) = target_entity_id {
+        world
+            .entity_mut(mob_entity)
+            .insert(crate::runtime::state::MobAttackWindup {
+                execute_at,
+                target_entity: target_entity_id,
+                max_distance_m,
+            });
+    } else {
+        tracing::warn!("MobAttackWindup failed: target entity missing NetEntityId");
+    }
 
     super::super::state::PendingMovement {
         mover_player_id: None,

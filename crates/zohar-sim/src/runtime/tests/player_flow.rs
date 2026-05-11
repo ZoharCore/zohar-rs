@@ -220,6 +220,8 @@ fn test_mob_proto(
         aggressive_sight: 0,
         attack_range: 150,
         combat_extent_m: 1.0,
+        normal_attack_windup_ms: Some(0),
+        normal_attack_duration_ms: None,
         combat: test_mob_combat(level),
         rewards: Default::default(),
         bhv_flags,
@@ -244,6 +246,8 @@ fn test_portal_proto(
         aggressive_sight: 0,
         attack_range: 0,
         combat_extent_m: 1.0,
+        normal_attack_windup_ms: Some(0),
+        normal_attack_duration_ms: None,
         combat: test_mob_combat(1),
         rewards: Default::default(),
         bhv_flags: BehaviorFlags::empty(),
@@ -308,6 +312,8 @@ fn test_mob_proto_with_combat_and_rewards(
         aggressive_sight,
         attack_range,
         combat_extent_m: 1.0,
+        normal_attack_windup_ms: Some(0),
+        normal_attack_duration_ms: None,
         combat: test_mob_combat(level),
         rewards,
         bhv_flags,
@@ -1034,6 +1040,7 @@ fn run_mob_ai(app: &mut App) {
     super::mob_motion::sample_mob_motion(app.world_mut());
     super::mob_ai::process_mob_ai(app.world_mut());
     super::action_pipeline::process_actions(app.world_mut());
+    super::combat::process_mob_attack_windup(app.world_mut());
     super::combat::process_attack_commands(app.world_mut());
     super::actor_life::process_life_events(app.world_mut());
     super::actor_life::process_actor_lifecycle(app.world_mut());
@@ -1821,11 +1828,11 @@ fn passive_stamina_recovery_restores_after_legacy_stop_delay() {
             .0
             .with_api_mut(|api| api.set_resource(Stat::Stamina, 400).expect("set stamina"));
         let _ = stats.0.drain_sync();
-        drop(stats);
+        // drop(stats);
 
         let mut activity = entity.get_mut::<PlayerActivityComp>().expect("activity");
         activity.last_movement_start_at = Some(sim_ms(0));
-        drop(activity);
+        // drop(activity);
 
         let mut ticker = entity
             .get_mut::<PlayerStatTickerComp>()
@@ -1904,7 +1911,7 @@ fn stamina_depletion_movement_animation_replicates_to_observers() {
             .0
             .with_api_mut(|api| api.set_resource(Stat::Stamina, 1).expect("set stamina"));
         let _ = stats.0.drain_sync();
-        drop(stats);
+        // drop(stats);
 
         entity.insert(PlayerMotion(PlayerMotionState {
             segment_start_pos: initial_pos,
@@ -1919,7 +1926,7 @@ fn stamina_depletion_movement_animation_replicates_to_observers() {
         activity.last_movement_start_at = Some(sim_ms(0));
         activity.last_attack_at = Some(sim_ms(500));
         activity.preferred_movement_animation = MovementAnimation::Run;
-        drop(activity);
+        // drop(activity);
 
         let mut ticker = entity
             .get_mut::<PlayerStatTickerComp>()

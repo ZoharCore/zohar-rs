@@ -179,7 +179,62 @@ pub(crate) fn build_mob_proto(catalog: &ContentCatalog) -> HashMap<MobId, MobPro
             fallback
         });
 
+        let mut normal_attack_windup_ms = None;
+        let mut normal_attack_duration_ms = None;
+
+        let motion_set_id = mob.code.to_string();
+        let normal_attacks: Vec<_> = catalog
+            .motion
+            .iter()
+            .filter(|m| {
+                m.motion_set_id == motion_set_id
+                    && m.set_kind == zohar_content::types::motion::MotionSetKind::Mob
+                    && m.motion_mode == zohar_content::types::motion::MotionMode::General
+                    && m.motion_action == zohar_content::types::motion::MotionAction::NormalAttack
+            })
+            .collect();
+
+        if !normal_attacks.is_empty() {
+            let max_duration = normal_attacks
+                .iter()
+                .map(|m| m.duration_ms)
+                .max()
+                .unwrap_or(0);
+            normal_attack_duration_ms = Some(max_duration as u32);
+
+            let mut latest_start = 0;
+            let mut earliest_end = i64::MAX;
+            let mut weighted_start_sum = 0;
+            let mut total_weight = 0;
+
+            for m in &normal_attacks {
+                let weight = m.weight.max(1);
+
+                // If there are hit windows, use the first one, otherwise assume start is 0
+                let start_ms = m.hit_windows.first().map(|hw| hw.start_ms).unwrap_or(0);
+                let end_ms = m
+                    .hit_windows
+                    .first()
+                    .and_then(|hw| hw.end_ms)
+                    .unwrap_or(m.duration_ms);
+
+                latest_start = latest_start.max(start_ms);
+                earliest_end = earliest_end.min(end_ms);
+
+                weighted_start_sum += start_ms * weight;
+                total_weight += weight;
+            }
+
+            if latest_start <= earliest_end {
+                normal_attack_windup_ms = Some(latest_start as u32);
+            } else if total_weight > 0 {
+                normal_attack_windup_ms = Some((weighted_start_sum / total_weight) as u32);
+            }
+        }
+
         let proto = MobPrototype::new(MobPrototypeDef {
+            normal_attack_windup_ms,
+            normal_attack_duration_ms,
             mob_id,
             mob_kind,
             name: mob.name.clone(),
@@ -602,7 +657,6 @@ mod tests {
             base_y: Some(0.0),
         }
     }
-
 
     fn valid_mob(mob_id: i64, mob_type: MobType) -> ContentMob {
         ContentMob {

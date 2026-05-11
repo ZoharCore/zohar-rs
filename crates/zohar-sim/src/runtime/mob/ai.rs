@@ -404,22 +404,32 @@ fn handle_pursuit(
         && target_distance_m <= attack_threshold_m
         && (!context.movement_in_flight || segment_end_in_attack_range)
     {
-        let timing = combat::attack_timing_for_mob(context.proto.attack_speed);
+        let legacy_timing = combat::attack_timing_for_mob(context.proto.attack_speed);
+
+        // Use normal attack windup/duration if present, else fallback to legacy
+        let packet_duration_ms = context
+            .proto
+            .normal_attack_duration_ms
+            .unwrap_or(legacy_timing.packet_duration.get() as u32);
+        let cooldown = legacy_timing.cooldown;
+
+        let packet_duration = zohar_map_port::PacketDuration::new(packet_duration_ms);
+
         brain.mode = MobBrainMode::AttackWindup;
         brain.attack_windup_until =
             context
                 .now
                 .saturating_add(super::state::SimDuration::from_packet_duration(
-                    timing.packet_duration,
+                    packet_duration,
                 ));
-        brain.next_attack_at = context.now.saturating_add(timing.cooldown);
+        brain.next_attack_at = context.now.saturating_add(cooldown);
 
         return build_mob_attack_action(
             world,
             mob_entity,
             target,
             target_pos,
-            timing.packet_duration.get(),
+            packet_duration_ms,
             *brain,
             MobActionCompletion::RethinkAtActionEnd,
         );

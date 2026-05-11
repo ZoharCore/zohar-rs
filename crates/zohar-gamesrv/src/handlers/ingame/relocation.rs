@@ -59,6 +59,7 @@ pub(super) fn resolve_map_id_relocation(
     })
 }
 
+#[allow(dead_code)]
 fn resolve_relocation(
     _state: &InGameCtx<'_>,
     map_id: zohar_domain::MapId,
@@ -256,6 +257,7 @@ pub(super) enum RelocationError {
     AmbiguousTownSpawn,
 
     #[error("Target resolved to an invalid map position.")]
+    #[allow(dead_code)]
     InvalidResolvedMapPosition,
 
     #[error("Map routing is unavailable for that destination.")]

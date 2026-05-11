@@ -80,7 +80,7 @@ pub(crate) struct MobHomeAnchor {
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub(crate) enum MobBrainMode {
     Idle,
     Pursuit,
@@ -96,7 +96,7 @@ pub(crate) enum MobAggro {
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MobBrainState {
     pub(crate) mode: MobBrainMode,
     pub(crate) target: Option<EntityId>,
@@ -139,6 +139,15 @@ impl MobBrainState {
     pub(crate) const fn attack_windup_until(&self) -> SimInstant {
         self.attack_windup_until
     }
+}
+
+#[cfg_attr(feature = "admin-brp", derive(Reflect))]
+#[cfg_attr(feature = "admin-brp", reflect(Component))]
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MobAttackWindup {
+    pub(crate) execute_at: SimInstant,
+    pub(crate) target_entity: EntityId,
+    pub(crate) max_distance_m: f32,
 }
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
