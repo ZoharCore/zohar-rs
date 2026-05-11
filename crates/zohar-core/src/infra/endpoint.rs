@@ -58,7 +58,7 @@ async fn resolve_from_agones() -> anyhow::Result<SocketAddr> {
             continue;
         };
         let address = status.address.trim();
-        let Some(port) = status.ports.first().map(|entry| entry.port as u16) else {
+        let Some(port) = status.ports.first().map(|entry| entry.port) else {
             if Instant::now() >= deadline {
                 return Err(anyhow!("agones gameserver has no allocated ports"));
             }
