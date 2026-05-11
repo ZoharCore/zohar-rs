@@ -14,7 +14,7 @@ use tokio::sync::oneshot;
 use zohar_domain::appearance::PlayerAppearance;
 use zohar_domain::coords::{Facing72, LocalPos};
 use zohar_domain::entity::player::{
-    PlayerGameplayBootstrap, PlayerId, PlayerPlaytime, PlayerRuntimeEpoch,
+    CoreStatAllocations, PlayerId, PlayerPlaytime, PlayerRuntimeEpoch,
 };
 use zohar_domain::entity::{EntityId, MovementAnimation, MovementKind};
 use zohar_gameplay::stats::game::{
@@ -118,8 +118,13 @@ pub(crate) struct PlayerAppearanceComp(pub(crate) PlayerAppearance);
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
 #[cfg_attr(feature = "admin-brp", reflect(Component))]
-#[derive(Component)]
-pub(crate) struct PlayerProgressionComp(pub(crate) PlayerGameplayBootstrap);
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlayerProgressionComp {
+    pub(crate) level: i32,
+    pub(crate) exp_in_level: i64,
+    pub(crate) core_stat_allocations: CoreStatAllocations,
+    pub(crate) stat_reset_count: i32,
+}
 
 #[derive(Component)]
 pub(crate) struct PlayerStatsComp(pub(crate) PlayerStatsRuntime);

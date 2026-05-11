@@ -176,7 +176,12 @@ pub(crate) fn handle_player_enter(world: &mut World, msg: EnterMsg, mut outbox: 
                 last_client_ts: ClientTimestamp::ZERO,
             }),
             PlayerAppearanceComp(appearance),
-            PlayerProgressionComp(msg.gameplay.clone()),
+            PlayerProgressionComp {
+                level: msg.gameplay.level,
+                exp_in_level: msg.gameplay.exp_in_level,
+                core_stat_allocations: msg.gameplay.core_stat_allocations,
+                stat_reset_count: msg.gameplay.stat_reset_count,
+            },
             PlayerProgressionIntentQueue::default(),
             PlayerPendingDurableFlush::default(),
             player_stats_comp(hydrated),

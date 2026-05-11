@@ -201,8 +201,8 @@ fn apply_player_exp_reward(
     };
 
     let current = PlayerProgressionState::new(
-        progression.0.level,
-        progression.0.exp_in_level.clamp(0, i64::from(u32::MAX)) as u32,
+        progression.level,
+        progression.exp_in_level.clamp(0, i64::from(u32::MAX)) as u32,
         stats.0.read_packet(Stat::NextExp).clamp(0, i32::MAX) as u32,
     );
     let Some(outcome) =
@@ -213,8 +213,8 @@ fn apply_player_exp_reward(
         return Ok(None);
     };
 
-    progression.0.level = outcome.progression.level;
-    progression.0.exp_in_level = i64::from(outcome.progression.exp_in_level);
+    progression.level = outcome.progression.level;
+    progression.exp_in_level = i64::from(outcome.progression.exp_in_level);
     apply_reward_stats(&mut stats, &outcome)?;
 
     if let Some(update) = stats.0.normalize().public_state {

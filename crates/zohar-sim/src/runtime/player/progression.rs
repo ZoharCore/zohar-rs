@@ -159,21 +159,21 @@ fn validate_core_stat_intent(
     delta: i8,
 ) -> Result<ValidatedCoreStatSave, ProgressionError> {
     let shared = world.resource::<SharedConfig>().clone();
-    let mut query = world.query::<(&PlayerMarker, &PlayerProgressionComp, &PlayerStatsComp)>();
-    let (marker, progression, stats) = query
+    let mut query = world.query::<(&PlayerMarker, &PlayerAppearanceComp, &PlayerProgressionComp, &PlayerStatsComp)>();
+    let (marker, appearance, progression, stats) = query
         .get(world, player_entity)
         .map_err(|_| ProgressionError::MissingPlayerState)?;
 
     let current_stats = shared
         .player_stats
-        .resolve_player_stats(progression.0.class, progression.0.core_stat_allocations)
+        .resolve_player_stats(appearance.0.class, progression.core_stat_allocations)
         .ok_or(ProgressionError::MissingPlayerClassConfig {
             player_id: marker.player_id,
             stat,
         })?;
 
-    let mut allocations = progression.0.core_stat_allocations;
-    let mut stat_reset_count = progression.0.stat_reset_count;
+    let mut allocations = progression.core_stat_allocations;
+    let mut stat_reset_count = progression.stat_reset_count;
     let (current_absolute, allocation_slot) = match stat {
         CoreStatKind::St => (current_stats.stat_str, &mut allocations.allocated_str),
         CoreStatKind::Ht => (current_stats.stat_vit, &mut allocations.allocated_vit),
@@ -217,8 +217,8 @@ fn validate_core_stat_intent(
     Ok(ValidatedCoreStatSave {
         stat,
         progression: PlayerProgressionSnapshot {
-            level: progression.0.level,
-            exp_in_level: progression.0.exp_in_level,
+            level: progression.level,
+            exp_in_level: progression.exp_in_level,
             core_stat_allocations: allocations,
             stat_reset_count,
         },
@@ -250,8 +250,8 @@ fn apply_validated_core_stat_save(
         validated.stat_points_delta,
     )?;
 
-    progression.0.core_stat_allocations = validated.progression.core_stat_allocations;
-    progression.0.stat_reset_count = validated.progression.stat_reset_count;
+    progression.core_stat_allocations = validated.progression.core_stat_allocations;
+    progression.stat_reset_count = validated.progression.stat_reset_count;
     Ok(())
 }
 
