@@ -35,7 +35,10 @@ pub struct HealthCheck {
 
 impl HealthCheck {
     pub async fn send(&self, _: ()) -> anyhow::Result<()> {
-        self.tx.send(()).await.map_err(|_| anyhow!("health check channel closed"))
+        self.tx
+            .send(())
+            .await
+            .map_err(|_| anyhow!("health check channel closed"))
     }
 }
 
@@ -58,7 +61,12 @@ impl Sdk {
 
         tokio::spawn(async move {
             while let Some(()) = rx.recv().await {
-                if let Err(e) = client.post(&health_url).json(&serde_json::json!({})).send().await {
+                if let Err(e) = client
+                    .post(&health_url)
+                    .json(&serde_json::json!({}))
+                    .send()
+                    .await
+                {
                     error!(error = ?e, "Agones health check failed");
                 }
             }
@@ -92,12 +100,16 @@ impl Sdk {
     }
 
     pub async fn get_gameserver(&self) -> anyhow::Result<GameServer> {
-        let response = self.client
+        let response = self
+            .client
             .get(format!("{}/gameserver", self.base_url))
             .send()
             .await
             .context("get gameserver request")?;
 
-        response.json::<GameServer>().await.context("parse gameserver json")
+        response
+            .json::<GameServer>()
+            .await
+            .context("parse gameserver json")
     }
 }
