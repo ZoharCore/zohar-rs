@@ -123,9 +123,23 @@ pub enum AcquireSessionResult {
     AlreadyOnOtherServer { server_id: String },
 }
 
+
+/// Result of attempting to resume a session.
+#[cfg(feature = "db-game")]
+#[derive(Debug, Clone)]
+pub enum ResumeSessionResult {
+    /// Session resumed successfully
+    Resumed,
+    /// Session exists on another server and is still active
+    AlreadyActive,
+    /// Login token is missing or invalid
+    InvalidToken,
+}
+
 // =============================================================================
 // Auth Database Traits
 // =============================================================================
+
 
 /// Auth database bundle trait.
 ///
@@ -280,7 +294,7 @@ pub trait SessionsView: Send + Sync {
         stale_threshold_secs: i64,
         idle_ttl_secs: i64,
         peer_ip: &str,
-    ) -> impl Future<Output = DbResult<bool>> + Send;
+    ) -> impl Future<Output = DbResult<ResumeSessionResult>> + Send;
 
     fn validate_login_token(
         &self,
@@ -288,7 +302,7 @@ pub trait SessionsView: Send + Sync {
         login_token: u32,
         idle_ttl_secs: i64,
         peer_ip: &str,
-    ) -> impl Future<Output = DbResult<bool>> + Send;
+    ) -> impl Future<Output = DbResult<ResumeSessionResult>> + Send;
 
     fn set_login_token(
         &self,

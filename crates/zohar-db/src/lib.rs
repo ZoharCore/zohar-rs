@@ -62,7 +62,7 @@ pub use traits::{
 };
 #[cfg(feature = "db-game")]
 pub use traits::{
-    AcquireSessionResult, CreatePlayerOutcome, GameDb, PlayerCoreStatAllocationRow,
+    AcquireSessionResult, CreatePlayerOutcome, GameDb, PlayerCoreStatAllocationRow, ResumeSessionResult,
     PlayerRuntimeStateRow, PlayerStatesView, PlayerStatsBootstrapRow, PlayerSummaryRow,
     PlayerWriteOutcome, PlayersView, ProfileRow, ProfilesView, SessionsView,
 };

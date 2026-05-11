@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use uuid::Uuid;
-use zohar_db::{DbResult, Game, GameDb, ProfilesView, SessionsView};
+use zohar_db::{DbResult, Game, GameDb, ProfilesView, ResumeSessionResult, SessionsView};
 use zohar_domain::Empire as DomainEmpire;
 use zohar_net::connection::NextConnection;
 use zohar_net::connection::game_conn::Login as ThisPhase;
@@ -73,16 +73,23 @@ async fn authenticate_token_login(
     deps: &LoginDeps,
     input: TokenLoginInput,
 ) -> DbResult<AuthDecision> {
-    let accepted = if try_persisted_login(deps, &input).await? {
-        true
-    } else {
-        try_totp_bootstrap(deps, &input).await?
-    };
+    let mut resume_result = try_persisted_login(deps, &input).await?;
+    if let ResumeSessionResult::InvalidToken = resume_result {
+        resume_result = try_totp_bootstrap(deps, &input).await?;
+    }
 
-    if !accepted {
-        return Ok(AuthDecision::Rejected {
-            reason: LoginFailReason::InvalidCredentials,
-        });
+    match resume_result {
+        ResumeSessionResult::Resumed => {}
+        ResumeSessionResult::AlreadyActive => {
+            return Ok(AuthDecision::Rejected {
+                reason: LoginFailReason::AlreadyLoggedIn,
+            });
+        }
+        ResumeSessionResult::InvalidToken => {
+            return Ok(AuthDecision::Rejected {
+                reason: LoginFailReason::InvalidCredentials,
+            });
+        }
     }
 
     let profile = deps.db.profiles().get_or_create(&input.username).await?;
@@ -98,7 +105,7 @@ async fn authenticate_token_login(
     })
 }
 
-async fn try_persisted_login(deps: &LoginDeps, input: &TokenLoginInput) -> DbResult<bool> {
+async fn try_persisted_login(deps: &LoginDeps, input: &TokenLoginInput) -> DbResult<ResumeSessionResult> {
     match &deps.mode {
         PersistedCheckMode::ClaimActive {
             server_id,
@@ -132,12 +139,12 @@ async fn try_persisted_login(deps: &LoginDeps, input: &TokenLoginInput) -> DbRes
     }
 }
 
-async fn try_totp_bootstrap(deps: &LoginDeps, input: &TokenLoginInput) -> DbResult<bool> {
+async fn try_totp_bootstrap(deps: &LoginDeps, input: &TokenLoginInput) -> DbResult<ResumeSessionResult> {
     if !deps
         .token_signer
         .verify(&input.username, input.enc_key, input.token)
     {
-        return Ok(false);
+        return Ok(ResumeSessionResult::InvalidToken);
     }
 
     deps.db

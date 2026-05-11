@@ -9,7 +9,7 @@ use crate::traits::AccountRow;
 #[cfg(feature = "db-game")]
 use crate::traits::{
     AcquireSessionResult, CreatePlayerOutcome, PlayerCoreStatAllocationRow, PlayerRuntimeStateRow,
-    PlayerStatsBootstrapRow, PlayerSummaryRow, PlayerWriteOutcome, ProfileRow,
+    PlayerStatsBootstrapRow, PlayerSummaryRow, PlayerWriteOutcome, ProfileRow, ResumeSessionResult
 };
 use crate::{DbContext, DbResult, OptionDbExt};
 use sqlx::{PgPool, Row};
@@ -650,7 +650,7 @@ pub mod game {
         stale_threshold_secs: i64,
         idle_ttl_secs: i64,
         peer_ip: &str,
-    ) -> DbResult<bool> {
+    ) -> DbResult<ResumeSessionResult> {
         let result = sqlx::query(
             "UPDATE game.sessions
              SET server_id = $3,
@@ -681,7 +681,31 @@ pub mod game {
         .await
         .db_ctx("resume session with token")?;
 
-        Ok(result.rows_affected() > 0)
+        if result.rows_affected() > 0 {
+            return Ok(ResumeSessionResult::Resumed);
+        }
+
+        let is_valid = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                SELECT 1 FROM game.sessions
+                WHERE username = $1
+                  AND login_token = $2
+                  AND login_issued_at IS NOT NULL
+                  AND login_issued_at >= NOW() - make_interval(secs => GREATEST($3, 0)::double precision)
+            )"
+        )
+        .bind(username)
+        .bind(i64::from(login_token))
+        .bind(idle_ttl_secs)
+        .fetch_one(pool)
+        .await
+        .db_ctx("check valid token")?;
+
+        if is_valid {
+            Ok(ResumeSessionResult::AlreadyActive)
+        } else {
+            Ok(ResumeSessionResult::InvalidToken)
+        }
     }
 
     pub async fn set_session_login_token(
@@ -749,7 +773,7 @@ pub mod game {
         login_token: u32,
         idle_ttl_secs: i64,
         peer_ip: &str,
-    ) -> DbResult<bool> {
+    ) -> DbResult<ResumeSessionResult> {
         let result = sqlx::query(
             "UPDATE game.sessions
              SET login_issued_at = NOW(),
@@ -769,7 +793,31 @@ pub mod game {
         .await
         .db_ctx("validate session login token")?;
 
-        Ok(result.rows_affected() > 0)
+        if result.rows_affected() > 0 {
+            return Ok(ResumeSessionResult::Resumed);
+        }
+
+        let is_valid = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                SELECT 1 FROM game.sessions
+                WHERE username = $1
+                  AND login_token = $2
+                  AND login_issued_at IS NOT NULL
+                  AND login_issued_at >= NOW() - make_interval(secs => GREATEST($3, 0)::double precision)
+            )"
+        )
+        .bind(username)
+        .bind(i64::from(login_token))
+        .bind(idle_ttl_secs)
+        .fetch_one(pool)
+        .await
+        .db_ctx("check valid token")?;
+
+        if is_valid {
+            Ok(ResumeSessionResult::AlreadyActive)
+        } else {
+            Ok(ResumeSessionResult::InvalidToken)
+        }
     }
 
     pub async fn mark_session_stale(
