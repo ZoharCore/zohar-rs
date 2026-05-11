@@ -1,5 +1,5 @@
-use crate::aoi::SpatialIndex;
-use crate::replication::ReplicationGraph;
+use crate::spatial::aoi::SpatialIndex;
+use crate::net::replication::ReplicationGraph;
 use bevy::prelude::*;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;

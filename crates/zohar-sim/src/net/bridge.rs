@@ -5,7 +5,7 @@ use zohar_domain::entity::EntityId;
 use zohar_domain::entity::player::PlayerSnapshot;
 use zohar_map_port::{ClientIntentMsg, EnterMsg, GlobalShoutMsg, LeaveMsg, PlayerEvent};
 
-use crate::outbox::PlayerOutbox;
+use crate::net::outbox::PlayerOutbox;
 
 const PLAYER_EVENT_BUFFER: usize = 256;
 

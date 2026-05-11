@@ -4,7 +4,7 @@ use zohar_domain::entity::player::{CoreStatKind, PlayerId, PlayerProgressionSnap
 use zohar_gameplay::stats::game::{Stat, StatWriteError};
 use zohar_map_port::{ChatChannel, PlayerEvent, PlayerProgressionIntent};
 
-use crate::persistence::PlayerPersistencePort;
+use crate::core::persistence::PlayerPersistencePort;
 
 use super::PendingDurableFlush;
 use super::persistence::{capture_player_snapshot, mark_player_dirty};
@@ -386,7 +386,7 @@ enum ProgressionError {
     #[error("Progression persistence queue failure: {source}.")]
     PersistenceQueue {
         #[from]
-        source: crate::persistence::PlayerPersistenceQueueError,
+        source: crate::core::persistence::PlayerPersistenceQueueError,
     },
 
     #[error("{stat:?} write out of range ({attempted}, expected {min:?}..={max}).")]

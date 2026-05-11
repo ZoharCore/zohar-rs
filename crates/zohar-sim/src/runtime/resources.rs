@@ -1,4 +1,4 @@
-use crate::bridge::InboundEvent;
+use crate::net::bridge::InboundEvent;
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
 use rand::rngs::SmallRng;
