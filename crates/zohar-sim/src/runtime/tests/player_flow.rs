@@ -1786,6 +1786,57 @@ fn passive_hp_recovery_emits_stat_update_when_cadence_is_due() {
 }
 
 #[test]
+fn passive_hp_recovery_can_rescue_alive_zero_hp_player() {
+    let map_id = MapId::new("map41");
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (shared, map) = test_configs(map_key);
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let player_id = PlayerId::from(1_004);
+    let player_net_id = EntityId(5_108);
+    let initial_pos = LocalPos::new(6_400.0, 6_400.0);
+    let appearance = PlayerAppearance {
+        name: "ZeroHp".to_string(),
+        level: 2,
+        ..Default::default()
+    };
+    let mut gameplay = gameplay_bootstrap_from_appearance(player_id, &appearance);
+    gameplay.current_hp = Some(0);
+
+    let mut map_rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay,
+        player_net_id,
+        initial_pos,
+        appearance,
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut map_rx);
+
+    {
+        let entity = player_entity(&app, player_id);
+        let mut entity = app.world_mut().entity_mut(entity);
+        let mut ticker = entity
+            .get_mut::<PlayerStatTickerComp>()
+            .expect("player stat ticker");
+        ticker.passive_hp.clock =
+            SimTickerClock::scheduled(sim_ms(0), sim_ms(1_000), SimDuration::from_millis(250));
+    }
+
+    set_sim_now(&mut app, 1_000);
+    run_fixed_update(&mut app);
+    run_fixed_post_update(&mut app);
+    let stat_events = stat_events(&drain_player_events(&mut map_rx));
+
+    assert!(
+        stat_events.iter().any(|(entity_id, stat, absolute)| {
+            *entity_id == player_net_id && *stat == Stat::Hp && *absolute > 0
+        }),
+        "alive zero-hp player should recover instead of getting stuck, got {stat_events:?}"
+    );
+}
+
+#[test]
 fn passive_stamina_recovery_restores_after_legacy_stop_delay() {
     let map_id = MapId::new("map41");
     let map_key = MapInstanceKey::shared(1, map_id);
@@ -2842,15 +2893,11 @@ fn player_killing_mob_emits_dead_packet_to_visible_players() {
         damage_info_count,
         "dying mob should reject further damage info, got {events:?}"
     );
-
-    set_sim_now(&mut app, 10_000);
-    run_actor_lifecycle(&mut app);
-    events.extend(drain_player_events(&mut rx));
-
     assert!(
         dead_events(&events).contains(&mob_net_id),
-        "mob death should emit legacy dead packet after dying delay, got {events:?}"
+        "attacking a dying/stunned mob should finalize death immediately, got {events:?}"
     );
+
     let dead_snapshot = super::spawn_events::make_entity_snapshot(
         app.world(),
         app.world().resource::<SharedConfig>(),
@@ -3211,6 +3258,97 @@ fn mob_drops_player_target_after_dead_phase() {
     assert!(
         damage_info_events(&events).is_empty(),
         "corpse attacks should not produce damage info, got {events:?}"
+    );
+}
+
+#[test]
+fn mob_attack_on_stunned_player_finalizes_death_immediately() {
+    let map_id = MapId::new("map41");
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "player_stun_finish_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_212);
+    let mut gameplay = default_gameplay_bootstrap(player_id, PlayerClass::Warrior, 1);
+    gameplay.current_hp = Some(1);
+    let mut rx = enter_player_with_gameplay(
+        &inbound_tx,
+        gameplay,
+        player_net_id,
+        LocalPos::new(10.0, 10.0),
+        PlayerAppearance::default(),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut rx);
+
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(10.5, 10.0),
+        east_rot(),
+        1_000,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
+
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+    let mut events = drain_player_events(&mut rx);
+    assert!(
+        stunned_events(&events).contains(&player_net_id),
+        "lethal mob attack should put the player into dying/stun, got {events:?}"
+    );
+    assert!(
+        !dead_events(&events).contains(&player_net_id),
+        "player should not emit dead packet before delay or follow-up hit, got {events:?}"
+    );
+
+    let player_entity = player_entity(&app, player_id);
+    let damage_info_count = damage_info_events(&events).len();
+    app.world_mut()
+        .resource_mut::<super::combat::AttackCommandBuffer>()
+        .0
+        .push(super::combat::AttackCommand::MobBasicAttack {
+            attacker_entity: mob_entity,
+            victim_entity: player_entity,
+        });
+    super::combat::process_attack_commands(app.world_mut());
+    run_actor_lifecycle(&mut app);
+    events.extend(drain_player_events(&mut rx));
+
+    assert_eq!(
+        damage_info_events(&events).len(),
+        damage_info_count,
+        "attacking a dying/stunned player should not emit extra damage info, got {events:?}"
+    );
+    assert!(
+        dead_events(&events).contains(&player_net_id),
+        "attacking a dying/stunned player should finalize death immediately, got {events:?}"
     );
 }
 

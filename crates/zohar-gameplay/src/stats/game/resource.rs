@@ -38,7 +38,7 @@ impl ResourceApplication {
     }
 
     pub const fn damage(amount: i32) -> Self {
-        Self::spend(Stat::Hp, amount)
+        Self::spend(Stat::Hp, amount).with_min_value(i32::MIN)
     }
 
     pub const fn nonlethal_damage(amount: i32, min_remaining_hp: i32) -> Self {

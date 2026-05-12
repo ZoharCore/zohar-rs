@@ -182,7 +182,6 @@ pub fn tick_player_passive_sp_recovery(
 
 pub fn tick_player_stamina(
     state: &mut PlayerStaminaState,
-    hp: i32,
     stamina: i32,
     max_stamina: i32,
     activity: PlayerStatActivity,
@@ -191,7 +190,6 @@ pub fn tick_player_stamina(
 ) -> PlayerStaminaEffect {
     let output = tick_stamina(
         state,
-        hp,
         stamina,
         max_stamina,
         activity,
@@ -221,14 +219,13 @@ pub enum PlayerStaminaMovementOverride {
 
 fn tick_stamina(
     state: &mut PlayerStaminaState,
-    hp: i32,
     current: i32,
     max: i32,
     activity: PlayerStatActivity,
     movement_mode: MovementAnimation,
     elapsed: Duration,
 ) -> PlayerStaminaOutput {
-    let stamina = LegacyStaminaSnapshot::new(hp, current, max, activity, movement_mode);
+    let stamina = LegacyStaminaSnapshot::new(current, max, activity, movement_mode);
 
     if stamina.should_consume() {
         return consume_running_stamina(state, stamina.current, elapsed);
@@ -246,7 +243,6 @@ fn tick_stamina(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LegacyStaminaSnapshot {
-    alive: bool,
     current: i32,
     max: i32,
     movement: LegacyStaminaMovement,
@@ -255,7 +251,6 @@ struct LegacyStaminaSnapshot {
 
 impl LegacyStaminaSnapshot {
     fn new(
-        hp: i32,
         current: i32,
         max: i32,
         activity: PlayerStatActivity,
@@ -264,7 +259,6 @@ impl LegacyStaminaSnapshot {
         const COMBAT_WINDOW: Duration = Duration::from_secs(20);
 
         Self {
-            alive: hp > 0,
             current,
             max,
             movement: LegacyStaminaMovement::new(activity, movement_mode, current),
@@ -273,11 +267,11 @@ impl LegacyStaminaSnapshot {
     }
 
     fn should_consume(self) -> bool {
-        self.alive && self.inside_combat_window && self.movement.is_combat_run()
+        self.inside_combat_window && self.movement.is_combat_run()
     }
 
     fn restore(self) -> Option<LegacyStaminaRestore> {
-        if !self.alive || self.current >= self.max {
+        if self.current >= self.max {
             return None;
         }
 
@@ -477,7 +471,7 @@ fn accrue_passive_hp(
     elapsed: Duration,
 ) -> Option<i32> {
     let missing = max_hp.saturating_sub(hp);
-    if hp <= 0 || missing <= 0 {
+    if missing <= 0 {
         state.accumulator.reset();
         return None;
     }
@@ -512,7 +506,7 @@ fn accrue_passive_sp(
     elapsed: Duration,
 ) -> Option<i32> {
     let missing = max_sp.saturating_sub(sp);
-    if hp <= 0 || missing <= 0 {
+    if missing <= 0 {
         state.accumulator.reset();
         return None;
     }
@@ -682,7 +676,6 @@ mod tests {
         );
         let stamina = tick_player_stamina(
             &mut state.stamina,
-            input.resources.hp,
             input.resources.stamina,
             input.resources.max_stamina,
             input.activity,
@@ -769,6 +762,16 @@ mod tests {
     }
 
     #[test]
+    fn passive_hp_recovers_zero_hp_when_runtime_life_allows_ticking() {
+        let mut state = TestTickerState::default();
+        let input = input(0, 1_000, 200, 200);
+
+        let output = tick_player_stat_tickers(&mut state, input, Duration::from_secs(3));
+
+        assert_eq!(application_delta(output, Stat::Hp), Some(65));
+    }
+
+    #[test]
     fn passive_sp_restores_standard_legacy_resting_amount_when_hp_is_full() {
         let mut state = TestTickerState::default();
         let input = input(1_000, 1_000, 100, 300);
@@ -782,6 +785,16 @@ mod tests {
     fn passive_sp_uses_lower_standard_resting_amount_while_hp_is_missing() {
         let mut state = TestTickerState::default();
         let input = input(900, 1_000, 100, 300);
+
+        let output = tick_player_stat_tickers(&mut state, input, Duration::from_secs(3));
+
+        assert_eq!(application_delta(output, Stat::Sp), Some(5));
+    }
+
+    #[test]
+    fn passive_sp_recovers_zero_hp_when_runtime_life_allows_ticking() {
+        let mut state = TestTickerState::default();
+        let input = input(0, 1_000, 100, 300);
 
         let output = tick_player_stat_tickers(&mut state, input, Duration::from_secs(3));
 
@@ -964,6 +977,29 @@ mod tests {
         assert_eq!(application_delta(output, Stat::Stamina), Some(800));
         // Partial stamina (not zero) should not trigger walk mode override
         assert_eq!(output.movement_override, None);
+    }
+
+    #[test]
+    fn stamina_recovers_zero_hp_when_runtime_life_allows_ticking() {
+        let mut state = TestTickerState::default();
+        let input = PlayerStatTickerInput {
+            resources: PlayerRecoveryResources {
+                hp: 0,
+                stamina: 300,
+                max_stamina: 800,
+                ..input(1_000, 1_000, 300, 300).resources
+            },
+            activity: PlayerStatActivity {
+                movement: PlayerMovementActivity::stopped_for(Duration::from_secs(3)),
+                ..Default::default()
+            },
+            movement_mode: MovementAnimation::Run,
+            ..input(1_000, 1_000, 300, 300)
+        };
+
+        let output = tick_player_stat_tickers(&mut state, input, Duration::from_secs(1));
+
+        assert_eq!(application_delta(output, Stat::Stamina), Some(800));
     }
 
     #[test]

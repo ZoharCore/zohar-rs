@@ -346,7 +346,7 @@ pub(crate) fn validate_player_attack(
     if target_entity == net_entity(world, attacker_net_id).unwrap_or(Entity::PLACEHOLDER) {
         return None;
     }
-    if !crate::runtime::actor_life::actor_can_take_combat_damage(world, target_entity) {
+    if !crate::runtime::actor_life::actor_can_be_combat_target(world, target_entity) {
         return None;
     }
 

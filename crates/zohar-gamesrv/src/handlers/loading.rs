@@ -51,6 +51,8 @@ struct PreparedLoadingStats {
     packet_points: WireStatSnapshot,
 }
 
+const DEAD_RECONNECT_HP: i32 = 1;
+
 async fn handle_enter(state: &LoadingCtx<'_>) -> PhaseResult<PhaseEffects<ThisPhase>> {
     let spawn_pos = state
         .ctx
@@ -117,10 +119,14 @@ fn gameplay_bootstrap_from_row(player: &PlayerStatsBootstrapRow) -> PlayerGamepl
             allocated_int: player.core_stat_allocations.allocated_int,
         },
         stat_reset_count: player.stat_reset_count,
-        current_hp: player.current_hp,
+        current_hp: normalize_loaded_hp(player.current_hp),
         current_sp: player.current_sp,
         current_stamina: player.current_stamina,
     }
+}
+
+fn normalize_loaded_hp(current_hp: Option<i32>) -> Option<i32> {
+    current_hp.map(|hp| if hp <= 0 { DEAD_RECONNECT_HP } else { hp })
 }
 
 async fn handle_tick(
@@ -342,4 +348,17 @@ pub(crate) async fn run_loading(
         drive_loading(conn, &mut state),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_loaded_hp_revives_non_positive_persisted_hp() {
+        assert_eq!(normalize_loaded_hp(Some(0)), Some(DEAD_RECONNECT_HP));
+        assert_eq!(normalize_loaded_hp(Some(-25)), Some(DEAD_RECONNECT_HP));
+        assert_eq!(normalize_loaded_hp(Some(321)), Some(321));
+        assert_eq!(normalize_loaded_hp(None), None);
+    }
 }

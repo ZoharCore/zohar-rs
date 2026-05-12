@@ -43,6 +43,10 @@ impl PlayerStatTickerComp {
     }
 
     pub(crate) fn reset_after_restart(&mut self, now: SimInstant) {
+        self.reset_after_regeneration_pause(now);
+    }
+
+    fn reset_after_regeneration_pause(&mut self, now: SimInstant) {
         self.passive_hp
             .clock
             .retry_after(now, Self::PASSIVE_HP_CADENCE);
@@ -95,8 +99,11 @@ pub(crate) fn process_player_stat_tickers(world: &mut World) {
     let players = super::players::player_entities_on_map(world);
 
     for player_entity in players {
-        if !world.entities().contains(player_entity) || !player_can_regenerate(world, player_entity)
-        {
+        if !world.entities().contains(player_entity) {
+            continue;
+        }
+        if !player_can_regenerate(world, player_entity) {
+            pause_player_stat_tickers(world, player_entity, now);
             continue;
         }
 
@@ -107,6 +114,14 @@ pub(crate) fn process_player_stat_tickers(world: &mut World) {
         tick_passive_sp(world, player_entity, activity, now);
         tick_stamina(world, player_entity, activity, now);
     }
+}
+
+fn pause_player_stat_tickers(world: &mut World, player_entity: Entity, now: SimInstant) {
+    let mut entity = world.entity_mut(player_entity);
+    let Some(mut tickers) = entity.get_mut::<PlayerStatTickerComp>() else {
+        return;
+    };
+    tickers.reset_after_regeneration_pause(now);
 }
 
 fn player_stat_activity(
@@ -255,14 +270,13 @@ fn tick_stamina(
     activity: PlayerStatActivity,
     now: SimInstant,
 ) {
-    let Some((hp, stamina, max_stamina, movement_mode)) =
+    let Some((stamina, max_stamina, movement_mode)) =
         read_player_stats(world, player_entity, |stats| {
             let movement_mode = world
                 .entity(player_entity)
                 .get::<PlayerMovementAnimation>()
                 .map(|animation| animation.0)?;
             Some((
-                stats.0.read_packet(Stat::Hp),
                 stats.0.read_packet(Stat::Stamina),
                 stats.0.read_limited(Stat::MaxStamina),
                 movement_mode,
@@ -281,7 +295,6 @@ fn tick_stamina(
         tickers.stamina.clock.advance_due(now).map(|elapsed| {
             tick_player_stamina(
                 &mut tickers.stamina.state,
-                hp,
                 stamina,
                 max_stamina,
                 activity,

@@ -60,6 +60,10 @@ impl ActorLifeComp {
         matches!(self.phase, ActorLifePhase::Dead { .. })
     }
 
+    pub(crate) const fn is_dying(&self) -> bool {
+        matches!(self.phase, ActorLifePhase::Dying { .. })
+    }
+
     pub(crate) const fn can_act(&self) -> bool {
         self.is_alive()
     }
@@ -159,6 +163,13 @@ pub(crate) fn actor_can_take_combat_damage(world: &World, entity: Entity) -> boo
         .is_none_or(ActorLifeComp::can_take_combat_damage)
 }
 
+pub(crate) fn actor_is_dying(world: &World, entity: Entity) -> bool {
+    world
+        .entity(entity)
+        .get::<ActorLifeComp>()
+        .is_some_and(ActorLifeComp::is_dying)
+}
+
 pub(crate) fn actor_can_be_combat_target(world: &World, entity: Entity) -> bool {
     world
         .entity(entity)
@@ -215,6 +226,43 @@ fn begin_actor_dying(world: &mut World, actor: ActorRef) -> bool {
         .push(ActorDyingStarted { actor });
     stop_actor_activity_for_dying(world, actor.entity, now);
     true
+}
+
+pub(crate) fn finalize_dying_actor_death(world: &mut World, actor: ActorRef) -> bool {
+    let now = world.resource::<RuntimeState>().sim_now;
+
+    if !world.entities().contains(actor.entity)
+        || world
+            .entity(actor.entity)
+            .get::<NetEntityId>()
+            .is_none_or(|net| net.net_id != actor.id)
+    {
+        return false;
+    }
+
+    let is_player = world.entity(actor.entity).get::<PlayerMarker>().is_some();
+    let is_mob = world.entity(actor.entity).get::<MobMarker>().is_some();
+
+    let finalized = {
+        let mut entity_ref = world.entity_mut(actor.entity);
+        let Some(mut life) = entity_ref.get_mut::<ActorLifeComp>() else {
+            return false;
+        };
+        if !life.is_dying() {
+            return false;
+        }
+        life.phase = death_phase(now, actor.id, is_player, is_mob);
+        true
+    };
+
+    if finalized {
+        world
+            .resource_mut::<FrameFacts>()
+            .life
+            .death_finalized
+            .push(ActorDeathFinalized { actor });
+    }
+    finalized
 }
 
 fn stop_actor_activity_for_dying(world: &mut World, entity: Entity, now: SimInstant) {

@@ -74,6 +74,10 @@ pub(crate) fn process_attack_commands(world: &mut World) {
 }
 
 fn process_attack_command(world: &mut World, command: AttackCommand) {
+    if try_finalize_dying_victim(world, command) {
+        return;
+    }
+
     let Some(outcome) = resolve_attack_command(world, command) else {
         return;
     };
@@ -91,6 +95,30 @@ fn process_attack_command(world: &mut World, command: AttackCommand) {
                 killer: Some(outcome.attacker.actor),
             });
     }
+}
+
+fn try_finalize_dying_victim(world: &mut World, command: AttackCommand) -> bool {
+    let (attacker_entity, victim_entity) = match command {
+        AttackCommand::PlayerBasicAttack {
+            attacker_entity,
+            victim_entity,
+        }
+        | AttackCommand::MobBasicAttack {
+            attacker_entity,
+            victim_entity,
+        } => (attacker_entity, victim_entity),
+    };
+
+    if !crate::runtime::actor_life::actor_can_act(world, attacker_entity)
+        || !crate::runtime::actor_life::actor_is_dying(world, victim_entity)
+    {
+        return false;
+    }
+
+    let Some(victim) = combatant_snapshot(world, victim_entity) else {
+        return false;
+    };
+    crate::runtime::actor_life::finalize_dying_actor_death(world, victim.actor)
 }
 
 fn resolve_normal_hit(input: NormalHitInput) -> ResolvedHit {

@@ -22,6 +22,24 @@ fn resource_application_can_clamp_nonlethal_damage() {
 }
 
 #[test]
+fn lethal_damage_can_drive_hp_below_zero() {
+    let source = player_source(600, 200, 800, 40, 20, 5);
+    let mut state = TestActorStatState::new(ActorKind::Player);
+    state.set_player_progression(PlayerProgressionState::level_only(10));
+
+    let mut api = GameStatsApi::new(&source, &mut state);
+    api.sync();
+    api.set_resource(Stat::Hp, 25).unwrap();
+
+    let result = api.apply_resource(ResourceApplication::damage(40)).unwrap();
+
+    assert_eq!(result.previous, 25);
+    assert_eq!(result.current, -15);
+    assert_eq!(result.applied_delta, -40);
+    assert!(!result.was_clamped);
+}
+
+#[test]
 fn pending_recovery_application_consumes_caller_scheduled_amount() {
     let source = player_source(600, 200, 800, 40, 20, 5);
     let mut state = TestActorStatState::new(ActorKind::Player);

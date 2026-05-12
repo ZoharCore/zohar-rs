@@ -14,6 +14,7 @@ use crate::runtime::spatial::sample_player_visual_position_at;
 
 use super::super::common::{LocalTransform, MapConfig, PlayerIndex, RuntimeState};
 use super::super::facts::FrameFacts;
+use super::super::life::ActorLifeComp;
 use super::super::time::{SimDuration, SimInstant, SimTickerClock};
 use super::{
     PlayerMarker, PlayerMotion, PlayerPendingDurableFlush, PlayerPersistenceState,
@@ -22,6 +23,7 @@ use super::{
 
 const AUTOSAVE_INTERVAL: SimDuration = SimDuration::from_millis(30_000);
 const AUTOSAVE_RETRY_DELAY: SimDuration = SimDuration::from_millis(1_000);
+const DEAD_DISCONNECT_RESTART_HP: i32 = 50;
 
 impl PlayerPersistenceState {
     pub(crate) fn initial(
@@ -258,6 +260,7 @@ pub(crate) fn leave_player_and_snapshot(
     let Some(stats) = world.entity(entity).get::<PlayerStatsComp>() else {
         return Err(anyhow!("player {:?} is missing stats state", msg.player_id));
     };
+    let life = world.entity(entity).get::<ActorLifeComp>();
     let snapshot = player_snapshot(
         player_runtime_snapshot(
             world.resource::<MapConfig>(),
@@ -270,7 +273,7 @@ pub(crate) fn leave_player_and_snapshot(
                 .entity(entity)
                 .get::<PlayerMotion>()
                 .map(|motion| motion.0),
-            current_resources(stats),
+            reconnect_resources(stats, life),
         ),
         player_progression_snapshot(progression),
     );
@@ -334,6 +337,14 @@ fn current_resources(stats: &PlayerStatsComp) -> CurrentResources {
     }
 }
 
+fn reconnect_resources(stats: &PlayerStatsComp, life: Option<&ActorLifeComp>) -> CurrentResources {
+    let mut resources = current_resources(stats);
+    if life.is_some_and(|life| !life.is_alive()) {
+        resources.hp = Some(DEAD_DISCONNECT_RESTART_HP);
+    }
+    resources
+}
+
 fn current_playtime(persistence: &PlayerPersistenceState, now: SimInstant) -> PlayerPlaytime {
     let elapsed: Duration = now.saturating_sub(persistence.entered_map_at).into();
     persistence.persisted_playtime.saturating_add(elapsed)
@@ -373,6 +384,7 @@ mod tests {
         PlayerPersistencePort, PlayerPersistenceRequest, SaveUrgency, player_persistence_channel,
     };
     use crate::runtime::common::NetEntityId;
+    use crate::runtime::life::ActorLifePhase;
     use crate::runtime::player::{
         PendingDurableFlush, PlayerMotionState, PlayerPendingDurableFlush, PlayerProgressionComp,
         PlayerStatsComp,
@@ -741,5 +753,68 @@ mod tests {
         assert!(snapshot.runtime.local_pos.x > 1.9);
         assert_eq!(snapshot.runtime.local_pos.y, 1.2);
         assert_eq!(snapshot.progression.stat_reset_count, 0);
+    }
+
+    #[test]
+    fn leave_player_and_snapshot_saves_restart_hp_for_dead_player() {
+        let mut world = World::new();
+        world.insert_resource(test_map_config(None));
+        world.insert_resource(RuntimeState {
+            sim_now: SimInstant::from_millis(500),
+            ..Default::default()
+        });
+        world.insert_resource(PlayerIndex::default());
+
+        let player_id = PlayerId::from(7);
+        let entity = world
+            .spawn((
+                PlayerMarker { player_id },
+                NetEntityId {
+                    net_id: EntityId(77),
+                },
+                LocalTransform {
+                    pos: LocalPos::new(3.2, 1.2),
+                    rot: Facing72::from_wrapped(0),
+                },
+                test_progression(),
+                test_stats(-35, 222, 444),
+                ActorLifeComp {
+                    phase: ActorLifePhase::Dead {
+                        entered_at: SimInstant::ZERO,
+                        restart_here_allowed_at: None,
+                        restart_town_allowed_at: None,
+                        forced_respawn_at: None,
+                        cleanup_at: None,
+                    },
+                },
+                PlayerPersistenceState {
+                    dirty: true,
+                    runtime_epoch: Default::default(),
+                    persisted_playtime: PlayerPlaytime::from_secs(90),
+                    entered_map_at: SimInstant::ZERO,
+                    autosave: due_autosave_clock(),
+                },
+            ))
+            .id();
+        world
+            .resource_mut::<PlayerIndex>()
+            .0
+            .insert(player_id, entity);
+
+        let snapshot = leave_player_and_snapshot(
+            &mut world,
+            LeaveMsg {
+                player_id,
+                player_net_id: EntityId(77),
+            },
+        )
+        .expect("snapshot");
+
+        assert_eq!(
+            snapshot.runtime.current_hp,
+            Some(DEAD_DISCONNECT_RESTART_HP)
+        );
+        assert_eq!(snapshot.runtime.current_sp, Some(222));
+        assert_eq!(snapshot.runtime.current_stamina, Some(444));
     }
 }
