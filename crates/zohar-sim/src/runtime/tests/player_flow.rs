@@ -90,6 +90,7 @@ fn test_configs(map_key: MapInstanceKey) -> (SharedConfig, MapConfig) {
     (
         SharedConfig {
             motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
+            mob_attack_timings: Arc::new(crate::MobAttackTimingTable::default()),
             mobs: Arc::new(HashMap::new()),
             player_stats: Arc::new(test_player_stat_rules()),
             wander: WanderConfig::default(),
@@ -652,6 +653,16 @@ fn projectile_effect_events(
         .collect()
 }
 
+fn projectile_target_events(events: &[PlayerEvent]) -> Vec<zohar_map_port::ProjectileTargetEvent> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::SetProjectileTarget(event) => Some(*event),
+            _ => None,
+        })
+        .collect()
+}
+
 fn attack_movement_count(events: &[PlayerEvent], entity_id: EntityId) -> usize {
     events
         .iter()
@@ -940,6 +951,9 @@ fn dead_player_runtime(
     advance_tick(&mut app);
     let _ = drain_player_events(&mut rx);
 
+    set_sim_now(&mut app, 1_000);
+    set_sim_now(&mut app, 1_000);
+    set_sim_now(&mut app, 1_000);
     set_stationary_mob(
         &mut app,
         mob_entity,
@@ -948,6 +962,10 @@ fn dead_player_runtime(
         1_000,
     );
     set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+
+    set_sim_now(&mut app, 1_600);
     run_mob_ai(&mut app);
     run_fixed_post_update(&mut app);
     let events = drain_player_events(&mut rx);
@@ -3139,6 +3157,7 @@ fn mob_attack_applies_damage_to_player_hp() {
     advance_tick(&mut app);
     let _ = drain_player_events(&mut rx);
 
+    set_sim_now(&mut app, 1_000);
     set_stationary_mob(
         &mut app,
         mob_entity,
@@ -3149,6 +3168,18 @@ fn mob_attack_applies_damage_to_player_hp() {
     set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
 
     let hp_before = player_hp(&app, player_id);
+    run_mob_ai(&mut app);
+    assert_eq!(
+        player_hp(&app, player_id),
+        hp_before,
+        "fallback mob attack timing should still wait for a windup"
+    );
+
+    set_sim_now(&mut app, 1_599);
+    run_mob_ai(&mut app);
+    assert_eq!(player_hp(&app, player_id), hp_before);
+
+    set_sim_now(&mut app, 1_600);
     run_mob_ai(&mut app);
     let hp_after = player_hp(&app, player_id);
     run_fixed_post_update(&mut app);
@@ -3167,6 +3198,302 @@ fn mob_attack_applies_damage_to_player_hp() {
                     && *damage > 0
             }),
         "player damage should emit damage info packet, got {events:?}"
+    );
+}
+
+#[test]
+fn mob_attack_damage_waits_for_motion_hit_timing() {
+    let map_id = MapId::new("map41");
+    let mob_id = MobId::new(101);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mob_attack_timings).upsert_timing(
+        mob_id,
+        crate::MobAttackTiming {
+            proc: crate::MobAttackProcTiming::Melee {
+                damage_delay_ms: 400,
+            },
+            action_duration_ms: 800,
+        },
+    );
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "delayed_damage_wolf",
+            MobRank::Pawn,
+            MobBattleType::Melee,
+            1,
+            100,
+            100,
+            0,
+            150,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_210);
+    let _rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(10.0, 10.0),
+    );
+    advance_tick(&mut app);
+
+    set_sim_now(&mut app, 1_000);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(10.5, 10.0),
+        east_rot(),
+        1_000,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
+
+    let hp_before = player_hp(&app, player_id);
+    run_mob_ai(&mut app);
+
+    assert_eq!(
+        player_hp(&app, player_id),
+        hp_before,
+        "mob attack packet should not apply damage before the motion hit frame"
+    );
+    assert_eq!(
+        pending_movements(&app)
+            .into_iter()
+            .find(|movement| movement.entity_id == mob_net_id)
+            .map(|movement| (movement.kind, movement.duration.get())),
+        Some((MovementKind::Attack, 800))
+    );
+
+    set_sim_now(&mut app, 1_399);
+    run_mob_ai(&mut app);
+    assert_eq!(player_hp(&app, player_id), hp_before);
+
+    set_sim_now(&mut app, 1_400);
+    run_mob_ai(&mut app);
+    assert!(
+        player_hp(&app, player_id) < hp_before,
+        "damage should resolve when the authored hit timing is due"
+    );
+}
+
+#[test]
+fn ranged_mob_attack_sets_projectile_target_and_damages_after_projectile_travel() {
+    let map_id = MapId::new("map41");
+    let mob_id = MobId::new(102);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mob_attack_timings).upsert_timing(
+        mob_id,
+        crate::MobAttackTiming {
+            proc: crate::MobAttackProcTiming::Projectile {
+                release_delay_ms: 300,
+                flight: crate::FlyTiming {
+                    init_vel_units_per_sec: 3_000,
+                    forward_accel_units_per_sec2: 100,
+                    bomb_range_units: 0,
+                },
+            },
+            action_duration_ms: 900,
+        },
+    );
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "ranged_damage_archer",
+            MobRank::Pawn,
+            MobBattleType::Range,
+            1,
+            100,
+            100,
+            0,
+            800,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_211);
+    let mut rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(5.5, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut rx);
+
+    set_sim_now(&mut app, 1_000);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(10.5, 10.0),
+        east_rot(),
+        1_000,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
+
+    let hp_before = player_hp(&app, player_id);
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+    let events = drain_player_events(&mut rx);
+    assert_eq!(player_hp(&app, player_id), hp_before);
+    assert_eq!(
+        projectile_target_events(&events),
+        vec![zohar_map_port::ProjectileTargetEvent {
+            caster_entity_id: mob_net_id,
+            target_entity_id: player_net_id,
+            target_pos: LocalPos::new(5.5, 10.0),
+            append: false,
+        }]
+    );
+    let projectile_target_index = events
+        .iter()
+        .position(|event| matches!(event, PlayerEvent::SetProjectileTarget(_)))
+        .expect("ranged mob attack should send a fly target");
+    let attack_move_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                PlayerEvent::EntityMove(movement)
+                    if movement.entity_id == mob_net_id && movement.kind == MovementKind::Attack
+            )
+        })
+        .expect("ranged mob attack should send an attack movement");
+    assert!(
+        projectile_target_index < attack_move_index,
+        "the client needs the fly target before the attack animation reaches its fly event"
+    );
+
+    set_sim_now(&mut app, 1_466);
+    run_mob_ai(&mut app);
+    assert_eq!(player_hp(&app, player_id), hp_before);
+
+    set_sim_now(&mut app, 1_467);
+    run_mob_ai(&mut app);
+    assert!(
+        player_hp(&app, player_id) < hp_before,
+        "projectile damage should resolve after release plus estimated client travel time"
+    );
+}
+
+fn assert_projectile_mob_without_motion_timing_still_uses_windup_before_damage(
+    battle_type: MobBattleType,
+) {
+    let map_id = MapId::new("map41");
+    let mob_id = MobId::new(103);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(10.5, 10.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "fallback_archer",
+            MobRank::Pawn,
+            battle_type,
+            1,
+            100,
+            100,
+            0,
+            800,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, true);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let mob_net_id = first_mob_net_id(&mut app);
+    let player_id = PlayerId::from(1);
+    let player_net_id = EntityId(5_212);
+    let mut rx = enter_player(
+        &inbound_tx,
+        player_id,
+        player_net_id,
+        LocalPos::new(5.5, 10.0),
+    );
+    advance_tick(&mut app);
+    let _ = drain_player_events(&mut rx);
+
+    set_sim_now(&mut app, 1_000);
+    set_stationary_mob(
+        &mut app,
+        mob_entity,
+        LocalPos::new(10.5, 10.0),
+        east_rot(),
+        1_000,
+    );
+    set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
+
+    let hp_before = player_hp(&app, player_id);
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+    let events = drain_player_events(&mut rx);
+    assert_eq!(
+        player_hp(&app, player_id),
+        hp_before,
+        "ranged fallback must not apply damage on the attack decision tick"
+    );
+    assert_eq!(
+        projectile_target_events(&events),
+        vec![zohar_map_port::ProjectileTargetEvent {
+            caster_entity_id: mob_net_id,
+            target_entity_id: player_net_id,
+            target_pos: LocalPos::new(5.5, 10.0),
+            append: false,
+        }]
+    );
+
+    set_sim_now(&mut app, 1_763);
+    run_mob_ai(&mut app);
+    assert_eq!(player_hp(&app, player_id), hp_before);
+
+    set_sim_now(&mut app, 1_764);
+    run_mob_ai(&mut app);
+    assert!(
+        player_hp(&app, player_id) < hp_before,
+        "fallback ranged damage should resolve after draw-down plus estimated projectile travel"
+    );
+}
+
+#[test]
+fn ranged_mob_without_motion_timing_still_uses_windup_before_damage() {
+    assert_projectile_mob_without_motion_timing_still_uses_windup_before_damage(
+        MobBattleType::Range,
     );
 }
 
@@ -3217,6 +3544,7 @@ fn mob_drops_player_target_after_dead_phase() {
     advance_tick(&mut app);
     let _ = drain_player_events(&mut rx);
 
+    set_sim_now(&mut app, 1_000);
     set_stationary_mob(
         &mut app,
         mob_entity,
@@ -3226,6 +3554,10 @@ fn mob_drops_player_target_after_dead_phase() {
     );
     set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
 
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+
+    set_sim_now(&mut app, 1_600);
     run_mob_ai(&mut app);
     run_fixed_post_update(&mut app);
     let events = drain_player_events(&mut rx);
@@ -3307,6 +3639,7 @@ fn mob_attack_on_stunned_player_finalizes_death_immediately() {
     advance_tick(&mut app);
     let _ = drain_player_events(&mut rx);
 
+    set_sim_now(&mut app, 1_000);
     set_stationary_mob(
         &mut app,
         mob_entity,
@@ -3316,6 +3649,10 @@ fn mob_attack_on_stunned_player_finalizes_death_immediately() {
     );
     set_mob_chasing(&mut app, mob_entity, player_net_id, 1_000, 0);
 
+    run_mob_ai(&mut app);
+    run_fixed_post_update(&mut app);
+
+    set_sim_now(&mut app, 1_600);
     run_mob_ai(&mut app);
     run_fixed_post_update(&mut app);
     let mut events = drain_player_events(&mut rx);
@@ -4412,7 +4749,7 @@ fn mob_attacks_from_current_position_within_threshold() {
     assert_eq!(movement.kind, MovementKind::Attack);
     assert_eq!(movement.new_pos, LocalPos::new(1.0, 1.0));
     assert_eq!(movement.rot, east_rot());
-    assert_eq!(movement.duration, 600);
+    assert_eq!(movement.duration, 2_000);
     assert_eq!(
         app.world()
             .entity(mob_entity)
@@ -4670,11 +5007,10 @@ fn aggro_received_during_attack_windup_is_processed_after_windup() {
     );
     run_mob_ai(&mut app);
 
-    let movement = pending_movements(&app)
-        .into_iter()
-        .find(|movement| movement.kind == MovementKind::Wait)
-        .expect("retargeted chase packet");
-    assert!(movement.new_pos.x > 1.0);
+    assert!(
+        pending_movements(&app).is_empty(),
+        "post-attack settle should not emit a correction packet"
+    );
     assert_eq!(
         app.world()
             .entity(mob_entity)
@@ -4682,6 +5018,30 @@ fn aggro_received_during_attack_windup_is_processed_after_windup() {
             .map(|brain| brain.target()),
         Some(Some(retarget_player_net_id))
     );
+
+    clear_pending_movements(&mut app);
+    set_sim_now(
+        &mut app,
+        windup_until_ms.saturating_add(super::state::SimDuration::from_millis(50)),
+    );
+    run_mob_ai(&mut app);
+    assert!(
+        pending_movements(&app).is_empty(),
+        "post-attack settle should suppress immediate follow-up movement"
+    );
+
+    clear_pending_movements(&mut app);
+    set_sim_now(
+        &mut app,
+        windup_until_ms.saturating_add(super::state::SimDuration::from_millis(102)),
+    );
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("retargeted chase packet");
+    assert!(movement.new_pos.x > 1.0);
 }
 
 #[test]
@@ -4769,12 +5129,10 @@ fn mob_resumes_wait_chase_after_attack_windup_expires() {
     );
     run_mob_ai(&mut app);
 
-    let movement = pending_movements(&app)
-        .into_iter()
-        .find(|movement| movement.kind == MovementKind::Wait)
-        .expect("resumed chase packet");
-    assert_eq!(movement.kind, MovementKind::Wait);
-    assert!(movement.new_pos.x > 1.0);
+    assert!(
+        pending_movements(&app).is_empty(),
+        "post-attack settle should not emit a correction packet"
+    );
     assert_eq!(
         app.world()
             .entity(mob_entity)
@@ -4782,6 +5140,30 @@ fn mob_resumes_wait_chase_after_attack_windup_expires() {
             .map(|brain| brain.mode()),
         Some(MobBrainMode::Pursuit)
     );
+
+    clear_pending_movements(&mut app);
+    set_sim_now(
+        &mut app,
+        windup_until_ms.saturating_add(super::state::SimDuration::from_millis(50)),
+    );
+    run_mob_ai(&mut app);
+    assert!(
+        pending_movements(&app).is_empty(),
+        "post-attack settle should suppress immediate follow-up movement"
+    );
+
+    clear_pending_movements(&mut app);
+    set_sim_now(
+        &mut app,
+        windup_until_ms.saturating_add(super::state::SimDuration::from_millis(102)),
+    );
+    run_mob_ai(&mut app);
+
+    let movement = pending_movements(&app)
+        .into_iter()
+        .find(|movement| movement.kind == MovementKind::Wait)
+        .expect("resumed chase packet");
+    assert!(movement.new_pos.x > 1.0);
 }
 
 #[test]
@@ -4943,6 +5325,99 @@ fn mid_walk_chase_interrupts_into_attack_once_sampled_position_is_in_range() {
         .expect("mob motion");
     assert!((motion.segment_start_pos.x - 2.0).abs() <= 0.01);
     assert!((motion.segment_end_pos.x - 2.0).abs() <= 0.01);
+}
+
+#[test]
+fn ranged_mob_waits_for_current_segment_before_attacking() {
+    let map_id = MapId::new("map41");
+    let mob_id = MobId::new(102);
+    let map_key = MapInstanceKey::shared(1, map_id);
+    let (mut shared, mut map) = test_configs(map_key);
+    map.local_size = LocalSize::new(12.0, 8.0);
+    map.spawn_rules.push(Arc::new(SpawnRuleDef {
+        template: SpawnTemplate::Mob(mob_id),
+        area: SpawnArea::new(LocalPos::new(1.0, 1.0), LocalSize::new(0.0, 0.0)),
+        facing: FacingStrategy::Fixed(Direction::East),
+        max_count: 1,
+        regen_time: Duration::from_secs(60),
+    }));
+    Arc::make_mut(&mut shared.mobs).insert(
+        mob_id,
+        test_mob_proto_with_combat(
+            mob_id,
+            MobKind::Monster,
+            "segment_finish_archer",
+            MobRank::Pawn,
+            MobBattleType::Range,
+            1,
+            100,
+            100,
+            0,
+            800,
+            BehaviorFlags::empty(),
+        ),
+    );
+    let (mut app, inbound_tx) = build_runtime_app(shared, map, false);
+
+    let mob_entity = first_mob_entity(&mut app);
+    let player_net_id = EntityId(5_622);
+    let _map_rx = enter_player(
+        &inbound_tx,
+        PlayerId::from(1),
+        player_net_id,
+        LocalPos::new(3.5, 1.0),
+    );
+    advance_tick(&mut app);
+
+    let now_ms = 1_000;
+    set_sim_now(&mut app, now_ms);
+    clear_pending_movements(&mut app);
+    {
+        let mut entity = app.world_mut().entity_mut(mob_entity);
+        entity.get_mut::<LocalTransform>().expect("transform").pos = LocalPos::new(1.0, 1.0);
+        entity.get_mut::<LocalTransform>().expect("transform").rot = east_rot();
+        entity.get_mut::<MobMotion>().expect("mob motion").0 = MobMotionState {
+            segment_start_pos: LocalPos::new(1.0, 1.0),
+            segment_end_pos: LocalPos::new(5.0, 1.0),
+            segment_start_at: sim_ms(800),
+            segment_end_at: sim_ms(1_600),
+        };
+    }
+    set_mob_chasing(&mut app, mob_entity, player_net_id, now_ms, 0);
+
+    run_mob_ai(&mut app);
+
+    assert!(
+        pending_movements(&app).is_empty(),
+        "ranged mobs should not send an attack packet that interrupts an active movement segment"
+    );
+    assert_eq!(
+        app.world()
+            .entity(mob_entity)
+            .get::<MobBrainState>()
+            .map(|brain| brain.next_rethink_at),
+        Some(sim_ms(1_800))
+    );
+
+    clear_pending_movements(&mut app);
+    set_sim_now(&mut app, 1_700);
+    super::mob_motion::sample_mob_motion(app.world_mut());
+    run_mob_ai(&mut app);
+    assert!(
+        pending_movements(&app).is_empty(),
+        "ranged mobs should leave a short client settle window after movement before attacking"
+    );
+
+    clear_pending_movements(&mut app);
+    set_sim_now(&mut app, 1_800);
+    super::mob_motion::sample_mob_motion(app.world_mut());
+    run_mob_ai(&mut app);
+    assert!(
+        pending_movements(&app)
+            .into_iter()
+            .any(|movement| movement.kind == MovementKind::Attack),
+        "ranged mobs should attack once the post-move settle window expires"
+    );
 }
 
 #[test]

@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use zohar_gameplay::combat::HitFlags;
 use zohar_gameplay::stats::game::{PlayerStaminaTimerCommand, Stat};
 use zohar_map_port::{
-    ChatChannel, PlayerEvent, ProjectileEffectKind, SpecialEffectType, StatUpdate,
+    ChatChannel, PlayerEvent, ProjectileEffectKind, ProjectileTargetEvent, SpecialEffectType,
+    StatUpdate,
 };
 
 use super::facts::{
@@ -106,6 +107,34 @@ pub(crate) fn project_frame_facts(world: &mut World) {
                 effect: map_projectile_effect(effect.effect),
                 start_entity_id: start_id,
                 end_entity_id: effect.end.id,
+            },
+        );
+    }
+
+    let projectile_targets = world
+        .resource::<FrameFacts>()
+        .visuals
+        .projectile_targets
+        .clone();
+    for projectile_target in projectile_targets {
+        let Some(target_pos) = world
+            .entity(projectile_target.target.entity)
+            .get::<super::state::LocalTransform>()
+            .map(|transform| transform.pos)
+        else {
+            continue;
+        };
+        broadcast_actor_event(
+            world,
+            projectile_target.caster.id,
+            ActorAudience::ViewAndSelf,
+            |shooter_entity_id| {
+                PlayerEvent::SetProjectileTarget(ProjectileTargetEvent {
+                    caster_entity_id: shooter_entity_id,
+                    target_entity_id: projectile_target.target.id,
+                    target_pos,
+                    append: false,
+                })
             },
         );
     }

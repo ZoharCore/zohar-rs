@@ -7,6 +7,7 @@ use zohar_domain::entity::player::PlayerId;
 use zohar_domain::entity::{EntityId, MovementKind};
 use zohar_map_port::{AttackIntent, ClientTimestamp, MovementArg, PacketDuration};
 
+use super::combat::AttackDamageSchedule;
 use super::state::{MobBrainState, PlayerMotionState, SimDuration};
 
 #[derive(Resource, Default)]
@@ -69,6 +70,8 @@ pub(crate) enum Action {
         rot: Facing72,
         ts: ClientTimestamp,
         duration: PacketDuration,
+        damage_schedule: AttackDamageSchedule,
+        set_projectile_target: bool,
         next_brain: MobBrainState,
     },
 }

@@ -95,12 +95,10 @@ impl LevelExpTable {
             return Err(LevelExpTableError::MissingLevel { level: 1 });
         }
 
-        let mut expected = 1;
-        for level in by_level.keys().copied() {
+        for (expected, level) in (1..).zip(by_level.keys().copied()) {
             if level != expected {
                 return Err(LevelExpTableError::MissingLevel { level: expected });
             }
-            expected += 1;
         }
 
         Ok(Self(by_level))

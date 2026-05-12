@@ -61,18 +61,17 @@ impl Sdk {
             let mut connect_interval = tokio::time::interval(Duration::from_millis(500));
             loop {
                 connect_interval.tick().await;
-                match client.get(gs_url.clone()).send().await {
-                    Ok(resp) => {
-                        if resp.error_for_status_ref().is_ok() {
-                            break;
-                        } else {
-                            eprintln!(
-                                "Agones REST new() polling got HTTP status: {}",
-                                resp.status()
-                            );
-                        }
+
+                let get_req = client.get(gs_url.clone());
+                if let Ok(resp) = get_req.send().await {
+                    if resp.error_for_status_ref().is_ok() {
+                        break;
+                    } else {
+                        eprintln!(
+                            "Agones REST new() polling got HTTP status: {}",
+                            resp.status()
+                        );
                     }
-                    Err(_) => {}
                 }
             }
         })

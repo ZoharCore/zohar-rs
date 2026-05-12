@@ -115,6 +115,16 @@ pub struct MovementEvent {
 }
 
 #[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProjectileTargetEvent {
+    pub caster_entity_id: EntityId,
+    pub target_entity_id: EntityId,
+    #[cfg_attr(feature = "admin-brp", reflect(remote = zohar_domain::coords::LocalPosReflect))]
+    pub target_pos: LocalPos,
+    pub append: bool,
+}
+
+#[cfg_attr(feature = "admin-brp", derive(bevy::prelude::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatUpdate {
     pub stat: Stat,
@@ -170,6 +180,7 @@ pub enum PlayerEvent {
         start_entity_id: EntityId,
         end_entity_id: EntityId,
     },
+    SetProjectileTarget(ProjectileTargetEvent),
     SpecialEffect {
         effect: SpecialEffectType,
         entity_id: EntityId,

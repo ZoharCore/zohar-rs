@@ -1,3 +1,11 @@
+mod timing;
+
+pub use timing::{
+    AttackDamageTiming, FlyTiming, MobAttackEffectTiming, MobAttackMotion, MobAttackProcTiming,
+    MobAttackTiming, MobAttackTimingTable, MotionFlyData, MotionFlyEvent, MotionHitWindow,
+    mob_attack_effect_timing, mob_attack_timings_from_motion, projectile_travel_ms,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CombatStats {
     pub level: i32,

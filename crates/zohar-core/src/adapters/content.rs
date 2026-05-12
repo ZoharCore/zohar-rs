@@ -25,6 +25,10 @@ use zohar_domain::entity::mob::{
 use zohar_domain::entity::player::{PlayerClass, PlayerGender};
 use zohar_domain::util::FlagsMapper;
 use zohar_domain::{BehaviorFlags, DefId, MapId, TerrainFlags};
+use zohar_gameplay::combat::{
+    MobAttackMotion, MobAttackTimingTable, MotionFlyData, MotionFlyEvent, MotionHitWindow,
+    mob_attack_timings_from_motion,
+};
 use zohar_gameplay::stats::game::{
     ActorStatSource, CoreStatBlock, DeterministicGrowthVersion, LevelExpEntry, LevelExpTable,
     PlayerClassStatsConfig, PlayerClassStatsTable, PlayerGrowthFormula, PlayerResourceFormula,
@@ -105,6 +109,52 @@ pub(crate) fn build_entity_motion_speeds(catalog: &ContentCatalog) -> EntityMoti
     }
 
     table
+}
+
+pub(crate) fn build_mob_attack_timings(catalog: &ContentCatalog) -> MobAttackTimingTable {
+    let motions = catalog
+        .motion
+        .iter()
+        .filter(|motion| {
+            motion.set_kind == MotionSetKind::Mob
+                && motion.motion_mode == MotionMode::General
+                && motion.motion_action == ContentMotionAction::NormalAttack
+        })
+        .filter_map(|motion| {
+            let mob_id = def_id_from_i64::<zohar_domain::entity::mob::MobDefTag>(
+                motion.mob_id?,
+                "motion.mob_id",
+            )?;
+            Some(MobAttackMotion {
+                motion_id: motion.motion_id,
+                mob_id,
+                weight: motion.weight,
+                duration_ms: motion.duration_ms,
+            })
+        });
+    let hit_windows = catalog
+        .motion_hit_windows
+        .iter()
+        .map(|window| MotionHitWindow {
+            motion_id: window.motion_id,
+            start_ms: window.start_ms,
+            end_ms: window.end_ms,
+        });
+    let fly_events = catalog
+        .motion_fly_events
+        .iter()
+        .map(|event| MotionFlyEvent {
+            motion_id: event.motion_id,
+            release_ms: event.release_ms,
+            fly_file: event.fly_file.clone(),
+        });
+    let fly_data = catalog.motion_fly_data.iter().map(|data| MotionFlyData {
+        fly_file: data.fly_file.clone(),
+        init_vel: data.init_vel,
+        bomb_range: data.bomb_range,
+        accel_y: data.accel_y,
+    });
+    mob_attack_timings_from_motion(motions, hit_windows, fly_events, fly_data)
 }
 
 pub(crate) fn build_player_stat_rules(catalog: &ContentCatalog) -> PlayerStatRules {

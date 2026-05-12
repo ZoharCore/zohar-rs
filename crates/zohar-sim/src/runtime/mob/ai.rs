@@ -5,8 +5,9 @@ use std::sync::Arc;
 use zohar_domain::coords::{
     Facing72, LocalDistMeters, LocalPos, LocalPosExt, LocalRotation, LocalSize,
 };
-use zohar_domain::entity::mob::MobPrototypeDef;
+use zohar_domain::entity::mob::{MobBattleType, MobPrototypeDef};
 use zohar_domain::entity::{EntityId, MovementKind};
+use zohar_gameplay::combat::{AttackDamageTiming, MobAttackEffectTiming, mob_attack_effect_timing};
 use zohar_map_port::ClientTimestamp;
 
 use crate::navigation::MapNavigator;
@@ -22,11 +23,14 @@ use super::state::{
     MobMotion, MobRef, RuntimeState, SharedConfig,
 };
 use super::util::{clamp_step_towards, random_duration_between_ms, rotation_from_delta};
+use crate::runtime::combat::AttackDamageSchedule;
 
 const LEGACY_CHASE_FOLLOW_DISTANCE_RATIO: f32 = 0.9;
 const LEGACY_ATTACK_THRESHOLD_RATIO: f32 = 1.15;
 const HOME_ARRIVAL_RADIUS_M: f32 = 0.75;
 const LEGACY_CHASE_RETHINK_MS: u64 = 200;
+const POST_ATTACK_SETTLE_MS: u64 = 100;
+const RANGED_POST_MOVE_ATTACK_SETTLE_MS: u64 = 200;
 const CLOSE_CHASE_EPSILON_M: f32 = 0.01;
 const IDLE_WANDER_MAX_ATTEMPTS: usize = 8;
 const IDLE_WANDER_DISTANCE_EPSILON_M: f32 = 0.25;
@@ -46,7 +50,10 @@ struct MobContext {
 
 enum WindupState {
     Blocked,
-    Proceed { state_changed: bool },
+    Proceed {
+        state_changed: bool,
+        min_rethink_at: Option<super::state::SimInstant>,
+    },
 }
 
 pub(crate) fn mob_follow_distance_m(attack_range_m: f32) -> f32 {
@@ -72,15 +79,24 @@ pub(crate) fn process_mob_ai(world: &mut World) {
             continue;
         };
 
-        let mut state_changed = match handle_attack_windup(&mut brain, context.now) {
-            WindupState::Blocked => continue,
-            WindupState::Proceed { state_changed } => state_changed,
-        };
+        let (mut state_changed, min_rethink_at) =
+            match handle_attack_windup(&mut brain, context.now) {
+                WindupState::Blocked => continue,
+                WindupState::Proceed {
+                    state_changed,
+                    min_rethink_at,
+                } => (state_changed, min_rethink_at),
+            };
 
         let aggros = drain_mob_aggro(world, mob_entity);
         state_changed |= apply_new_aggro(world, &mut brain, &aggros, context.now);
         state_changed |= acquire_idle_target(world, &context, &mut brain);
         let target_pos = validate_target(world, &context, &mut brain, &mut state_changed);
+        if let Some(min_rethink_at) = min_rethink_at
+            && brain.next_rethink_at < min_rethink_at
+        {
+            brain.next_rethink_at = min_rethink_at;
+        }
 
         let brain_before_decision = brain;
         let planned_action = match (brain.target, brain.mode) {
@@ -154,6 +170,7 @@ fn handle_attack_windup(brain: &mut MobBrainState, now: super::state::SimInstant
     if brain.mode != MobBrainMode::AttackWindup {
         return WindupState::Proceed {
             state_changed: false,
+            min_rethink_at: None,
         };
     }
     if now < brain.attack_windup_until {
@@ -161,15 +178,21 @@ fn handle_attack_windup(brain: &mut MobBrainState, now: super::state::SimInstant
     }
 
     brain.attack_windup_until = super::state::SimInstant::ZERO;
-    brain.next_rethink_at = now;
+    brain.next_rethink_at = now.saturating_add(super::state::SimDuration::from_millis(
+        POST_ATTACK_SETTLE_MS,
+    ));
     if brain.target.is_some() {
         brain.mode = MobBrainMode::Pursuit;
     } else {
         transition_to_idle(brain, now);
+        brain.next_rethink_at = now.saturating_add(super::state::SimDuration::from_millis(
+            POST_ATTACK_SETTLE_MS,
+        ));
     }
 
     WindupState::Proceed {
         state_changed: true,
+        min_rethink_at: Some(brain.next_rethink_at),
     }
 }
 
@@ -400,26 +423,52 @@ fn handle_pursuit(
         movement::distance(segment_end_pos, target_pos) <= attack_threshold_m
     });
 
-    if context.now >= brain.next_attack_at
-        && target_distance_m <= attack_threshold_m
-        && (!context.movement_in_flight || segment_end_in_attack_range)
-    {
+    if context.movement_in_flight && waits_for_movement_before_attack(context.proto.battle_type) {
+        if segment_end_in_attack_range {
+            brain.next_rethink_at = context
+                .segment_end_at
+                .unwrap_or(context.now)
+                .saturating_add(super::state::SimDuration::from_millis(
+                    RANGED_POST_MOVE_ATTACK_SETTLE_MS,
+                ));
+        }
+        return None;
+    }
+
+    if !context.movement_in_flight && context.now < brain.next_rethink_at {
+        return None;
+    }
+
+    if context.now >= brain.next_attack_at && target_distance_m <= attack_threshold_m {
         let timing = combat::attack_timing_for_mob(context.proto.attack_speed);
+        let motion_timing = world
+            .resource::<SharedConfig>()
+            .mob_attack_timings
+            .timing_for(context.proto.mob_id);
+        let effect_timing = mob_attack_effect_timing(
+            context.proto.battle_type,
+            motion_timing,
+            timing.fallback_action_duration.get(),
+        );
+        let packet_duration = zohar_map_port::PacketDuration::new(effect_timing.action_duration_ms);
+        let damage_schedule = attack_damage_schedule(effect_timing);
         brain.mode = MobBrainMode::AttackWindup;
         brain.attack_windup_until =
             context
                 .now
                 .saturating_add(super::state::SimDuration::from_packet_duration(
-                    timing.packet_duration,
+                    packet_duration,
                 ));
-        brain.next_attack_at = context.now.saturating_add(timing.cooldown);
+        brain.next_attack_at = context.now.saturating_add(timing.attack_gate);
 
         return build_mob_attack_action(
             world,
             mob_entity,
             target,
             target_pos,
-            timing.packet_duration.get(),
+            packet_duration.get(),
+            damage_schedule,
+            effect_timing.set_projectile_target,
             *brain,
             MobActionCompletion::RethinkAtActionEnd,
         );
@@ -465,6 +514,26 @@ fn handle_pursuit(
             max_delay_ms: super::state::SimDuration::from_millis(LEGACY_CHASE_RETHINK_MS),
         },
     )
+}
+
+fn attack_damage_schedule(effect_timing: MobAttackEffectTiming) -> AttackDamageSchedule {
+    match effect_timing.damage {
+        AttackDamageTiming::Immediate => AttackDamageSchedule::Immediate,
+        AttackDamageTiming::DelayedMs(delay_ms) => AttackDamageSchedule::Delayed(
+            super::state::SimDuration::from_millis(u64::from(delay_ms)),
+        ),
+        AttackDamageTiming::Projectile {
+            release_delay_ms,
+            flight,
+        } => AttackDamageSchedule::Projectile {
+            release_delay: super::state::SimDuration::from_millis(u64::from(release_delay_ms)),
+            flight,
+        },
+    }
+}
+
+fn waits_for_movement_before_attack(battle_type: MobBattleType) -> bool {
+    matches!(battle_type, MobBattleType::Range | MobBattleType::Magic)
 }
 
 fn persist_brain_if_changed(

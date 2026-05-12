@@ -36,6 +36,12 @@ pub enum CombatS2c {
         damage: i32,
     },
 
+    #[brw(magic = 0x72_u8)]
+    TriggerSpecialEffect {
+        kind: SpecialEffectKind,
+        target: game_pkt::NetId,
+    },
+
     #[brw(magic = 0x46_u8)]
     TriggerProjectileEffect {
         kind: ProjectileKind,
@@ -43,11 +49,19 @@ pub enum CombatS2c {
         to_entity: game_pkt::NetId,
     },
 
-    #[brw(magic = 0x72_u8)]
-    TriggerSpecialEffect {
-        kind: SpecialEffectKind,
-        target: game_pkt::NetId,
-    },
+    #[brw(magic = 0x47_u8)]
+    SetProjectileTarget(ProjectileTarget),
+
+    #[brw(magic = 0x45_u8)]
+    AddProjectileTarget(ProjectileTarget),
+}
+
+#[binrw]
+#[derive(Debug, Clone)]
+pub struct ProjectileTarget {
+    pub caster: game_pkt::NetId,
+    pub target: game_pkt::ZeroOpt<game_pkt::NetId>,
+    pub fallback_target: game_pkt::WireWorldPos,
 }
 
 #[binrw]
@@ -58,6 +72,7 @@ pub enum CombatS2c {
 )]
 pub enum ProjectileKind {
     Experience = 1,
+    HpSmall = 15,
     HpMedium = 2,
     HpLarge = 3,
     SpSmall = 4,
@@ -71,7 +86,6 @@ pub enum ProjectileKind {
     FireworkF = 12,
     FireworkG = 13,
     LightningClaw = 14,
-    HpSmall = 15,
     FlameSpirit = 16,
 }
 

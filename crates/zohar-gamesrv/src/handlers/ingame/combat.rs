@@ -6,12 +6,12 @@ use zohar_domain::entity::EntityId;
 use zohar_domain::util::FlagsMapper;
 use zohar_map_port::{
     AttackIntent as PortAttackIntent, AttackTargetIntent, ClientIntent, ClientIntentMsg,
-    DamageInfoFlags, ProjectileEffectKind, SpecialEffectType, TargetIntent,
+    DamageInfoFlags, ProjectileEffectKind, ProjectileTargetEvent, SpecialEffectType, TargetIntent,
 };
 use zohar_protocol::game_pkt::ZeroOpt;
 use zohar_protocol::game_pkt::ingame::InGameS2c;
 use zohar_protocol::game_pkt::ingame::combat::{
-    CombatC2s, CombatS2c, FloatingDamageFlags, ProjectileKind, SpecialEffectKind,
+    CombatC2s, CombatS2c, FloatingDamageFlags, ProjectileKind, ProjectileTarget, SpecialEffectKind,
 };
 
 pub(super) async fn handle_packet(
@@ -130,6 +130,30 @@ pub(super) fn encode_projectile(
         }
         .into(),
     ]
+}
+
+pub(super) fn encode_projectile_target(
+    event: ProjectileTargetEvent,
+    map_id: &zohar_domain::MapId,
+    coords: &crate::ContentCoords,
+) -> Vec<InGameS2c> {
+    let Some(world_pos) = coords.local_to_world(map_id, event.target_pos) else {
+        return Vec::new();
+    };
+
+    let pkt_body = ProjectileTarget {
+        caster: event.caster_entity_id.to_protocol(),
+        target: Some(event.target_entity_id).to_protocol(),
+        fallback_target: world_pos.to_protocol(),
+    };
+
+    let packet = if event.append {
+        CombatS2c::AddProjectileTarget(pkt_body)
+    } else {
+        CombatS2c::SetProjectileTarget(pkt_body)
+    };
+
+    vec![packet.into()]
 }
 
 pub(super) fn encode_special_effect(

@@ -448,6 +448,7 @@ mod tests {
     fn test_shared_config() -> SharedConfig {
         SharedConfig {
             motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
+            mob_attack_timings: Arc::new(crate::MobAttackTimingTable::default()),
             mobs: Arc::new(HashMap::new()),
             player_stats: Arc::new(test_player_stat_rules()),
             wander: WanderConfig::default(),

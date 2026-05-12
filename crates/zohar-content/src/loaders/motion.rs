@@ -2,7 +2,8 @@ use sqlx::{Row, SqlitePool};
 
 use crate::error::{ContentError, parse_enum};
 use crate::types::motion::{
-    ContentMotion, MotionAction, MotionMode, MotionSetKind, PlayerMotionProfile,
+    ContentMotion, ContentMotionFlyData, ContentMotionFlyEvent, ContentMotionHitWindow,
+    MotionAction, MotionMode, MotionSetKind, PlayerMotionProfile,
 };
 
 pub async fn load_motion(conn: &SqlitePool) -> Result<Vec<ContentMotion>, ContentError> {
@@ -43,6 +44,77 @@ pub async fn load_motion(conn: &SqlitePool) -> Result<Vec<ContentMotion>, Conten
                 accum_x: row.try_get(10)?,
                 accum_y: row.try_get(11)?,
                 source: row.try_get(12)?,
+            })
+        })
+        .collect()
+}
+
+pub async fn load_motion_hit_windows(
+    conn: &SqlitePool,
+) -> Result<Vec<ContentMotionHitWindow>, ContentError> {
+    let rows = sqlx::query(
+        "SELECT motion_id, hit_index, start_ms, end_ms
+         FROM motion_hit_window
+         ORDER BY motion_id, hit_index",
+    )
+    .fetch_all(conn)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(ContentMotionHitWindow {
+                motion_id: row.try_get(0)?,
+                hit_index: row.try_get(1)?,
+                start_ms: row.try_get(2)?,
+                end_ms: row.try_get(3)?,
+            })
+        })
+        .collect()
+}
+
+pub async fn load_motion_fly_events(
+    conn: &SqlitePool,
+) -> Result<Vec<ContentMotionFlyEvent>, ContentError> {
+    let rows = sqlx::query(
+        "SELECT motion_id, event_index, release_ms, fly_file
+         FROM motion_fly_event
+         ORDER BY motion_id, event_index",
+    )
+    .fetch_all(conn)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(ContentMotionFlyEvent {
+                motion_id: row.try_get(0)?,
+                event_index: row.try_get(1)?,
+                release_ms: row.try_get(2)?,
+                fly_file: row.try_get(3)?,
+            })
+        })
+        .collect()
+}
+
+pub async fn load_motion_fly_data(
+    conn: &SqlitePool,
+) -> Result<Vec<ContentMotionFlyData>, ContentError> {
+    let rows = sqlx::query(
+        "SELECT fly_file, init_vel, bomb_range, accel_y, is_homing
+         FROM motion_fly_data
+         ORDER BY fly_file",
+    )
+    .fetch_all(conn)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let is_homing: i64 = row.try_get(4)?;
+            Ok(ContentMotionFlyData {
+                fly_file: row.try_get(0)?,
+                init_vel: row.try_get(1)?,
+                bomb_range: row.try_get(2)?,
+                accel_y: row.try_get(3)?,
+                is_homing: is_homing != 0,
             })
         })
         .collect()

@@ -21,6 +21,9 @@ pub struct ContentCatalog {
     pub empire_start_configs: Vec<empires::EmpireStartConfig>,
     pub spawn_rules: Vec<spawns::SpawnRuleRecord>,
     pub motion: Vec<motion::ContentMotion>,
+    pub motion_hit_windows: Vec<motion::ContentMotionHitWindow>,
+    pub motion_fly_events: Vec<motion::ContentMotionFlyEvent>,
+    pub motion_fly_data: Vec<motion::ContentMotionFlyData>,
     pub mob_chat_strategies: Vec<chat::MobChatStrategy>,
     pub mob_chat_lines: Vec<chat::MobChatLine>,
 }

@@ -11,6 +11,7 @@ use zohar_domain::coords::LocalSize;
 use zohar_domain::entity::mob::MobId;
 use zohar_domain::entity::mob::MobPrototype;
 use zohar_domain::entity::mob::spawn::SpawnRule;
+use zohar_gameplay::combat::MobAttackTimingTable;
 use zohar_gameplay::stats::game::PlayerStatRules;
 
 #[cfg_attr(feature = "admin-brp", derive(Reflect))]
@@ -45,6 +46,8 @@ impl Default for WanderConfig {
 pub struct SharedConfig {
     #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub motion_speeds: Arc<EntityMotionSpeedTable>,
+    #[cfg_attr(feature = "admin-brp", reflect(ignore))]
+    pub mob_attack_timings: Arc<MobAttackTimingTable>,
     #[cfg_attr(feature = "admin-brp", reflect(ignore))]
     pub mobs: Arc<HashMap<MobId, MobPrototype>>,
     #[cfg_attr(feature = "admin-brp", reflect(ignore))]

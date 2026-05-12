@@ -79,6 +79,7 @@ fn spawn_test_map_runtime() -> zohar_sim::MapEventSender {
     spawn_map_runtime(
         SharedConfig {
             motion_speeds: Arc::new(EntityMotionSpeedTable::default()),
+            mob_attack_timings: Arc::new(zohar_sim::MobAttackTimingTable::default()),
             mobs: Arc::new(HashMap::new()),
             player_stats: Arc::new(test_player_stat_rules()),
             wander: WanderConfig::default(),

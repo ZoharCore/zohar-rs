@@ -27,6 +27,9 @@ pub use runtime::{
     spawn_map_runtime,
 };
 pub use types::{InstanceId, MapInstanceKey, MapInstanceKind};
+pub use zohar_gameplay::combat::{
+    FlyTiming, MobAttackProcTiming, MobAttackTiming, MobAttackTimingTable,
+};
 pub use zohar_gameplay::stats::game::{
     HydratedPlayerStats, LevelExpEntry, LevelExpTable, PlayerClassStatsConfig,
     PlayerClassStatsTable, PlayerStatRules,

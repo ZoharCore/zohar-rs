@@ -86,6 +86,9 @@ async fn load_catalog(conn: &SqlitePool) -> Result<ContentCatalog, ContentError>
         empire_start_configs: empires::load_empire_start_configs(conn).await?,
         spawn_rules: spawns::load_spawn_rules(conn).await?,
         motion: motion::load_motion(conn).await?,
+        motion_hit_windows: motion::load_motion_hit_windows(conn).await?,
+        motion_fly_events: motion::load_motion_fly_events(conn).await?,
+        motion_fly_data: motion::load_motion_fly_data(conn).await?,
         mob_chat_strategies: chat::load_mob_chat_strategies(conn).await?,
         mob_chat_lines: chat::load_mob_chat_lines(conn).await?,
     })

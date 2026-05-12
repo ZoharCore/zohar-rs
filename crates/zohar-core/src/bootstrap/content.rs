@@ -1,6 +1,6 @@
 use crate::adapters::content::{
-    build_entity_motion_speeds, build_map_navigators, build_mob_chat_content, build_mob_proto,
-    build_player_stat_rules, build_spawn_rules,
+    build_entity_motion_speeds, build_map_navigators, build_mob_attack_timings,
+    build_mob_chat_content, build_mob_proto, build_player_stat_rules, build_spawn_rules,
 };
 use crate::app::CoreRuntimeConfig;
 use anyhow::anyhow;
@@ -36,12 +36,14 @@ pub(crate) fn load_content(
     let map_key = MapInstanceKey::shared(config.channel, map_id.clone());
 
     let entity_motion_speeds = Arc::new(build_entity_motion_speeds(catalog));
+    let mob_attack_timings = Arc::new(build_mob_attack_timings(catalog));
     let all_spawn_rules = build_spawn_rules(catalog);
     let all_mobs = Arc::new(build_mob_proto(catalog));
     let mob_chat = Arc::new(build_mob_chat_content(catalog));
     let all_navigators = build_map_navigators(catalog);
     let shared_config = SharedConfig {
         motion_speeds: entity_motion_speeds,
+        mob_attack_timings,
         mobs: all_mobs,
         player_stats: player_stats.clone(),
         wander: WanderConfig::default(),

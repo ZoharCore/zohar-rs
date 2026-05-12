@@ -174,6 +174,8 @@ pub(crate) fn build_mob_attack_action(
     target: zohar_domain::entity::EntityId,
     face_to: LocalPos,
     windup_duration_ms: u32,
+    damage_schedule: super::super::combat::AttackDamageSchedule,
+    set_projectile_target: bool,
     next_brain: super::super::state::MobBrainState,
     completion: MobActionCompletion,
 ) -> Option<Action> {
@@ -194,6 +196,8 @@ pub(crate) fn build_mob_attack_action(
         rot,
         ts: now_ts,
         duration: PacketDuration::new(windup_duration_ms),
+        damage_schedule,
+        set_projectile_target,
         next_brain: resolve_mob_follow_up(
             next_brain,
             completion,

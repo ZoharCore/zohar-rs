@@ -62,9 +62,16 @@ pub(crate) struct ProjectionFacts {
 
 #[derive(Debug, Default)]
 pub(crate) struct VisualFacts {
+    pub(crate) projectile_targets: Vec<ProjectileTargetedFact>,
     pub(crate) projectile_effects: Vec<ProjectileVisualEffect>,
     pub(crate) point_effects: Vec<PointVisualEffect>,
     pub(crate) special_effects: Vec<ActorSpecialEffect>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProjectileTargetedFact {
+    pub(crate) caster: ActorRef,
+    pub(crate) target: ActorRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

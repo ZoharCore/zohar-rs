@@ -4,8 +4,11 @@ use zohar_domain::entity::MovementKind;
 use zohar_domain::entity::player::PlayerId;
 use zohar_map_port::{AttackIntent, ClientTimestamp, MovementArg, PacketDuration};
 
-use super::super::combat::{AttackCommand, AttackCommandBuffer};
-use super::super::state::{MapPendingMovements, RuntimeState};
+use super::super::combat::{
+    AttackCommand, AttackCommandBuffer, AttackDamageSchedule, schedule_attack_damage,
+};
+use super::super::facts::{ActorRef, FrameFacts, ProjectileTargetedFact};
+use super::super::state::{MapPendingMovements, NetEntityId, RuntimeState};
 use super::{Action, ActionBuffer};
 use crate::runtime::player::persistence::mark_player_dirty;
 
@@ -124,6 +127,8 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
             rot,
             ts,
             duration,
+            damage_schedule,
+            set_projectile_target,
             next_brain,
         } => {
             if !crate::runtime::actor_life::actor_can_act(world, mob_entity)
@@ -147,6 +152,8 @@ pub(crate) fn apply_action(world: &mut World, action: Action) {
                         rot,
                         ts,
                         duration,
+                        damage_schedule,
+                        set_projectile_target,
                         next_brain,
                         target_entity,
                     )),
@@ -324,6 +331,8 @@ fn apply_mob_attack(
     rot: Facing72,
     ts: ClientTimestamp,
     duration: PacketDuration,
+    damage_schedule: AttackDamageSchedule,
+    set_projectile_target: bool,
     next_brain: super::super::state::MobBrainState,
     target_entity: Entity,
 ) -> super::super::state::PendingMovement {
@@ -342,13 +351,30 @@ fn apply_mob_attack(
         spatial.0.update_position(entity_id, pos);
     }
     set_mob_brain(world, mob_entity, next_brain);
-    world
-        .resource_mut::<AttackCommandBuffer>()
-        .0
-        .push(AttackCommand::MobBasicAttack {
-            attacker_entity: mob_entity,
-            victim_entity: target_entity,
-        });
+    let attacker_id = world
+        .entity(mob_entity)
+        .get::<NetEntityId>()
+        .map(|id| id.net_id);
+    let victim_id = world
+        .entity(target_entity)
+        .get::<NetEntityId>()
+        .map(|id| id.net_id);
+    if set_projectile_target && let (Some(attacker_id), Some(victim_id)) = (attacker_id, victim_id)
+    {
+        world
+            .resource_mut::<FrameFacts>()
+            .visuals
+            .projectile_targets
+            .push(ProjectileTargetedFact {
+                caster: ActorRef::new(mob_entity, attacker_id),
+                target: ActorRef::new(target_entity, victim_id),
+            });
+    }
+    let command = AttackCommand::MobBasicAttack {
+        attacker_entity: mob_entity,
+        victim_entity: target_entity,
+    };
+    schedule_attack_damage(world, now, command, damage_schedule);
 
     super::super::state::PendingMovement {
         mover_player_id: None,

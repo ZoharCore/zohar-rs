@@ -126,3 +126,28 @@ pub struct ContentMotion {
     pub accum_y: Option<f64>,
     pub source: String,
 }
+
+#[derive(Debug, Clone)]
+pub struct ContentMotionHitWindow {
+    pub motion_id: i64,
+    pub hit_index: i64,
+    pub start_ms: i64,
+    pub end_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContentMotionFlyEvent {
+    pub motion_id: i64,
+    pub event_index: i64,
+    pub release_ms: i64,
+    pub fly_file: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContentMotionFlyData {
+    pub fly_file: String,
+    pub init_vel: f64,
+    pub bomb_range: f64,
+    pub accel_y: f64,
+    pub is_homing: bool,
+}

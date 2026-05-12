@@ -25,6 +25,31 @@ def maybe_reset_core_gameserver(app_namespace: str, release_name: str, desired_c
 
     selector = f"app.kubernetes.io/instance={release_name},app.kubernetes.io/component=core"
     pod_selector = f"agones.dev/role=gameserver,{selector}"
+
+    unhealthy_gs_cmd = [
+        "kubectl",
+        "-n",
+        app_namespace,
+        "get",
+        "gameserver",
+        "-l",
+        selector,
+        "-o",
+        "jsonpath={range .items[?(@.status.state=='Unhealthy')]}{.metadata.name}{\"\\n\"}{end}",
+    ]
+    unhealthy_gs = subprocess.run(
+        unhealthy_gs_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    ).stdout.split()
+
+    for gs in unhealthy_gs:
+        if gs:
+            print(f"Deleting unhealthy GameServer {gs}", file=sys.stderr)
+            subprocess.run(["kubectl", "-n", app_namespace, "delete", "gameserver", gs, "--wait=false"], stdout=sys.stderr, check=False)
+
     pod_image_cmd = [
         "kubectl",
         "-n",
@@ -34,19 +59,19 @@ def maybe_reset_core_gameserver(app_namespace: str, release_name: str, desired_c
         "-l",
         pod_selector,
         "-o",
-        "jsonpath={.items[0].spec.containers[?(@.name=='zohar-core')].image}",
+        "jsonpath={range .items[*]}{.spec.containers[?(@.name=='zohar-core')].image}{\"\\n\"}{end}",
     ]
-    current_pod_image = subprocess.run(
+    current_pod_images = subprocess.run(
         pod_image_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
         check=False,
-    ).stdout.strip()
+    ).stdout.split()
 
-    if current_pod_image == desired_core_image:
+    if current_pod_images and all(img == desired_core_image for img in current_pod_images):
         print(
-            f"core GameServer already running desired image {desired_core_image}; skipping reset",
+            f"core GameServers are running desired image {desired_core_image}; skipping full reset",
             file=sys.stderr,
         )
         return

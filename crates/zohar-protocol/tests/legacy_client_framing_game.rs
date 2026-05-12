@@ -5,7 +5,7 @@ mod packet_framing_support;
 use packet_framing_support::{assert_packet_frame, encoded_bytes};
 use zohar_protocol::game_pkt::ingame::chat::{ChatC2s, ChatKind, ChatS2c};
 use zohar_protocol::game_pkt::ingame::combat::{
-    CombatC2s, CombatS2c, FloatingDamageFlags, ProjectileKind, SpecialEffectKind,
+    CombatC2s, CombatS2c, FloatingDamageFlags, ProjectileKind, ProjectileTarget, SpecialEffectKind,
 };
 use zohar_protocol::game_pkt::ingame::movement::{MovementC2s, MovementKind, MovementS2c};
 use zohar_protocol::game_pkt::ingame::stats::{WireStatPoint, WireStatSnapshot};
@@ -293,9 +293,7 @@ fn loading_s2c_packets_keep_their_legacy_lengths() {
                 name: "legacy".into(),
                 pos: (100, 200).into(),
                 empire: Empire::Blue,
-                skill_branch: zohar_protocol::game_pkt::ZeroOpt::some(
-                    zohar_protocol::game_pkt::SkillBranch::BranchA,
-                ),
+                skill_branch: ZeroOpt::some(zohar_protocol::game_pkt::SkillBranch::BranchA),
             },
         ),
         0x71,
@@ -398,6 +396,24 @@ fn combat_s2c_packets_keep_their_legacy_lengths() {
         },
         0x46,
         10,
+    );
+    assert_packet_frame(
+        &CombatS2c::SetProjectileTarget(ProjectileTarget {
+            caster: NetId(1),
+            target: ZeroOpt::some(NetId(2)),
+            fallback_target: (100, 200).into(),
+        }),
+        0x47,
+        17,
+    );
+    assert_packet_frame(
+        &CombatS2c::AddProjectileTarget(ProjectileTarget {
+            caster: NetId(1),
+            target: ZeroOpt::none(),
+            fallback_target: (100, 200).into(),
+        }),
+        0x45,
+        17,
     );
     assert_packet_frame(
         &CombatS2c::TriggerSpecialEffect {

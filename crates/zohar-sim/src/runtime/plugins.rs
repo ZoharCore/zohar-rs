@@ -11,7 +11,7 @@ use super::action_pipeline::{ActionBuffer, process_actions};
 use super::aggro::{MobAggroDispatchBuffer, route_mob_aggro};
 use super::chat::process_chat_intents;
 use super::cleanup::process_cleanup_events;
-use super::combat::{AttackCommandBuffer, process_attack_commands};
+use super::combat::{AttackCommandBuffer, DelayedAttackCommandBuffer, process_attack_commands};
 use super::facts::FrameFacts;
 use super::idle_chat::emit_idle_chat;
 use super::ingress::drain_inbound;
@@ -169,6 +169,7 @@ impl Plugin for MapPlugin {
             .init_resource::<ActionBuffer>()
             .init_resource::<MobAggroDispatchBuffer>()
             .init_resource::<AttackCommandBuffer>()
+            .init_resource::<DelayedAttackCommandBuffer>()
             .init_resource::<FrameFacts>();
     }
 }

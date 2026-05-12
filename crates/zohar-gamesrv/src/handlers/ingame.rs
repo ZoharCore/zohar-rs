@@ -242,6 +242,9 @@ fn map_event_to_packets(
             start_entity_id,
             end_entity_id,
         } => combat::encode_projectile(effect, start_entity_id, end_entity_id),
+        PlayerEvent::SetProjectileTarget(event) => {
+            combat::encode_projectile_target(event, &map_id, coords)
+        }
         PlayerEvent::SpecialEffect { effect, entity_id } => {
             combat::encode_special_effect(effect, entity_id)
         }
