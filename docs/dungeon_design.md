@@ -103,7 +103,15 @@ Given the constraint that one `zohar-core` process runs only **one map template*
 * The `MapEventSender` channel drops, which the `InstanceManager` detects, subsequently removing the dead instance from its HashMap.
 * If the entire server crashes, no persistence logic triggers for the instance itself, fulfilling the "no useless persistence" requirement.
 
-### 5. Retiring `ch99` & Magic Numbers
+### 5. Shared vs. Instanced Map Modes
+While the Multi-App Instance Manager supports both shared and instanced contexts cleanly, there is a clear architectural distinction between maps that are purely public and those that are strictly instanced.
+* **CLI Configuration:** We can distinguish the mode at startup via a CLI flag (e.g., `--map-mode shared` vs. `--map-mode instanced`).
+* **Instancing Semantics:**
+  * **Shared Mode:** The server boots up exactly one `Shared` instance. Incoming connections without a specific instance ID default to this shared instance.
+  * **Instanced Mode:** The server does *not* boot a shared instance. Instead, it exclusively waits for `get_or_create_instance` requests containing an `InstanceId` and spins up apps dynamically.
+* **Helm/K8s Support:** This configuration propagates to the Helm charts. When seeding K8s/Agones Deployments and GameServers, we can add labels indicating whether the spawned map template acts as a shared world map or an instanced dungeon server. This allows the K8s routing layer to cleanly direct gateway traffic for dungeon creation exclusively to pods configured in `instanced` mode.
+
+### 6. Retiring `ch99` & Magic Numbers
 * By using `MapInstanceKey::Instanced(InstanceId)`, we eliminate the need for `MapId * 10000` mathematics.
 * The K8s topology handles physical routing based on map *templates* (`channel=1,map=map41`), so we do not need a specialized `ch99` pod. The normal `map41` pod scales to handle both the public `Shared` version and any dynamically spun up `Instanced` versions.
 
