@@ -4,6 +4,7 @@
 //! - visibility candidate lookup
 //! - game logic range queries (AOE, sensors, etc.)
 
+use either::Either;
 use flat_spatial::Grid;
 use flat_spatial::grid::GridHandle;
 use std::collections::HashMap;
@@ -97,15 +98,21 @@ impl SpatialIndex {
         center: LocalPos,
         radius: f32,
     ) -> impl Iterator<Item = EntityId> + '_ {
-        self.grid
-            .query_around(center, radius)
-            .map(|(handle, _pos)| {
-                *self
-                    .grid
-                    .get(handle)
-                    .expect("handle from query must exist")
-                    .1
-            })
+        if self.handles.is_empty() {
+            return Either::Left(std::iter::empty());
+        }
+
+        Either::Right(
+            self.grid
+                .query_around(center, radius)
+                .map(|(handle, _pos)| {
+                    *self
+                        .grid
+                        .get(handle)
+                        .expect("handle from query must exist")
+                        .1
+                }),
+        )
     }
 
     /// Get the handle for an entity, if it exists in the index.

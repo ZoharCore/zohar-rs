@@ -7047,6 +7047,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "crossbeam-channel",
+ "either",
  "flat_spatial",
  "pathfinding",
  "rand 0.10.1",
