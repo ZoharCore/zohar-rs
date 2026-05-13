@@ -24,6 +24,7 @@ crossbeam-channel.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 rand.workspace = true
+either = "1.13"
 
 flat_spatial = { version = "0.6", features = ["euclid"] }
 pathfinding = "4"
