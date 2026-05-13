@@ -102,13 +102,17 @@ impl SpatialIndex {
             return Either::Left(std::iter::empty());
         }
 
-        Either::Right(self.grid.query_around(center, radius).map(|(handle, _pos)| {
-            *self
-                .grid
-                .get(handle)
-                .expect("handle from query must exist")
-                .1
-        }))
+        Either::Right(
+            self.grid
+                .query_around(center, radius)
+                .map(|(handle, _pos)| {
+                    *self
+                        .grid
+                        .get(handle)
+                        .expect("handle from query must exist")
+                        .1
+                }),
+        )
     }
 
     /// Get the handle for an entity, if it exists in the index.
