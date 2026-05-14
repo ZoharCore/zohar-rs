@@ -1,46 +1,41 @@
 pub mod chat;
 pub mod combat;
-pub mod fishing;
-pub mod guild;
+pub mod item;
 pub mod movement;
 pub mod stats;
 pub mod system;
-pub mod trading;
 pub mod world;
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-use crate::{
-    control_pkt::{ControlC2s, ControlS2c},
-    game_pkt::impl_zero_fallback_num_enum,
-};
+use crate::{control_pkt, game_pkt::impl_zero_fallback_num_enum};
 
 crate::route_packets! {
     /// Client-to-server packets for in-game phase.
     pub enum InGameC2s {
-        Control(ControlC2s) from 0xFE | 0xFF | 0xFC,
-        Combat(combat::CombatC2s) from 0x02 | 0x3D,
-        Chat(chat::ChatC2s) from 0x03,
+        Control(control_pkt::ControlC2s) from 0xFE | 0xFF | 0xFC,
         Move(movement::MovementC2s) from 0x06 | 0x07,
-        Trading(trading::TradingC2s) from 0x50,
-        Guild(guild::GuildC2s) from 0x60,
-        Fishing(fishing::FishingC2s) from 0x70,
+        Chat(chat::ChatC2s) from 0x03,
+        Combat(combat::CombatC2s) from 0x02 | 0x3D,
+        // ItemDropped(item::dropped::DroppedItemC2s) from 0x0F,
+        // ItemInventory(item::inventory::InventoryItemC2s) from 0x0B | 0x0C | 0x0D | 0x14 | 0x3C | 0x53,
+        // ItemShop(item::shop::ShopC2s) from 0x32 | 0x37,
     }
 }
 
 crate::route_packets! {
     /// Server-to-client packets for in-game phase.
     pub enum InGameS2c {
-        Control(ControlS2c) from 0x2C | 0xFF | 0xFC | 0xFD,
+        Control(control_pkt::ControlS2c) from 0x2C | 0xFF | 0xFC | 0xFD,
+        System(system::SystemS2c) from 0x41 | 0x6A | 0x79,
         Move(movement::MovementS2c) from 0x03 | 0x6F,
         Chat(chat::ChatS2c) from 0x04,
-        System(system::SystemS2c) from 0x41 | 0x6A | 0x79,
         World(world::WorldS2c) from 0x01 | 0x02 | 0x13 | 0x88,
         Stats(stats::StatsS2c) from 0x10 | 0x11,
         Combat(combat::CombatS2c) from 0x0D | 0x0E | 0x3F | 0x45 | 0x46 | 0x47 | 0x72 | 0x87,
-        Trading(trading::TradingS2c) from 0x51,
-        Guild(guild::GuildS2c) from 0x61,
-        Fishing(fishing::FishingS2c) from 0x71,
+        // ItemDropped(item::dropped::DroppedItemS2c) from 0x1A | 0x1B | 0x1F,
+        // ItemInventory(item::inventory::InventoryItemS2c) from 0x14 | 0x15 | 0x16 | 0x17 | 0x19,
+        // ItemShop(item::shop::ShopS2c) from 0x26 | 0x27,
     }
 }
 

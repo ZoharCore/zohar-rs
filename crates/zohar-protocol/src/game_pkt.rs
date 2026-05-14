@@ -135,6 +135,10 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 pub trait ZeroFallback: Sized {
     type Primitive: BinRead + BinWrite + Default + Copy + PartialEq;
 
+    fn is_zero_primitive(raw: Self::Primitive) -> bool {
+        raw == Self::Primitive::default()
+    }
+
     fn try_from_primitive(raw: Self::Primitive) -> Result<Self, &'static str>;
     fn into_primitive(self) -> Self::Primitive;
 }
@@ -165,7 +169,7 @@ macro_rules! impl_zero_fallback_num_enum {
             type Primitive = $primitive;
 
             fn try_from_primitive(raw: Self::Primitive) -> Result<Self, &'static str> {
-                <Self as TryFromPrimitive>::try_from_primitive(raw)
+                <Self as num_enum::TryFromPrimitive>::try_from_primitive(raw)
                     .map_err(|_| "invalid primitive value")
             }
 
@@ -209,8 +213,14 @@ macro_rules! impl_bitflags_binrw {
 }
 pub(crate) use impl_bitflags_binrw;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroOpt<T>(pub Option<T>);
+
+impl<T> Default for ZeroOpt<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
 
 impl<T> ZeroOpt<T> {
     pub fn none() -> Self {
@@ -254,7 +264,7 @@ where
     ) -> binrw::BinResult<Self> {
         let pos = reader.stream_position()?;
         let raw = <T::Primitive as BinRead>::read_options(reader, endian, Default::default())?;
-        if raw == T::Primitive::default() {
+        if T::is_zero_primitive(raw) {
             return Ok(Self(None));
         }
 

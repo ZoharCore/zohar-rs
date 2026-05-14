@@ -11,12 +11,14 @@ use zohar_protocol::game_pkt::ingame::movement::{MovementC2s, MovementKind, Move
 use zohar_protocol::game_pkt::ingame::stats::{WireStatPoint, WireStatSnapshot};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
 use zohar_protocol::game_pkt::ingame::world::{
-    EntityBuffFlags, EntityStateFlags, EntityType, WorldS2c,
+    BodyPartCode, EntityBuffFlags, EntityKindCode, EntityStateFlags, EntityVisualParts, HairShape,
+    MobTemplateId, VisualItemPartCode, WorldS2c,
 };
 use zohar_protocol::game_pkt::select::{CreatePlayerError, Player};
 use zohar_protocol::game_pkt::{
     Empire, HandshakeGameC2s, HandshakeGameS2c, LoadingC2s, LoadingS2c, LoginC2s, LoginS2c, NetId,
-    SelectC2s, SelectS2c, ServerInfo, ServerStatus, WireMillis32, WireServerAddr, ZeroOpt,
+    PlayerClassGendered, SelectC2s, SelectS2c, ServerInfo, ServerStatus, WireMillis32,
+    WireServerAddr, ZeroOpt,
 };
 
 #[test]
@@ -444,8 +446,7 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
             net_id: NetId(1),
             angle: 0.0,
             pos: (0, 0).into(),
-            entity_type: EntityType::Player,
-            race_num: 0,
+            entity: EntityKindCode::Player(PlayerClassGendered::WarriorMale),
             move_speed: 100,
             attack_speed: 100,
             state_flags: EntityStateFlags::empty(),
@@ -458,15 +459,13 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
         &WorldS2c::SetEntityProfile {
             net_id: NetId(1),
             name: "test".into(),
-            body_part: 0,
-            wep_part: 0,
-            hair_part: 0,
+            parts: empty_visual_parts(),
             empire: ZeroOpt::none(),
             guild_id: 0,
             level: 1,
             rank_pts: 0,
             pvp_mode: 0,
-            mount_id: 0,
+            mount_id: ZeroOpt::<MobTemplateId>::none(),
         },
         0x88,
         54,
@@ -474,9 +473,11 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
     assert_packet_frame(
         &WorldS2c::SyncEntity {
             net_id: NetId(1),
-            body_part: 1,
-            wep_part: 2,
-            hair_part: 3,
+            parts: EntityVisualParts {
+                body: BodyPartCode::from_raw(1),
+                weapon: ZeroOpt::some(VisualItemPartCode::from_raw(2)),
+                hair: ZeroOpt::some(HairShape::from_raw(3)),
+            },
             move_speed: 125,
             attack_speed: 110,
             state_flags: EntityStateFlags::empty(),
@@ -484,12 +485,20 @@ fn world_s2c_packets_keep_their_legacy_lengths() {
             guild_id: 7,
             rank_pts: 0,
             pvp_mode: 0,
-            mount_id: 0,
+            mount_id: ZeroOpt::<MobTemplateId>::none(),
         },
         0x13,
         35,
     );
     assert_packet_frame(&WorldS2c::DestroyEntity { net_id: NetId(1) }, 0x02, 5);
+}
+
+fn empty_visual_parts() -> EntityVisualParts {
+    EntityVisualParts {
+        body: BodyPartCode::from_raw(0),
+        weapon: ZeroOpt::none(),
+        hair: ZeroOpt::none(),
+    }
 }
 
 #[test]

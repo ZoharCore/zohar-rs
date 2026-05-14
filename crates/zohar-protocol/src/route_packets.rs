@@ -31,6 +31,7 @@ macro_rules! route_packets {
                 let opcode = <u8 as binrw::BinRead>::read_options(reader, endian, ())?;
                 reader.seek(SeekFrom::Start(start_pos))?;
 
+				#[deny(unreachable_patterns)]
                 match opcode {
                     $(
                         $($opcode)|+ => {

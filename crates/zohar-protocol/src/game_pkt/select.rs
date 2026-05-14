@@ -102,21 +102,19 @@ pub enum PlayerSelectSlot {
     Fourth = 3,
 }
 
-#[binrw::binrw]
-#[br(repr = u8)]
-#[bw(repr = u8)]
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[binrw::binrw]
+#[brw(repr = u8)]
+#[repr(u8)]
 pub enum PlayerBaseAppearance {
     VariantA = 0,
     VariantB = 1,
 }
 
-#[binrw::binrw]
-#[br(repr = u8)]
-#[bw(repr = u8)]
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[binrw::binrw]
+#[brw(repr = u8)]
+#[repr(u8)]
 pub enum CreatePlayerError {
     GenericFailure = 0,
     NameAlreadyExists = 1,

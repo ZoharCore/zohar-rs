@@ -24,7 +24,7 @@ use zohar_protocol::game_pkt::ingame::movement::{
     MovementAnimation as ProtocolMovementAnimation, MovementKind,
 };
 use zohar_protocol::game_pkt::ingame::stats::{WireStatPoint, WireStatSnapshot};
-use zohar_protocol::game_pkt::ingame::world::EntityType;
+use zohar_protocol::game_pkt::ingame::world::{EntityKindCode, MobTemplateId, NonPlayerEntityType};
 use zohar_protocol::game_pkt::select::{Player, PlayerBaseAppearance};
 use zohar_protocol::game_pkt::{
     Empire, NetId, PlayerClassGendered, SkillBranch, WireServerAddr, ZeroOpt,
@@ -508,26 +508,28 @@ impl ToProtocolPlayer for PlayerSummary {
     }
 }
 
-impl ToProtocol<(EntityType, u16)> for EntityKind {
-    fn to_protocol(self) -> (EntityType, u16) {
+impl ToProtocol<EntityKindCode> for EntityKind {
+    fn to_protocol(self) -> EntityKindCode {
         match self {
             EntityKind::Player { class, gender } => {
-                let race: u8 = (class, gender).to_protocol().into();
-                (EntityType::Player, race as u16)
+                EntityKindCode::Player((class, gender).to_protocol())
             }
             EntityKind::Mob { mob_id, mob_kind } => {
                 let entity_type = match mob_kind {
-                    MobKind::Npc => EntityType::Npc,
-                    MobKind::Monster => EntityType::Monster,
-                    MobKind::Stone => EntityType::Stone,
+                    MobKind::Npc => NonPlayerEntityType::Npc,
+                    MobKind::Monster => NonPlayerEntityType::Monster,
+                    MobKind::Stone => NonPlayerEntityType::Stone,
                     MobKind::Portal(zohar_domain::entity::mob::PortalBehavior::MapTransfer) => {
-                        EntityType::Warp
+                        NonPlayerEntityType::Warp
                     }
                     MobKind::Portal(zohar_domain::entity::mob::PortalBehavior::LocalReposition) => {
-                        EntityType::Goto
+                        NonPlayerEntityType::Goto
                     }
                 };
-                (entity_type, mob_id.get() as u16)
+                EntityKindCode::NonPlayer {
+                    entity_type,
+                    race: MobTemplateId::from_raw(mob_id.get()),
+                }
             }
         }
     }

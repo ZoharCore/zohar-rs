@@ -39,10 +39,11 @@ use zohar_gamesrv::infra::{
 };
 use zohar_gamesrv::{ContentCoords, CoreSelectConfig, GameContext, ServerDrainController};
 use zohar_net::SimpleBinRwCodec;
+use zohar_protocol::game_pkt::PlayerClassGendered;
 use zohar_protocol::game_pkt::handshake::{HandshakeGameC2s, HandshakeGameS2c};
 use zohar_protocol::game_pkt::ingame::stats::{StatsS2c, WireStatPoint};
 use zohar_protocol::game_pkt::ingame::system::SystemS2c;
-use zohar_protocol::game_pkt::ingame::world::{EntityType, WorldS2c};
+use zohar_protocol::game_pkt::ingame::world::{EntityKindCode, WorldS2c};
 use zohar_protocol::game_pkt::ingame::{InGameC2s, InGameS2c};
 use zohar_protocol::game_pkt::loading::{LoadingC2s, LoadingC2sSpecific, LoadingS2c};
 use zohar_protocol::game_pkt::login::{
@@ -435,17 +436,15 @@ async fn test_ingame_bootstrap_sends_handshake_before_map_driven_self_spawn() ->
                 saw_handshake = true;
                 reply_to_ingame_handshake(&mut ingame, data).await?;
             }
-            InGameS2c::World(WorldS2c::SpawnEntity {
-                entity_type,
-                race_num,
-                ..
-            }) => {
+            InGameS2c::World(WorldS2c::SpawnEntity { entity, .. }) => {
                 assert!(
                     saw_handshake,
                     "self SpawnEntity should arrive after the initial RequestHandshake"
                 );
-                assert_eq!(entity_type, EntityType::Player);
-                assert_eq!(race_num, 0);
+                assert_eq!(
+                    entity,
+                    EntityKindCode::Player(PlayerClassGendered::WarriorMale)
+                );
                 saw_spawn = true;
             }
             InGameS2c::World(WorldS2c::SetEntityProfile { name, level, .. }) => {

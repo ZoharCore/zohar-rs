@@ -34,12 +34,9 @@ use zohar_sim::{PlayerPersistenceQueueError, PlayerPersistenceResult};
 
 pub(super) mod chat;
 pub(super) mod combat;
-pub(super) mod fishing;
-pub(super) mod guild;
 pub(super) mod movement;
 pub(super) mod relocation;
 pub(super) mod stats;
-pub(super) mod trading;
 pub(super) mod world;
 
 pub(super) type ThisPhase = zohar_net::connection::game_conn::InGame;
@@ -211,9 +208,6 @@ async fn handle_packet(
         InGameC2s::Chat(packet) => chat::handle_packet(packet, state).await,
         InGameC2s::Combat(packet) => combat::handle_packet(packet, state).await,
         InGameC2s::Move(packet) => movement::handle_packet(packet, state).await,
-        InGameC2s::Trading(packet) => trading::handle_packet(packet, state).await,
-        InGameC2s::Guild(packet) => guild::handle_packet(packet, state).await,
-        InGameC2s::Fishing(packet) => fishing::handle_packet(packet, state).await,
     }
 }
 

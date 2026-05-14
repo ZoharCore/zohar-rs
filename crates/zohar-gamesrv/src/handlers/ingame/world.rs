@@ -7,8 +7,11 @@ use zohar_domain::appearance::{
 };
 use zohar_domain::entity::EntityId;
 use zohar_domain::util::FlagsMapper;
+use zohar_protocol::game_pkt::ZeroOpt;
 use zohar_protocol::game_pkt::ingame::InGameS2c;
-use zohar_protocol::game_pkt::ingame::world::{self, WorldS2c};
+use zohar_protocol::game_pkt::ingame::world::{
+    self, BodyPartCode, EntityVisualParts, HairShape, MobTemplateId, VisualItemPartCode, WorldS2c,
+};
 
 pub(super) fn encode_entity_spawn(
     snapshot: EntitySnapshot,
@@ -22,13 +25,11 @@ pub(super) fn encode_entity_spawn(
 
     let net_id = snapshot.entity_id.to_protocol();
 
-    let (entity_type, race_num) = snapshot.kind.to_protocol();
     let show_pkt = WorldS2c::SpawnEntity {
         net_id,
         angle: angle_from_facing(snapshot.facing),
         pos: world_pos.to_protocol(),
-        entity_type,
-        race_num,
+        entity: snapshot.kind.to_protocol(),
         move_speed: snapshot.public_state.speeds.move_speed,
         attack_speed: snapshot.public_state.speeds.attack_speed,
         state_flags: encode_entity_state_flags(snapshot.public_state.flags.state_flags),
@@ -41,15 +42,16 @@ pub(super) fn encode_entity_spawn(
         let profile_pkt = WorldS2c::SetEntityProfile {
             net_id,
             name: nameplate.name.into(),
-            body_part: snapshot.public_state.equipment.body_part,
-            wep_part: snapshot.public_state.equipment.weapon_part,
-            hair_part: snapshot.public_state.equipment.hair_part,
+            parts: visual_parts(snapshot.public_state.equipment),
             empire: nameplate.empire.to_protocol(),
             guild_id: snapshot.public_state.social.guild_id,
             level: nameplate.level,
             rank_pts: snapshot.public_state.social.rank_pts,
             pvp_mode: snapshot.public_state.social.pvp_mode,
-            mount_id: snapshot.public_state.social.mount_id,
+            mount_id: ZeroOpt::from(
+                (snapshot.public_state.social.mount_id != 0)
+                    .then(|| MobTemplateId::from_raw(snapshot.public_state.social.mount_id)),
+            ),
         };
 
         out.push(profile_pkt.into());
@@ -74,9 +76,7 @@ pub(super) fn encode_entity_public_state_change(
     vec![
         WorldS2c::SyncEntity {
             net_id: entity_id.to_protocol(),
-            body_part: public_state.equipment.body_part,
-            wep_part: public_state.equipment.weapon_part,
-            hair_part: public_state.equipment.hair_part,
+            parts: visual_parts(public_state.equipment),
             move_speed: public_state.speeds.move_speed,
             attack_speed: public_state.speeds.attack_speed,
             state_flags: encode_entity_state_flags(public_state.flags.state_flags),
@@ -84,10 +84,26 @@ pub(super) fn encode_entity_public_state_change(
             guild_id: public_state.social.guild_id,
             rank_pts: public_state.social.rank_pts,
             pvp_mode: public_state.social.pvp_mode,
-            mount_id: public_state.social.mount_id,
+            mount_id: ZeroOpt::from(
+                (public_state.social.mount_id != 0)
+                    .then(|| MobTemplateId::from_raw(public_state.social.mount_id)),
+            ),
         }
         .into(),
     ]
+}
+
+fn visual_parts(equipment: zohar_domain::appearance::EntityPublicEquipment) -> EntityVisualParts {
+    EntityVisualParts {
+        body: BodyPartCode::from_raw(equipment.body_part),
+        weapon: ZeroOpt::from(
+            (equipment.weapon_part != 0)
+                .then(|| VisualItemPartCode::from_raw(equipment.weapon_part)),
+        ),
+        hair: ZeroOpt::from(
+            (equipment.hair_part != 0).then(|| HairShape::from_raw(equipment.hair_part)),
+        ),
+    }
 }
 
 fn angle_from_facing(facing: zohar_domain::coords::Facing72) -> f32 {

@@ -340,6 +340,83 @@ fn mob_combat_stats(world: &World, mob_entity: Entity) -> Option<MobCombatStats>
     Some(world.resource::<SharedConfig>().mobs.get(&mob_id)?.combat)
 }
 
+fn normal_hit_input(
+    world: &mut World,
+    attacker: CombatantSnapshot,
+    victim: CombatantSnapshot,
+) -> NormalHitInput {
+    let rolls = match attacker.damage_roll {
+        DamageRoll::PlaceholderPlayerWeapon => roll_damage(
+            world,
+            PLACEHOLDER_PLAYER_DAMAGE_MIN,
+            PLACEHOLDER_PLAYER_DAMAGE_MAX,
+        ),
+        DamageRoll::MobPrototype(combat) => roll_damage(
+            world,
+            combat.damage_min.max(0),
+            combat.damage_max.max(combat.damage_min).max(0),
+        ),
+    };
+
+    let mut input = NormalHitInput::unmodified(attacker.stats, victim.stats, rolls);
+    if let DamageRoll::MobPrototype(combat) = attacker.damage_roll {
+        input.damage_multiplier = combat.damage_multiplier.max(0.0);
+    }
+    input
+}
+
+fn apply_combat_outcome(world: &mut World, outcome: CombatOutcome) -> Option<AppliedDamage> {
+    let applied = apply_resource_damage(world, outcome.victim.actor, outcome.hit.damage)?;
+
+    world
+        .resource_mut::<FrameFacts>()
+        .combat
+        .damaged
+        .push(ActorDamaged {
+            attacker: outcome.attacker.actor,
+            victim: outcome.victim.actor,
+            damage: outcome.hit.damage,
+            flags: outcome.hit.flags,
+        });
+
+    Some(applied)
+}
+
+fn apply_resource_damage(
+    world: &mut World,
+    victim: ActorRef,
+    damage: i32,
+) -> Option<AppliedDamage> {
+    let result = apply_actor_resource(world, victim, ResourceApplication::damage(damage))
+        .ok()
+        .flatten()?;
+    Some(AppliedDamage {
+        killed: result.stat == Stat::Hp && result.previous > 0 && result.current <= 0,
+    })
+}
+
+fn combat_stats_from_runtime(runtime: &ActorStatsRuntime) -> CombatStats {
+    CombatStats {
+        level: runtime.read_limited(Stat::Level),
+        dx: runtime.read_limited(Stat::Dx),
+        attack_grade: runtime.read_limited(Stat::AttGrade),
+        defence_grade: runtime.read_limited(Stat::DefGrade),
+    }
+}
+
+fn roll_damage(world: &mut World, damage_min: i32, damage_max: i32) -> DamageRolls {
+    let (lower, upper) = if damage_min <= damage_max {
+        (damage_min, damage_max)
+    } else {
+        (damage_max, damage_min)
+    };
+    let mut runtime = world.resource_mut::<RuntimeState>();
+    DamageRolls {
+        weapon_or_mob_damage: runtime.rng.random_range(lower..=upper),
+        low_damage_fallback: runtime.rng.random_range(1..=5),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,82 +494,5 @@ mod tests {
 
         assert!(world.resource::<AttackCommandBuffer>().0.is_empty());
         assert!(world.resource::<DelayedAttackCommandBuffer>().0.is_empty());
-    }
-}
-
-fn normal_hit_input(
-    world: &mut World,
-    attacker: CombatantSnapshot,
-    victim: CombatantSnapshot,
-) -> NormalHitInput {
-    let rolls = match attacker.damage_roll {
-        DamageRoll::PlaceholderPlayerWeapon => roll_damage(
-            world,
-            PLACEHOLDER_PLAYER_DAMAGE_MIN,
-            PLACEHOLDER_PLAYER_DAMAGE_MAX,
-        ),
-        DamageRoll::MobPrototype(combat) => roll_damage(
-            world,
-            combat.damage_min.max(0),
-            combat.damage_max.max(combat.damage_min).max(0),
-        ),
-    };
-
-    let mut input = NormalHitInput::unmodified(attacker.stats, victim.stats, rolls);
-    if let DamageRoll::MobPrototype(combat) = attacker.damage_roll {
-        input.damage_multiplier = combat.damage_multiplier.max(0.0);
-    }
-    input
-}
-
-fn apply_combat_outcome(world: &mut World, outcome: CombatOutcome) -> Option<AppliedDamage> {
-    let applied = apply_resource_damage(world, outcome.victim.actor, outcome.hit.damage)?;
-
-    world
-        .resource_mut::<FrameFacts>()
-        .combat
-        .damaged
-        .push(ActorDamaged {
-            attacker: outcome.attacker.actor,
-            victim: outcome.victim.actor,
-            damage: outcome.hit.damage,
-            flags: outcome.hit.flags,
-        });
-
-    Some(applied)
-}
-
-fn apply_resource_damage(
-    world: &mut World,
-    victim: ActorRef,
-    damage: i32,
-) -> Option<AppliedDamage> {
-    let result = apply_actor_resource(world, victim, ResourceApplication::damage(damage))
-        .ok()
-        .flatten()?;
-    Some(AppliedDamage {
-        killed: result.stat == Stat::Hp && result.previous > 0 && result.current <= 0,
-    })
-}
-
-fn combat_stats_from_runtime(runtime: &ActorStatsRuntime) -> CombatStats {
-    CombatStats {
-        level: runtime.read_limited(Stat::Level),
-        dx: runtime.read_limited(Stat::Dx),
-        attack_grade: runtime.read_limited(Stat::AttGrade),
-        defence_grade: runtime.read_limited(Stat::DefGrade),
-    }
-}
-
-fn roll_damage(world: &mut World, damage_min: i32, damage_max: i32) -> DamageRolls {
-    let (lower, upper) = if damage_min <= damage_max {
-        (damage_min, damage_max)
-    } else {
-        (damage_max, damage_min)
-    };
-    let mut runtime = world.resource_mut::<RuntimeState>();
-    DamageRolls {
-        weapon_or_mob_damage: runtime.rng.random_range(lower..=upper),
-        low_damage_fallback: runtime.rng.random_range(1..=5),
     }
 }
